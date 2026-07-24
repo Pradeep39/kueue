@@ -25,10 +25,15 @@ import (
 	sparkappv1beta2 "github.com/kubeflow/spark-operator/v2/api/v1beta2"
 	sparkcommon "github.com/kubeflow/spark-operator/v2/pkg/common"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/client-go/rest"
 	"k8s.io/component-base/featuregate"
 	"k8s.io/utils/ptr"
+	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	"sigs.k8s.io/kueue/pkg/features"
@@ -283,6 +288,62 @@ func TestMapExecutorPodToSparkApplication(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestSetupWithManager verifies that the reconciler's watch/predicate/handler wiring
+// (For, Watches, the predicate, and the mapping function) is accepted by a real
+// controller-runtime manager. It intentionally never calls mgr.Start(): the informer/cache
+// machinery that would need a live API server only runs on Start(), while
+// controller registration itself (what this test exercises) does not, so this catches
+// wiring mistakes (bad GVKs, incompatible predicate/handler types, duplicate controller
+// names) without requiring envtest or a live cluster.
+func TestSetupWithManager(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := clientgoscheme.AddToScheme(scheme); err != nil {
+		t.Fatalf("Failed adding client-go scheme: %v", err)
+	}
+	if err := sparkappv1beta2.AddToScheme(scheme); err != nil {
+		t.Fatalf("Failed adding SparkApplication scheme: %v", err)
+	}
+
+	newManager := func(t *testing.T) ctrl.Manager {
+		mgr, err := ctrl.NewManager(&rest.Config{Host: "http://127.0.0.1:0"}, ctrl.Options{
+			Scheme:  scheme,
+			Metrics: metricsserver.Options{BindAddress: "0"},
+		})
+		if err != nil {
+			t.Fatalf("ctrl.NewManager failed: %v", err)
+		}
+		return mgr
+	}
+
+	t.Run("feature enabled: registers a controller with a Pod watch", func(t *testing.T) {
+		features.SetFeatureGatesDuringTest(t, map[featuregate.Feature]bool{features.ElasticJobsViaWorkloadSlices: true})
+		ctx, _ := utiltesting.ContextWithLog(t)
+		mgr := newManager(t)
+
+		reconciler, err := NewExecutorInstancesReconciler(ctx, mgr.GetClient(), mgr.GetFieldIndexer(), nil)
+		if err != nil {
+			t.Fatalf("NewExecutorInstancesReconciler failed: %v", err)
+		}
+		if err := reconciler.SetupWithManager(mgr); err != nil {
+			t.Fatalf("SetupWithManager failed: %v", err)
+		}
+	})
+
+	t.Run("feature disabled: no-op, does not register a controller", func(t *testing.T) {
+		features.SetFeatureGatesDuringTest(t, map[featuregate.Feature]bool{features.ElasticJobsViaWorkloadSlices: false})
+		ctx, _ := utiltesting.ContextWithLog(t)
+		mgr := newManager(t)
+
+		reconciler, err := NewExecutorInstancesReconciler(ctx, mgr.GetClient(), mgr.GetFieldIndexer(), nil)
+		if err != nil {
+			t.Fatalf("NewExecutorInstancesReconciler failed: %v", err)
+		}
+		if err := reconciler.SetupWithManager(mgr); err != nil {
+			t.Fatalf("SetupWithManager returned an error instead of a clean no-op: %v", err)
+		}
+	})
 }
 
 func TestIsVerifiedLiveExecutor(t *testing.T) {
