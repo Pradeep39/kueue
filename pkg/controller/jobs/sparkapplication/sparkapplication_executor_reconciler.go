@@ -153,7 +153,11 @@ func (r *ExecutorInstancesReconciler) Reconcile(ctx context.Context, req reconci
 	// Only elastic jobs opted into workload-slice scaling, and only while Dynamic
 	// Allocation is actually turned on for them, are in scope. Everything else keeps
 	// relying solely on the static spec.executor.instances value it already had.
-	if !workloadslicing.Enabled(sparkApp) || !ptr.Deref(sparkApp.Spec.DynamicAllocation, sparkv1beta2.DynamicAllocation{}).Enabled {
+	//
+	// dynamicAllocationEnabled also checks the raw spark.dynamicAllocation.enabled key in
+	// spec.sparkConf: the structured spec.dynamicAllocation.enabled field alone misses any
+	// SparkApplication that only sets Dynamic Allocation via sparkConf (see numInitialExecutors).
+	if !workloadslicing.Enabled(sparkApp) || !(*SparkApplication)(sparkApp).dynamicAllocationEnabled() {
 		return ctrl.Result{}, nil
 	}
 
