@@ -161,6 +161,18 @@ func TestExecutorInstancesReconciler(t *testing.T) {
 			},
 			wantInstances: ptr.To[int32](1),
 		},
+		"dynamic allocation configured via sparkConf only: spec.executor.instances is still synced": {
+			sparkApp: sparkapplicationtesting.MakeSparkApplication("app", "ns").
+				Annotation(workloadslicing.EnabledAnnotationKey, workloadslicing.EnabledAnnotationValue).
+				SparkConf("spark.dynamicAllocation.enabled", "true").
+				ExecutorInstances(1).Obj(),
+			pods: []*corev1.Pod{
+				makeExecutorPod("exec-1", "ns", "app").StatusPhase(corev1.PodRunning).Obj(),
+				makeExecutorPod("exec-2", "ns", "app").StatusPhase(corev1.PodRunning).Obj(),
+				makeExecutorPod("exec-3", "ns", "app").StatusPhase(corev1.PodRunning).Obj(),
+			},
+			wantInstances: ptr.To[int32](3),
+		},
 		"feature gate disabled: spec.executor.instances is left untouched even if pods scaled": {
 			featureGates: map[featuregate.Feature]bool{features.ElasticJobsViaWorkloadSlices: false},
 			sparkApp:     elasticDynamicAllocationSparkApp("app", "ns").ExecutorInstances(1).Obj(),
