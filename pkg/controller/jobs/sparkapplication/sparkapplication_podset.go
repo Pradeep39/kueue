@@ -29,7 +29,6 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/utils/ptr"
 )
 
 var (
@@ -49,8 +48,32 @@ var (
 	}
 )
 
+// numInitialExecutors returns the executor count to size the executor PodSet with.
+//
+// When Dynamic Allocation is enabled, the Spark Operator's own defaulting webhook
+// deliberately leaves spec.executor.instances unset (see kubeflow/spark-operator's
+// setExecutorSpecDefaults), since Spark determines the running executor count on its
+// own from there on. Falling back to ptr.Deref(Instances, 0) in that case would size
+// the very first, admission-time PodSet at 0, so Kueue would reserve quota for zero
+// executors even though spec.dynamicAllocation.initialExecutors describes exactly how
+// many Spark intends to request at startup. Falling back to InitialExecutors (or
+// MinExecutors, mirroring Spark's own fallback) fixes that initial reservation.
+// Once ExecutorInstancesReconciler patches Instances to the live executor count for
+// the first time, this function always returns that value directly with no floor —
+// including on any later scale-down below the initial count.
 func (j *SparkApplication) numInitialExecutors() int32 {
-	return ptr.Deref(j.Spec.Executor.Instances, 0)
+	if j.Spec.Executor.Instances != nil {
+		return *j.Spec.Executor.Instances
+	}
+	if da := j.Spec.DynamicAllocation; da != nil && da.Enabled {
+		if da.InitialExecutors != nil {
+			return *da.InitialExecutors
+		}
+		if da.MinExecutors != nil {
+			return *da.MinExecutors
+		}
+	}
+	return 0
 }
 
 func (j *SparkApplication) buildDriverPodTemplateSpec() (*corev1.PodTemplateSpec, error) {
