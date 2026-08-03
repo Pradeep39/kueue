@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+	"strconv"
 	"strings"
 
 	sparkv1beta2 "github.com/kubeflow/spark-operator/v2/api/v1beta2"
@@ -55,9 +56,11 @@ var (
 // setExecutorSpecDefaults), since Spark determines the running executor count on its
 // own from there on. Falling back to ptr.Deref(Instances, 0) in that case would size
 // the very first, admission-time PodSet at 0, so Kueue would reserve quota for zero
-// executors even though spec.dynamicAllocation.initialExecutors describes exactly how
-// many Spark intends to request at startup. Falling back to InitialExecutors (or
-// MinExecutors, mirroring Spark's own fallback) fixes that initial reservation.
+// executors even though the initial/min executor count describes exactly how many
+// Spark intends to request at startup. Falling back to that count (via either the
+// structured spec.dynamicAllocation fields or the equivalent raw spark.dynamicAllocation.*
+// keys in spec.sparkConf — Spark Operator supports configuring Dynamic Allocation
+// through either) fixes that initial reservation.
 // Once ExecutorInstancesReconciler patches Instances to the live executor count for
 // the first time, this function always returns that value directly with no floor —
 // including on any later scale-down below the initial count.
@@ -65,15 +68,54 @@ func (j *SparkApplication) numInitialExecutors() int32 {
 	if j.Spec.Executor.Instances != nil {
 		return *j.Spec.Executor.Instances
 	}
-	if da := j.Spec.DynamicAllocation; da != nil && da.Enabled {
-		if da.InitialExecutors != nil {
-			return *da.InitialExecutors
-		}
-		if da.MinExecutors != nil {
-			return *da.MinExecutors
-		}
+	if !j.dynamicAllocationEnabled() {
+		return 0
+	}
+	if n, ok := j.dynamicAllocationExecutorCount("initialExecutors"); ok {
+		return n
+	}
+	if n, ok := j.dynamicAllocationExecutorCount("minExecutors"); ok {
+		return n
 	}
 	return 0
+}
+
+// dynamicAllocationEnabled reports whether Dynamic Allocation is enabled, checking
+// both the structured spec.dynamicAllocation.enabled field and the equivalent raw
+// spark.dynamicAllocation.enabled key in spec.sparkConf.
+func (j *SparkApplication) dynamicAllocationEnabled() bool {
+	if da := j.Spec.DynamicAllocation; da != nil && da.Enabled {
+		return true
+	}
+	enabled, _ := strconv.ParseBool(j.Spec.SparkConf["spark.dynamicAllocation.enabled"])
+	return enabled
+}
+
+// dynamicAllocationExecutorCount reads "initialExecutors" or "minExecutors" from
+// spec.dynamicAllocation, falling back to the equivalent spark.dynamicAllocation.*
+// key in spec.sparkConf when the structured field is unset.
+func (j *SparkApplication) dynamicAllocationExecutorCount(field string) (int32, bool) {
+	if da := j.Spec.DynamicAllocation; da != nil {
+		var v *int32
+		switch field {
+		case "initialExecutors":
+			v = da.InitialExecutors
+		case "minExecutors":
+			v = da.MinExecutors
+		}
+		if v != nil {
+			return *v, true
+		}
+	}
+	raw, ok := j.Spec.SparkConf["spark.dynamicAllocation."+field]
+	if !ok {
+		return 0, false
+	}
+	n, err := strconv.ParseInt(raw, 10, 32)
+	if err != nil {
+		return 0, false
+	}
+	return int32(n), true
 }
 
 func (j *SparkApplication) buildDriverPodTemplateSpec() (*corev1.PodTemplateSpec, error) {
