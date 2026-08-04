@@ -71,7 +71,10 @@ func TestValidateCreate(t *testing.T) {
 				InitialExecutors: new(int32(2)),
 				MaxExecutors:     new(int32(3)),
 			}).Obj(),
-			wantErr: nil,
+			wantErr: field.ErrorList{field.Forbidden(
+				field.NewPath("metadata", "annotations").Key(workloadslicing.EnabledAnnotationKey),
+				`elastic job is not supported for "sparkoperator.k8s.io/v1beta2, Kind=SparkApplication"`,
+			)}.ToAggregate(),
 		},
 		"base with TAS": {
 			featureGates: map[featuregate.Feature]bool{features.TopologyAwareScheduling: true},

@@ -141,25 +141,9 @@ func (w *SparkApplicationWrapper) ExecutorInstances(n int32) *SparkApplicationWr
 	return w
 }
 
-// ExecutorInstancesUnset clears the executor instances field, mirroring how the Spark
-// Operator's own defaulting webhook leaves it unset when Dynamic Allocation is enabled.
-func (w *SparkApplicationWrapper) ExecutorInstancesUnset() *SparkApplicationWrapper {
-	w.Spec.Executor.Instances = nil
-	return w
-}
-
 // DynamicAllocation sets the dynamic allocation configuration.
 func (w *SparkApplicationWrapper) DynamicAllocation(dynamicAllocation *sparkappv1beta2.DynamicAllocation) *SparkApplicationWrapper {
 	w.Spec.DynamicAllocation = dynamicAllocation
-	return w
-}
-
-// SparkConf sets an entry in the raw Spark configuration map.
-func (w *SparkApplicationWrapper) SparkConf(key, value string) *SparkApplicationWrapper {
-	if w.Spec.SparkConf == nil {
-		w.Spec.SparkConf = make(map[string]string)
-	}
-	w.Spec.SparkConf[key] = value
 	return w
 }
 
