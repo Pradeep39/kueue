@@ -18,8 +18,6 @@ package sparkapplication
 
 import (
 	"context"
-	"sync"
-	"time"
 
 	"github.com/go-logr/logr"
 	sparkv1beta2 "github.com/kubeflow/spark-operator/v2/api/v1beta2"
@@ -28,7 +26,6 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/events"
-	"k8s.io/utils/clock"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
@@ -44,19 +41,7 @@ import (
 	"sigs.k8s.io/kueue/pkg/workloadslicing"
 )
 
-const (
-	executorInstancesControllerName = "sparkapplication_executor_instances"
-
-	// executorInstancesDebounce is how long the live executor pod count must hold
-	// steady before spec.executor.instances is patched to match it. Dynamic
-	// Allocation deletes/creates executor pods in rapid bursts (observed: three
-	// distinct live counts inside 300ms in production), and every patch here
-	// retriggers the job reconciler's workload-slice bookkeeping. Without a
-	// debounce, that bookkeeping and this reconciler race each other on the same
-	// Workload object, producing optimistic-lock conflicts and, when a slice
-	// swap can't keep up, the job reconciler suspending the job outright.
-	executorInstancesDebounce = 5 * time.Second
-)
+const executorInstancesControllerName = "sparkapplication_executor_instances"
 
 // ExecutorInstancesReconciler keeps SparkApplication.Spec.Executor.Instances in sync with
 // the number of executor Pods that are actually live on the cluster.
@@ -78,35 +63,12 @@ const (
 // quota accordingly — the missing link the user asked for, expressed as "increase on add /
 // decrease on delete" but implemented as a self-healing reconciliation to the observed
 // count rather than a per-event counter (see reconcileExecutorInstances for why).
-//
-// The observed count is debounced (see pendingCount/executorInstancesDebounce) before it's
-// ever patched: Dynamic Allocation adds/removes executor Pods in rapid bursts, and every
-// patch to spec.executor.instances retriggers the job reconciler's workload-slice
-// bookkeeping (EnsureWorkloadSlices). Patching on every intermediate count let that
-// bookkeeping and this reconciler race on the same Workload, producing optimistic-lock
-// conflicts and, when a workload-slice swap couldn't keep up with the churn, the job
-// reconciler falling back to suspending the job outright.
 type ExecutorInstancesReconciler struct {
 	client client.Client
-	clock  clock.Clock
-
-	mu      sync.Mutex
-	pending map[types.NamespacedName]pendingCount
-}
-
-// pendingCount tracks a live executor count observed for a SparkApplication that hasn't
-// held steady for executorInstancesDebounce yet.
-type pendingCount struct {
-	count int32
-	since time.Time
 }
 
 func NewExecutorInstancesReconciler(_ context.Context, c client.Client, _ client.FieldIndexer, _ events.EventRecorder, _ ...jobframework.Option) (jobframework.JobReconcilerInterface, error) {
-	return &ExecutorInstancesReconciler{
-		client:  c,
-		clock:   clock.RealClock{},
-		pending: make(map[types.NamespacedName]pendingCount),
-	}, nil
+	return &ExecutorInstancesReconciler{client: c}, nil
 }
 
 var _ jobframework.JobReconcilerInterface = (*ExecutorInstancesReconciler)(nil)
@@ -199,12 +161,11 @@ func (r *ExecutorInstancesReconciler) Reconcile(ctx context.Context, req reconci
 		return ctrl.Result{}, nil
 	}
 
-	return r.reconcileExecutorInstances(ctx, log, sparkApp)
+	return ctrl.Result{}, r.reconcileExecutorInstances(ctx, log, sparkApp)
 }
 
-// reconcileExecutorInstances lists the live executor Pods for sparkApp and, once that count
-// has held steady for executorInstancesDebounce, patches spec.executor.instances to match
-// it if it still differs.
+// reconcileExecutorInstances lists the live executor Pods for sparkApp and, if that count
+// differs from spec.executor.instances, patches the field to match.
 //
 // The user's original ask was framed as a per-event counter: +1 when Dynamic Allocation
 // adds an executor Pod, -1 when it removes one. That framing doesn't hold up as a literal
@@ -219,7 +180,7 @@ func (r *ExecutorInstancesReconciler) Reconcile(ctx context.Context, req reconci
 // produces the same practical outcome the user wants (more live executor Pods -> higher
 // instances; fewer -> lower) while being idempotent and self-healing on every event,
 // including ones that arrive out of order or get redelivered.
-func (r *ExecutorInstancesReconciler) reconcileExecutorInstances(ctx context.Context, log logr.Logger, sparkApp *sparkv1beta2.SparkApplication) (reconcile.Result, error) {
+func (r *ExecutorInstancesReconciler) reconcileExecutorInstances(ctx context.Context, log logr.Logger, sparkApp *sparkv1beta2.SparkApplication) error {
 	podList := &corev1.PodList{}
 	if err := r.client.List(ctx, podList,
 		client.InNamespace(sparkApp.Namespace),
@@ -228,7 +189,7 @@ func (r *ExecutorInstancesReconciler) reconcileExecutorInstances(ctx context.Con
 			sparkcommon.LabelSparkRole:    sparkcommon.SparkRoleExecutor,
 		},
 	); err != nil {
-		return reconcile.Result{}, err
+		return err
 	}
 
 	var liveCount int32
@@ -244,82 +205,29 @@ func (r *ExecutorInstancesReconciler) reconcileExecutorInstances(ctx context.Con
 
 	current := ptr.Deref(sparkApp.Spec.Executor.Instances, 0)
 	if liveCount == current {
-		r.clearPending(sparkAppKey(sparkApp))
-		return reconcile.Result{}, nil
-	}
-
-	stableSince, requeueAfter := r.observe(sparkAppKey(sparkApp), liveCount)
-	if requeueAfter > 0 {
-		log.V(3).Info("Live executor pod count changed; waiting for it to hold steady before patching spec.executor.instances",
-			"specInstances", current, "liveExecutorPods", liveCount, "stableFor", r.clock.Now().Sub(stableSince))
-		return reconcile.Result{RequeueAfter: requeueAfter}, nil
+		return nil
 	}
 
 	log.V(2).Info("Dynamic allocation changed the live executor pod count; syncing spec.executor.instances so Kueue's elastic workload accounting stays correct",
 		"specInstances", current, "liveExecutorPods", liveCount)
 
-	if err := clientutil.Patch(ctx, r.client, sparkApp, func() (bool, error) {
+	return clientutil.Patch(ctx, r.client, sparkApp, func() (bool, error) {
 		sparkApp.Spec.Executor.Instances = ptr.To(liveCount)
 		return true, nil
-	}, clientutil.WithRetryOnConflict()); err != nil {
-		return reconcile.Result{}, err
-	}
-	r.clearPending(sparkAppKey(sparkApp))
-	return reconcile.Result{}, nil
-}
-
-func sparkAppKey(sparkApp *sparkv1beta2.SparkApplication) types.NamespacedName {
-	return types.NamespacedName{Namespace: sparkApp.Namespace, Name: sparkApp.Name}
-}
-
-// observe records liveCount as the latest observation for key and reports how long it has
-// held steady. If the count just changed (or this is the first observation), it resets the
-// stability window and returns a non-zero requeueAfter so the caller waits instead of
-// patching immediately. Once the same count has been observed for executorInstancesDebounce,
-// it returns a zero requeueAfter, signaling the caller may patch now.
-func (r *ExecutorInstancesReconciler) observe(key types.NamespacedName, liveCount int32) (stableSince time.Time, requeueAfter time.Duration) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	now := r.clock.Now()
-	p, ok := r.pending[key]
-	if !ok || p.count != liveCount {
-		p = pendingCount{count: liveCount, since: now}
-		r.pending[key] = p
-	}
-
-	if elapsed := now.Sub(p.since); elapsed < executorInstancesDebounce {
-		return p.since, executorInstancesDebounce - elapsed
-	}
-	return p.since, 0
-}
-
-// clearPending drops any in-progress debounce state for key once its count has either been
-// patched or already matches spec.executor.instances, so a later, genuinely new change
-// starts its own fresh debounce window instead of inheriting a stale one.
-func (r *ExecutorInstancesReconciler) clearPending(key types.NamespacedName) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	delete(r.pending, key)
+	}, clientutil.WithRetryOnConflict())
 }
 
 // isVerifiedLiveExecutor reports whether pod represents a Dynamic-Allocation-managed
-// executor that should currently count against spec.executor.instances: it exists and
-// hasn't reached a terminal phase yet.
-//
+// executor that should currently count against spec.executor.instances: it exists, isn't
+// already on its way out (no DeletionTimestamp), and hasn't reached a terminal phase.
 // A Pod that's merely Pending/ContainerCreating still counts — quota needs to be reserved
 // as soon as the Pod is admitted to the cluster, not once it happens to reach Running,
 // otherwise there's a window where Dynamic Allocation has already consumed real cluster
 // capacity that Kueue's accounting doesn't yet know about.
-//
-// A Pod with a DeletionTimestamp set still counts too: Dynamic Allocation deletes executor
-// Pods it no longer wants, but the Pod keeps occupying node resources, and its containers
-// keep running, until it actually reaches Succeeded/Failed (or is force-removed). Excluding
-// it the instant the delete is issued undercounts live, resource-consuming Pods and produces
-// a burst of spurious intermediate counts as Dynamic Allocation works through a batch of
-// deletions — exactly the churn executorInstancesDebounce exists to absorb, so it's better
-// not to manufacture more of it here.
 func isVerifiedLiveExecutor(pod *corev1.Pod) bool {
+	if pod.DeletionTimestamp != nil {
+		return false
+	}
 	switch pod.Status.Phase {
 	case corev1.PodSucceeded, corev1.PodFailed:
 		return false

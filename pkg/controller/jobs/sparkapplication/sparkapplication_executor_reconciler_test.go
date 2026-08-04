@@ -30,7 +30,6 @@ import (
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
 	"k8s.io/component-base/featuregate"
-	testingclock "k8s.io/utils/clock/testing"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -123,14 +122,14 @@ func TestExecutorInstancesReconciler(t *testing.T) {
 			},
 			wantInstances: ptr.To[int32](1),
 		},
-		"executor pods already terminating (DeletionTimestamp set) still count towards the live total until terminal": {
-			sparkApp: elasticDynamicAllocationSparkApp("app", "ns").ExecutorInstances(1).Obj(),
+		"executor pods already terminating (DeletionTimestamp set) are excluded from the live total": {
+			sparkApp: elasticDynamicAllocationSparkApp("app", "ns").ExecutorInstances(2).Obj(),
 			pods: []*corev1.Pod{
 				makeExecutorPod("exec-1", "ns", "app").StatusPhase(corev1.PodRunning).Obj(),
 				makeExecutorPod("exec-2", "ns", "app").StatusPhase(corev1.PodRunning).
 					Finalizer("kueue.x-k8s.io/test").DeletionTimestamp(now).Obj(),
 			},
-			wantInstances: ptr.To[int32](2),
+			wantInstances: ptr.To[int32](1),
 		},
 		"driver pod for the same application is not counted as an executor": {
 			sparkApp: elasticDynamicAllocationSparkApp("app", "ns").ExecutorInstances(1).Obj(),
@@ -215,13 +214,10 @@ func TestExecutorInstancesReconciler(t *testing.T) {
 			}
 			kClient := utiltesting.NewClientBuilder(sparkappv1beta2.AddToScheme).WithObjects(objs...).Build()
 
-			reconcilerIface, err := NewExecutorInstancesReconciler(ctx, kClient, nil, nil)
+			reconciler, err := NewExecutorInstancesReconciler(ctx, kClient, nil, nil)
 			if err != nil {
 				t.Fatalf("Error creating the reconciler: %v", err)
 			}
-			reconciler := reconcilerIface.(*ExecutorInstancesReconciler)
-			fakeClock := testingclock.NewFakeClock(now)
-			reconciler.clock = fakeClock
 
 			req := reconcile.Request{NamespacedName: types.NamespacedName{Namespace: tc.sparkApp.Namespace, Name: tc.sparkApp.Name}}
 			if tc.reconcileMissing {
@@ -230,13 +226,6 @@ func TestExecutorInstancesReconciler(t *testing.T) {
 				}
 			}
 
-			// The live count must be observed as stable for executorInstancesDebounce
-			// before it's patched, so reconcile once to record the observation, advance
-			// the clock past the debounce window, then reconcile again to let it land.
-			if _, err = reconciler.Reconcile(ctx, req); err != nil {
-				t.Fatalf("First Reconcile (establishing debounce observation) returned an unexpected error: %v", err)
-			}
-			fakeClock.Step(executorInstancesDebounce)
 			_, err = reconciler.Reconcile(ctx, req)
 			if diff := cmp.Diff(tc.wantErr, err, cmpopts.EquateErrors()); diff != "" {
 				t.Errorf("Reconcile returned error (-want,+got):\n%s", diff)
@@ -255,76 +244,6 @@ func TestExecutorInstancesReconciler(t *testing.T) {
 			}
 		})
 	}
-}
-
-func TestExecutorInstancesReconcilerDebounce(t *testing.T) {
-	now := time.Now()
-	features.SetFeatureGatesDuringTest(t, map[featuregate.Feature]bool{features.ElasticJobsViaWorkloadSlices: true})
-	ctx, _ := utiltesting.ContextWithLog(t)
-
-	sparkApp := elasticDynamicAllocationSparkApp("app", "ns").ExecutorInstances(5).Obj()
-	kClient := utiltesting.NewClientBuilder(sparkappv1beta2.AddToScheme).WithObjects(sparkApp).Build()
-
-	reconcilerIface, err := NewExecutorInstancesReconciler(ctx, kClient, nil, nil)
-	if err != nil {
-		t.Fatalf("Error creating the reconciler: %v", err)
-	}
-	reconciler := reconcilerIface.(*ExecutorInstancesReconciler)
-	fakeClock := testingclock.NewFakeClock(now)
-	reconciler.clock = fakeClock
-
-	req := reconcile.Request{NamespacedName: types.NamespacedName{Namespace: "ns", Name: "app"}}
-	wantInstances := func(t *testing.T, want *int32) {
-		t.Helper()
-		gotSparkApp := &sparkappv1beta2.SparkApplication{}
-		if err := kClient.Get(ctx, req.NamespacedName, gotSparkApp); err != nil {
-			t.Fatalf("Could not get SparkApplication: %v", err)
-		}
-		if diff := cmp.Diff(want, gotSparkApp.Spec.Executor.Instances); diff != "" {
-			t.Errorf("spec.executor.instances (-want,+got):\n%s", diff)
-		}
-	}
-	setExecutorPods := func(t *testing.T, n int) {
-		t.Helper()
-		podList := &corev1.PodList{}
-		if err := kClient.List(ctx, podList, client.InNamespace("ns")); err != nil {
-			t.Fatalf("Failed listing pods: %v", err)
-		}
-		for i := range podList.Items {
-			if err := kClient.Delete(ctx, &podList.Items[i]); err != nil {
-				t.Fatalf("Failed deleting pod: %v", err)
-			}
-		}
-		for i := range n {
-			pod := makeExecutorPod(t.Name()+"-"+string(rune('a'+i)), "ns", "app").StatusPhase(corev1.PodRunning).Obj()
-			if err := kClient.Create(ctx, pod); err != nil {
-				t.Fatalf("Failed creating pod: %v", err)
-			}
-		}
-	}
-
-	// Dynamic Allocation churns rapidly: 5 -> 4 -> 1, each observed well within the
-	// debounce window. None of these intermediate counts should be patched.
-	setExecutorPods(t, 4)
-	if _, err := reconciler.Reconcile(ctx, req); err != nil {
-		t.Fatalf("Reconcile returned an unexpected error: %v", err)
-	}
-	wantInstances(t, ptr.To[int32](5))
-
-	fakeClock.Step(executorInstancesDebounce / 2)
-	setExecutorPods(t, 1)
-	if _, err := reconciler.Reconcile(ctx, req); err != nil {
-		t.Fatalf("Reconcile returned an unexpected error: %v", err)
-	}
-	wantInstances(t, ptr.To[int32](5))
-
-	// The count now holds steady at 1 for the full debounce window: only now should
-	// it be patched.
-	fakeClock.Step(executorInstancesDebounce)
-	if _, err := reconciler.Reconcile(ctx, req); err != nil {
-		t.Fatalf("Reconcile returned an unexpected error: %v", err)
-	}
-	wantInstances(t, ptr.To[int32](1))
 }
 
 func TestIsTrackedExecutorPod(t *testing.T) {
@@ -458,12 +377,8 @@ func TestIsVerifiedLiveExecutor(t *testing.T) {
 		"pending pod is live":       {pod: makeExecutorPod("e", "ns", "app").StatusPhase(corev1.PodPending).Obj(), want: true},
 		"succeeded pod is not live": {pod: makeExecutorPod("e", "ns", "app").StatusPhase(corev1.PodSucceeded).Obj(), want: false},
 		"failed pod is not live":    {pod: makeExecutorPod("e", "ns", "app").StatusPhase(corev1.PodFailed).Obj(), want: false},
-		"terminating but not yet terminal pod is still live: it holds node resources until it reaches Succeeded/Failed": {
+		"terminating pod is not live": {
 			pod:  makeExecutorPod("e", "ns", "app").StatusPhase(corev1.PodRunning).Finalizer("f").DeletionTimestamp(now).Obj(),
-			want: true,
-		},
-		"terminating pod that already reached a terminal phase is not live": {
-			pod:  makeExecutorPod("e", "ns", "app").StatusPhase(corev1.PodFailed).Finalizer("f").DeletionTimestamp(now).Obj(),
 			want: false,
 		},
 	}
