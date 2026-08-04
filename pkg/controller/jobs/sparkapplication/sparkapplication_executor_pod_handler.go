@@ -42,6 +42,17 @@ import (
 // once for the whole burst.
 const executorPodDebounce = 5 * time.Second
 
+// executorPodMaxWait caps how long a continuous stream of executor Pod events for one
+// SparkApplication can keep pushing the reconcile out. A trailing-edge debounce with no
+// ceiling can be reset forever: a long-running Dynamic Allocation app with many executors
+// sees routine Pod status churn (readiness flips, kubelet status resyncs, scale events)
+// that can easily land more often than every executorPodDebounce, so the "quiet window"
+// this handler waits for might never actually occur — starving PodSets() re-derivation
+// indefinitely and leaving Kueue's usage accounting stuck at a stale count. Once a burst
+// has run continuously for executorPodMaxWait, the next qualifying event flushes
+// immediately instead of resetting the timer again.
+const executorPodMaxWait = 30 * time.Second
+
 // executorPodPredicate filters Pod events down to Spark executor Pods that carry the
 // Spark Operator's admission-webhook-assigned owning-application label. Driver Pods and
 // any non-Spark Pods are ignored before they ever reach the handler.
@@ -84,16 +95,20 @@ func isTrackedExecutorPod(obj client.Object) bool {
 type executorPodHandler struct {
 	clock    clock.WithTickerAndDelayedExecution
 	debounce time.Duration
+	maxWait  time.Duration
 
-	mu     sync.Mutex
-	timers map[types.NamespacedName]clock.Timer
+	mu          sync.Mutex
+	timers      map[types.NamespacedName]clock.Timer
+	burstStarts map[types.NamespacedName]time.Time
 }
 
 func newExecutorPodHandler() *executorPodHandler {
 	return &executorPodHandler{
-		clock:    clock.RealClock{},
-		debounce: executorPodDebounce,
-		timers:   make(map[types.NamespacedName]clock.Timer),
+		clock:       clock.RealClock{},
+		debounce:    executorPodDebounce,
+		maxWait:     executorPodMaxWait,
+		timers:      make(map[types.NamespacedName]clock.Timer),
+		burstStarts: make(map[types.NamespacedName]time.Time),
 	}
 }
 
@@ -115,7 +130,8 @@ func (h *executorPodHandler) Generic(context.Context, event.GenericEvent, workqu
 // schedule (re)starts the debounce timer for obj's owning SparkApplication. Repeated
 // calls for the same key within the debounce window keep pushing the enqueue out; the
 // reconcile.Request only reaches the queue once no further event arrives for that key
-// for a full debounce window.
+// for a full debounce window — unless the burst has already run for executorPodMaxWait,
+// in which case this flushes immediately instead of resetting again.
 func (h *executorPodHandler) schedule(obj client.Object, q workqueue.TypedRateLimitingInterface[reconcile.Request]) {
 	pod, ok := obj.(*corev1.Pod)
 	if !ok {
@@ -131,14 +147,25 @@ func (h *executorPodHandler) schedule(obj client.Object, q workqueue.TypedRateLi
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
+	now := h.clock.Now()
 	if t, ok := h.timers[key]; ok {
+		if now.Sub(h.burstStarts[key]) >= h.maxWait {
+			t.Stop()
+			delete(h.timers, key)
+			delete(h.burstStarts, key)
+			q.Add(req)
+			return
+		}
 		t.Reset(h.debounce)
 		return
 	}
+
+	h.burstStarts[key] = now
 	h.timers[key] = h.clock.AfterFunc(h.debounce, func() {
 		q.Add(req)
 		h.mu.Lock()
 		delete(h.timers, key)
+		delete(h.burstStarts, key)
 		h.mu.Unlock()
 	})
 }

@@ -79,6 +79,44 @@ func TestExecutorPodHandlerDebounce(t *testing.T) {
 	}
 }
 
+func TestExecutorPodHandlerFlushesOnContinuousChurn(t *testing.T) {
+	fakeClock := testingclock.NewFakeClock(time.Now())
+	h := newExecutorPodHandler()
+	h.clock = fakeClock
+
+	q := workqueue.NewTypedRateLimitingQueue(workqueue.DefaultTypedControllerRateLimiter[reconcile.Request]())
+	defer q.ShutDown()
+
+	// A continuous stream of events, each landing well inside the debounce window of
+	// the previous one, must not be able to push the enqueue out forever: once the
+	// burst has run for executorPodMaxWait, it must flush even though events keep
+	// arriving faster than the debounce window.
+	step := executorPodDebounce / 2
+	elapsed := time.Duration(0)
+	i := 0
+	for elapsed < executorPodMaxWait {
+		h.Update(context.Background(), event.UpdateEvent{
+			ObjectOld: trackedExecutorPod("e"), ObjectNew: trackedExecutorPod("e"),
+		}, q)
+		if got := q.Len(); got != 0 {
+			t.Fatalf("expected no reconcile enqueued while the burst is still within maxWait (elapsed=%s), queue length = %d", elapsed, got)
+		}
+		fakeClock.Step(step)
+		elapsed += step
+		i++
+	}
+
+	// This next event lands after the burst has been running for at least
+	// executorPodMaxWait: it must flush immediately instead of resetting again.
+	h.Update(context.Background(), event.UpdateEvent{
+		ObjectOld: trackedExecutorPod("e"), ObjectNew: trackedExecutorPod("e"),
+	}, q)
+
+	if got := q.Len(); got != 1 {
+		t.Fatalf("expected the continuous churn to force a flush after maxWait, queue length = %d", got)
+	}
+}
+
 func TestExecutorPodHandlerIgnoresUntrackedPods(t *testing.T) {
 	fakeClock := testingclock.NewFakeClock(time.Now())
 	h := newExecutorPodHandler()
