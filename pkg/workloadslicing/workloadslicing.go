@@ -20,6 +20,7 @@ package workloadslicing
 import (
 	"cmp"
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 
@@ -203,6 +204,12 @@ func EnsureWorkloadSlices(
 		// b. It's a scale-down event.
 		if !workload.HasQuotaReservation(wl) || ScaledDown(wlPodSetsCounts, jobPodSetsCounts) {
 			if err := updatePodSetCountsWithRetry(ctx, clnt, wl, jobPodSetsCounts); err != nil {
+				if errors.Is(err, errWorkloadAdmittedConcurrently) {
+					// Kueue's scheduler admitted this workload while we were updating it, at
+					// a count that no longer qualifies for an in-place patch. Fall through to
+					// create a new slice instead of desyncing spec from the admission record.
+					return nil, true, nil
+				}
 				return nil, true, fmt.Errorf("failed to update workload's pod sets counts: %w", err)
 			}
 			return wl, true, nil
@@ -232,6 +239,9 @@ func EnsureWorkloadSlices(
 
 		if !workload.HasQuotaReservation(selectedWorkload) || ScaledDown(selectedCounts, jobPodSetsCounts) {
 			if err := updatePodSetCountsWithRetry(ctx, clnt, selectedWorkload, jobPodSetsCounts); err != nil {
+				if errors.Is(err, errWorkloadAdmittedConcurrently) {
+					return nil, true, nil
+				}
 				return nil, true, fmt.Errorf("failed to update workload pod set counts: %w", err)
 			}
 			return selectedWorkload, true, nil
@@ -242,6 +252,14 @@ func EnsureWorkloadSlices(
 	}
 }
 
+// errWorkloadAdmittedConcurrently indicates that, between the caller's eligibility check and
+// this update landing, Kueue's own scheduler admitted the workload at a count that no longer
+// qualifies for an in-place patch (i.e. it is now a scale-up on an admitted workload). The
+// caller should create a new slice instead of forcing this update through, which would leave
+// spec.PodSets desynced from the frozen status.admission.podSetAssignments snapshot that drives
+// ClusterQueue usage accounting.
+var errWorkloadAdmittedConcurrently = errors.New("workload was admitted concurrently and no longer qualifies for an in-place slice update")
+
 // updatePodSetCountsWithRetry applies counts to wl's pod sets and updates it, retrying on
 // optimistic-lock conflicts by re-fetching wl and reapplying counts before each retry.
 // Without the retry, a caller whose upstream pod set counts change in quick succession
@@ -249,6 +267,11 @@ func EnsureWorkloadSlices(
 // have two back-to-back EnsureWorkloadSlices calls race on the same Workload's
 // ResourceVersion, turning a routine scale event into a hard error instead of converging on
 // the latest count.
+//
+// Before every attempt (including the first), it re-validates eligibility against the
+// current wl: if the workload has been admitted at a count that makes this no longer an
+// allowed in-place update, it returns errWorkloadAdmittedConcurrently rather than reapplying
+// the caller's target count blindly.
 func updatePodSetCountsWithRetry(ctx context.Context, clnt client.Client, wl *kueue.Workload, counts workload.PodSetsCounts) error {
 	key := client.ObjectKeyFromObject(wl)
 	first := true
@@ -259,6 +282,10 @@ func updatePodSetCountsWithRetry(ctx context.Context, clnt client.Client, wl *ku
 			}
 		}
 		first = false
+		currentCounts := workload.ExtractPodSetCountsFromWorkload(wl)
+		if workload.HasQuotaReservation(wl) && !ScaledDown(currentCounts, counts) {
+			return errWorkloadAdmittedConcurrently
+		}
 		workload.ApplyPodSetCounts(wl, counts)
 		return clnt.Update(ctx, wl)
 	})
