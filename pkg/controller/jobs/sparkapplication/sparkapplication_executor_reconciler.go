@@ -198,10 +198,6 @@ func (r *ExecutorInstancesReconciler) reconcileExecutorInstances(ctx context.Con
 			liveCount++
 		}
 	}
-	// spec.executor.instances has a kubebuilder Minimum=1 CRD validation; Dynamic
-	// Allocation can legitimately scale down to zero live executors between stages, so
-	// clamp the patched value to keep the update from being rejected by the API server.
-	liveCount = max(liveCount, 1)
 
 	current := ptr.Deref(sparkApp.Spec.Executor.Instances, 0)
 	if liveCount == current {
