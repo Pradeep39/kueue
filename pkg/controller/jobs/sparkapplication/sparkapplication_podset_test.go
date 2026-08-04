@@ -23,7 +23,32 @@ import (
 	sparkcommon "github.com/kubeflow/spark-operator/v2/pkg/common"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/utils/ptr"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+
+	utiltesting "sigs.k8s.io/kueue/pkg/util/testing"
+	sparkapplicationtesting "sigs.k8s.io/kueue/pkg/util/testingjobs/sparkapplication"
 )
+
+func executorPod(name string, phase corev1.PodPhase, deleting bool) *corev1.Pod {
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: "ns",
+			Labels: map[string]string{
+				sparkcommon.LabelSparkAppName: "app",
+				sparkcommon.LabelSparkRole:    sparkcommon.SparkRoleExecutor,
+			},
+		},
+		Status: corev1.PodStatus{Phase: phase},
+	}
+	if deleting {
+		now := metav1.Now()
+		pod.DeletionTimestamp = &now
+		pod.Finalizers = []string{"kueue.x-k8s.io/keep-around"}
+	}
+	return pod
+}
 
 func driverPod(containerName string) *corev1.Pod {
 	return &corev1.Pod{
@@ -174,5 +199,141 @@ func TestAddVolumes(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestIsVerifiedLiveExecutor(t *testing.T) {
+	tests := map[string]struct {
+		phase    corev1.PodPhase
+		deleting bool
+		want     bool
+	}{
+		"running":                           {phase: corev1.PodRunning, want: true},
+		"pending":                           {phase: corev1.PodPending, want: true},
+		"succeeded":                         {phase: corev1.PodSucceeded, want: false},
+		"failed":                            {phase: corev1.PodFailed, want: false},
+		"terminating but not yet terminal":  {phase: corev1.PodRunning, deleting: true, want: true},
+		"terminating and already succeeded": {phase: corev1.PodSucceeded, deleting: true, want: false},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			pod := executorPod("e", tc.phase, tc.deleting)
+			if got := isVerifiedLiveExecutor(pod); got != tc.want {
+				t.Errorf("isVerifiedLiveExecutor() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestLiveExecutorCount(t *testing.T) {
+	tests := map[string]struct {
+		app       *sparkv1beta2.SparkApplication
+		pods      []client.Object
+		nilClient bool
+		want      int32
+	}{
+		"dynamic allocation disabled uses the static instances field": {
+			app: sparkapplicationtesting.MakeSparkApplication("app", "ns").
+				ExecutorInstances(5).Obj(),
+			pods: []client.Object{executorPod("e1", corev1.PodRunning, false)},
+			want: 5,
+		},
+		"dynamic allocation enabled via structured spec, no pods yet falls back to minExecutors": {
+			app: func() *sparkv1beta2.SparkApplication {
+				app := sparkapplicationtesting.MakeSparkApplication("app", "ns").
+					DynamicAllocation(&sparkv1beta2.DynamicAllocation{Enabled: true, MinExecutors: ptr.To[int32](2)}).
+					Obj()
+				app.Spec.Executor.Instances = nil
+				return app
+			}(),
+			want: 2,
+		},
+		"dynamic allocation enabled via sparkConf, no pods yet falls back to initialExecutors": {
+			app: func() *sparkv1beta2.SparkApplication {
+				app := sparkapplicationtesting.MakeSparkApplication("app", "ns").Obj()
+				app.Spec.Executor.Instances = nil
+				app.Spec.SparkConf = map[string]string{
+					"spark.dynamicAllocation.enabled":          "true",
+					"spark.dynamicAllocation.initialExecutors": "4",
+				}
+				return app
+			}(),
+			want: 4,
+		},
+		"dynamic allocation enabled counts only non-terminal live pods": {
+			app: sparkapplicationtesting.MakeSparkApplication("app", "ns").
+				DynamicAllocation(&sparkv1beta2.DynamicAllocation{Enabled: true}).
+				Obj(),
+			pods: []client.Object{
+				executorPod("e1", corev1.PodRunning, false),
+				executorPod("e2", corev1.PodPending, false),
+				executorPod("e3", corev1.PodSucceeded, false),
+				executorPod("e4", corev1.PodFailed, false),
+				executorPod("e5", corev1.PodRunning, true), // terminating, still live
+			},
+			want: 3,
+		},
+		"dynamic allocation enabled, nil client falls back to initial estimate": {
+			app: sparkapplicationtesting.MakeSparkApplication("app", "ns").
+				ExecutorInstances(3).
+				DynamicAllocation(&sparkv1beta2.DynamicAllocation{Enabled: true}).
+				Obj(),
+			nilClient: true,
+			want:      3,
+		},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			app := fromObject(tc.app)
+
+			var c client.Client
+			if !tc.nilClient {
+				c = utiltesting.NewClientBuilder().WithObjects(tc.pods...).Build()
+			}
+
+			got, err := app.liveExecutorCount(t.Context(), c)
+			if err != nil {
+				t.Fatalf("liveExecutorCount() returned an unexpected error: %v", err)
+			}
+			if got != tc.want {
+				t.Errorf("liveExecutorCount() = %d, want %d", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestLiveExecutorCountCachedWithinReconcile(t *testing.T) {
+	app := fromObject(sparkapplicationtesting.MakeSparkApplication("app", "ns").
+		DynamicAllocation(&sparkv1beta2.DynamicAllocation{Enabled: true}).
+		Obj())
+
+	c := utiltesting.NewClientBuilder().WithObjects(
+		executorPod("e1", corev1.PodRunning, false),
+		executorPod("e2", corev1.PodRunning, false),
+	).Build()
+
+	first, err := app.liveExecutorCount(t.Context(), c)
+	if err != nil {
+		t.Fatalf("liveExecutorCount() returned an unexpected error: %v", err)
+	}
+	if first != 2 {
+		t.Fatalf("liveExecutorCount() = %d, want 2", first)
+	}
+
+	// Simulate Dynamic Allocation adding another executor Pod mid-reconcile: a
+	// second call against the same *SparkApplication instance must still return
+	// the cached value, not a freshly-observed (and inconsistent) count.
+	if err := c.Create(t.Context(), executorPod("e3", corev1.PodRunning, false)); err != nil {
+		t.Fatalf("failed to create pod: %v", err)
+	}
+
+	second, err := app.liveExecutorCount(t.Context(), c)
+	if err != nil {
+		t.Fatalf("liveExecutorCount() returned an unexpected error: %v", err)
+	}
+	if second != first {
+		t.Errorf("liveExecutorCount() second call = %d, want cached value %d", second, first)
 	}
 }

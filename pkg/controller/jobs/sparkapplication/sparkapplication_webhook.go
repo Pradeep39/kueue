@@ -115,7 +115,7 @@ func isAnElasticJob(sparkApp *sparkv1beta2.SparkApplication) bool {
 
 func (w *SparkApplicationWebhook) validateCreate(ctx context.Context, job *sparkv1beta2.SparkApplication) (field.ErrorList, error) {
 	var allErrors field.ErrorList
-	kueueJob := (*SparkApplication)(job)
+	kueueJob := fromObject(job)
 
 	if w.manageJobsWithoutQueueName || jobframework.QueueName(kueueJob) != "" {
 		spec := &job.Spec
