@@ -1002,6 +1002,63 @@ func TestEnsureWorkloadSlices(t *testing.T) {
 	}
 }
 
+func TestUpdatePodSetCountsWithRetry(t *testing.T) {
+	ctx, _ := utiltesting.ContextWithLog(t)
+
+	wl := utiltestingapi.MakeWorkload("wl", "ns").
+		ResourceVersion("1").
+		PodSets(*utiltestingapi.MakePodSet(kueue.DefaultPodSetName, 3).Request(corev1.ResourceCPU, "1").Obj()).
+		Obj()
+
+	var attempts int
+	clnt := utiltesting.NewClientBuilder().
+		WithObjects(wl).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Update: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.UpdateOption) error {
+				attempts++
+				if attempts == 1 {
+					// Simulate a second writer (e.g. another EnsureWorkloadSlices call
+					// racing on a Dynamic-Allocation-driven pod-count change) landing its
+					// update first, so this call's Update sees a stale ResourceVersion and
+					// gets a genuine optimistic-lock conflict from the fake client, exactly
+					// as a real API server would produce.
+					conflicting := &kueue.Workload{}
+					if err := c.Get(ctx, client.ObjectKeyFromObject(obj), conflicting); err != nil {
+						return err
+					}
+					conflicting.Labels = map[string]string{"raced-writer": "true"}
+					if err := c.Update(ctx, conflicting); err != nil {
+						return err
+					}
+				}
+				return c.Update(ctx, obj, opts...)
+			},
+		}).
+		Build()
+
+	got := wl.DeepCopy()
+	if err := updatePodSetCountsWithRetry(ctx, clnt, got, workload.PodSetsCounts{kueue.DefaultPodSetName: 1}); err != nil {
+		t.Fatalf("updatePodSetCountsWithRetry() returned an unexpected error: %v", err)
+	}
+	if attempts < 2 {
+		t.Fatalf("expected the conflict to force at least one retry, got %d Update call(s)", attempts)
+	}
+
+	gotWl := &kueue.Workload{}
+	if err := clnt.Get(ctx, client.ObjectKeyFromObject(wl), gotWl); err != nil {
+		t.Fatalf("Failed getting workload: %v", err)
+	}
+	wantCounts := workload.PodSetsCounts{kueue.DefaultPodSetName: 1}
+	if diff := cmp.Diff(wantCounts, workload.ExtractPodSetCountsFromWorkload(gotWl)); diff != "" {
+		t.Errorf("pod set counts after retry (-want,+got):\n%s", diff)
+	}
+	// The retried update must have carried forward the concurrent writer's change too,
+	// proving it re-fetched the latest object instead of blindly resubmitting the stale copy.
+	if gotWl.Labels["raced-writer"] != "true" {
+		t.Errorf("expected the retried update to preserve the concurrent writer's label, got labels: %v", gotWl.Labels)
+	}
+}
+
 func TestNormalizeActiveSlices(t *testing.T) {
 	now := time.Now()
 	fakeClock := testingclock.NewFakeClock(now)
