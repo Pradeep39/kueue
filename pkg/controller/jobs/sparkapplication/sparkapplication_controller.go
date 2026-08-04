@@ -31,6 +31,7 @@ import (
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	kueue "sigs.k8s.io/kueue/apis/kueue/v1beta2"
@@ -64,17 +65,39 @@ func init() {
 // +kubebuilder:rbac:groups=sparkoperator.k8s.io,resources=sparkapplications,verbs=get;list;watch;update;patch;delete
 
 func NewJob() jobframework.GenericJob {
-	return &SparkApplication{}
+	return &SparkApplication{SparkApplication: &sparkv1beta2.SparkApplication{}}
 }
 
-var NewReconciler = jobframework.NewGenericReconcilerFactory(NewJob)
+var NewReconciler = jobframework.NewGenericReconcilerFactory(NewJob,
+	func(b *builder.Builder, c client.Client) *builder.Builder {
+		if !features.Enabled(features.ElasticJobsViaWorkloadSlices) {
+			// Avoid registering a cluster-wide Pod watch when the feature this
+			// exists to support is off; liveExecutorCount() still runs on every
+			// normal reconcile, it just won't be prompted by Pod events alone.
+			return b
+		}
+		return b.Watches(&corev1.Pod{}, newExecutorPodHandler(), builder.WithPredicates(executorPodPredicate{}))
+	})
 
-type SparkApplication sparkv1beta2.SparkApplication
+// SparkApplication wraps the CRD type rather than aliasing it so a reconcile-scoped cache
+// field (cachedLiveExecutorCount) can live alongside it. NewJob() allocates a fresh
+// *SparkApplication per Reconcile() call, so the cache is automatically scoped to a single
+// reconcile pass and never leaks or goes stale across reconciles.
+type SparkApplication struct {
+	*sparkv1beta2.SparkApplication
+
+	// cachedLiveExecutorCount memoizes liveExecutorCount() for the lifetime of this
+	// wrapper. PodSets() is called multiple times per Reconcile() (equivalence checks,
+	// workload construction, ...); without caching, two calls could observe different
+	// live executor Pod counts if Dynamic Allocation churns pods between them, causing
+	// spurious "not equivalent" verdicts and self-inflicted workload-slice churn.
+	cachedLiveExecutorCount *int32
+}
 
 var _ jobframework.GenericJob = (*SparkApplication)(nil)
 
 func (j *SparkApplication) Object() client.Object {
-	return (*sparkv1beta2.SparkApplication)(j)
+	return j.SparkApplication
 }
 
 func (j *SparkApplication) IsSuspended() bool {
@@ -97,7 +120,7 @@ func (j *SparkApplication) PodLabelSelector() string {
 	return fmt.Sprintf("%s=%s", sparkcommon.LabelSparkAppName, j.Name)
 }
 
-func (j *SparkApplication) PodSets(ctx context.Context, _ client.Client) ([]kueue.PodSet, error) {
+func (j *SparkApplication) PodSets(ctx context.Context, c client.Client) ([]kueue.PodSet, error) {
 	// driver and executor
 	podSets := make([]kueue.PodSet, 2)
 
@@ -135,10 +158,14 @@ func (j *SparkApplication) PodSets(ctx context.Context, _ client.Client) ([]kueu
 	if err != nil {
 		return nil, err
 	}
+	executorCount, err := j.liveExecutorCount(ctx, c)
+	if err != nil {
+		return nil, err
+	}
 	podSets[1] = kueue.PodSet{
 		Name:     executorPodSetName,
 		Template: *executorPodTemplateSpec,
-		Count:    j.numInitialExecutors(),
+		Count:    executorCount,
 	}
 
 	if err := setTopologyRequestToPodSetIfEnabled(
@@ -308,7 +335,7 @@ func (j *SparkApplication) Finished(ctx context.Context) (message string, succes
 			j.Status.AppState.State == sparkv1beta2.ApplicationStateFailedSubmission
 }
 
-func (j *SparkApplication) PodsReady(ctx context.Context, _ client.Client) bool {
+func (j *SparkApplication) PodsReady(ctx context.Context, c client.Client) bool {
 	// Driver must be running.
 	if j.Status.AppState.State != sparkv1beta2.ApplicationStateRunning {
 		return false
@@ -317,7 +344,15 @@ func (j *SparkApplication) PodsReady(ctx context.Context, _ client.Client) bool 
 	// AppState.State alone goes to Running as soon as the driver starts even if
 	// executors are stuck (e.g. unschedulable), which would let the
 	// waitForPodsReady timeout never fire on heterogeneous resource shortages.
-	expected := int(ptr.Deref(j.Spec.Executor.Instances, 0))
+	//
+	// The expected count must agree with what PodSets() requested, or a
+	// Dynamic-Allocation-scaled-down application could report not-ready forever
+	// against a stale, higher expectation derived from spec.executor.instances.
+	executorCount, err := j.liveExecutorCount(ctx, c)
+	if err != nil {
+		return false
+	}
+	expected := int(executorCount)
 	if expected == 0 {
 		return true
 	}
@@ -347,5 +382,5 @@ func CanSupportIntegration(opts ...jobframework.Option) (bool, error) {
 }
 
 func fromObject(o runtime.Object) *SparkApplication {
-	return (*SparkApplication)(o.(*sparkv1beta2.SparkApplication))
+	return &SparkApplication{SparkApplication: o.(*sparkv1beta2.SparkApplication)}
 }

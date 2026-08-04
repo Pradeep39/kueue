@@ -237,7 +237,7 @@ func TestPodSets(t *testing.T) {
 
 			ctx, _ := utiltesting.ContextWithLog(t)
 
-			kSparkApp := (*SparkApplication)(tc.sparkApp)
+			kSparkApp := fromObject(tc.sparkApp)
 			got, err := kSparkApp.PodSets(ctx, nil)
 
 			if err != nil {
@@ -409,7 +409,7 @@ func TestRunWithPodsetsInfo(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			ctx, _ := utiltesting.ContextWithLog(t)
 
-			kSparkApp := (*SparkApplication)(tc.sparkApp)
+			kSparkApp := fromObject(tc.sparkApp)
 			err := kSparkApp.RunWithPodSetsInfo(ctx, nil, tc.podsetsInfo)
 			if tc.wantErr {
 				if err == nil {
@@ -607,7 +607,7 @@ func TestRestorePodSetsInfo(t *testing.T) {
 
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			kSparkApp := (*SparkApplication)(tc.sparkApp)
+			kSparkApp := fromObject(tc.sparkApp)
 			changed := kSparkApp.RestorePodSetsInfo(t.Context(), tc.podsetsInfo)
 			if diff := cmp.Diff(tc.wantChanged, changed); diff != "" {
 				t.Errorf("changed mismatch (-want,+got):\n%s", diff)
@@ -655,15 +655,8 @@ func TestReconciler(t *testing.T) {
 		return s
 	}
 
-	// Build a workload whose PodSets are derived from the same SparkApplication
-	// the framework will Reconcile, so EquivalentToWorkload returns true and
-	// the workload is treated as "matching" rather than recreated.
-	makeAdmittedWorkload := func(s *sparkappv1beta2.SparkApplication) *utiltestingapi.WorkloadWrapper {
-		t.Helper()
-		podSets, err := (*SparkApplication)(s).PodSets(t.Context(), nil)
-		if err != nil {
-			t.Fatalf("PodSets returned error during test setup: %v", err)
-		}
+	// Build a workload admitted with the given pod sets for the given SparkApplication.
+	makeAdmittedWorkloadFromPodSets := func(s *sparkappv1beta2.SparkApplication, podSets []kueue.PodSet) *utiltestingapi.WorkloadWrapper {
 		psas := make([]kueue.PodSetAssignment, 0, len(podSets))
 		for i := range podSets {
 			psas = append(psas, utiltestingapi.MakePodSetAssignment(podSets[i].Name).Count(podSets[i].Count).Obj())
@@ -679,15 +672,76 @@ func TestReconciler(t *testing.T) {
 			AdmittedAt(true, now)
 	}
 
+	// Build a workload whose PodSets are derived from the same SparkApplication
+	// the framework will Reconcile, so EquivalentToWorkload returns true and
+	// the workload is treated as "matching" rather than recreated.
+	makeAdmittedWorkload := func(s *sparkappv1beta2.SparkApplication) *utiltestingapi.WorkloadWrapper {
+		t.Helper()
+		podSets, err := fromObject(s).PodSets(t.Context(), nil)
+		if err != nil {
+			t.Fatalf("PodSets returned error during test setup: %v", err)
+		}
+		return makeAdmittedWorkloadFromPodSets(s, podSets)
+	}
+
 	baseWaitForPodsReadyConf := &configapi.WaitForPodsReady{}
 
 	// SparkApp variants used by the PodsReady cases.
 	sparkAppDriverRunningOnly := withDriverRunningOnly(withUID(testSparkApp.DeepCopy()), 2)
 	sparkAppAllExecutorsReady := withExecutorsRunning(withUID(testSparkApp.DeepCopy()), 2)
 
+	// sparkAppDALiveExecutors has Dynamic Allocation enabled and a stale
+	// spec.executor.instances (5) left over from before Dynamic Allocation
+	// scaled the pool down to the 2 live executor Pods below — PodSets() and
+	// PodsReady() must both size themselves off the live Pod count, not the
+	// stale spec field.
+	sparkAppDALiveExecutors := withUID(testSparkApp.DeepCopy())
+	sparkAppDALiveExecutors.Spec.Executor.Instances = new(int32(5))
+	sparkAppDALiveExecutors.Spec.DynamicAllocation = &sparkappv1beta2.DynamicAllocation{Enabled: true}
+	sparkAppDALiveExecutors.Status.AppState.State = sparkappv1beta2.ApplicationStateRunning
+	sparkAppDALiveExecutors.Status.ExecutorState = map[string]sparkappv1beta2.ExecutorState{
+		fmt.Sprintf("%s-exec-1", sparkAppDALiveExecutors.Name): sparkappv1beta2.ExecutorStateRunning,
+		fmt.Sprintf("%s-exec-2", sparkAppDALiveExecutors.Name): sparkappv1beta2.ExecutorStateRunning,
+	}
+
+	newLiveExecutorPod := func(name string) *corev1.Pod {
+		return &corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      name,
+				Namespace: testNamespace.Name,
+				Labels: map[string]string{
+					sparkcommon.LabelSparkAppName: sparkAppDALiveExecutors.Name,
+					sparkcommon.LabelSparkRole:    sparkcommon.SparkRoleExecutor,
+				},
+			},
+			Status: corev1.PodStatus{Phase: corev1.PodRunning},
+		}
+	}
+	sparkAppDALiveExecutorPods := []*corev1.Pod{
+		newLiveExecutorPod(sparkAppDALiveExecutors.Name + "-exec-1"),
+		newLiveExecutorPod(sparkAppDALiveExecutors.Name + "-exec-2"),
+	}
+
+	// The admitted workload reflects the live Pod count (2), not the stale
+	// spec.executor.instances (5): built directly from PodSet templates rather
+	// than via PodSets(ctx, nil), since a nil client can't see the live Pods.
+	daDriverTemplate, err := fromObject(sparkAppDALiveExecutors).buildDriverPodTemplateSpec()
+	if err != nil {
+		t.Fatalf("failed building driver template for test setup: %v", err)
+	}
+	daExecutorTemplate, err := fromObject(sparkAppDALiveExecutors).buildExecutorPodTemplateSpec()
+	if err != nil {
+		t.Fatalf("failed building executor template for test setup: %v", err)
+	}
+	sparkAppDALivePodSets := []kueue.PodSet{
+		{Name: driverPodSetName, Template: *daDriverTemplate, Count: 1},
+		{Name: executorPodSetName, Template: *daExecutorTemplate, Count: 2},
+	}
+
 	cases := map[string]struct {
 		reconcilerOptions []jobframework.Option
 		sparkApp          *sparkappv1beta2.SparkApplication
+		executorPods      []*corev1.Pod
 		workloads         []kueue.Workload
 		wantWorkloads     []kueue.Workload
 	}{
@@ -748,6 +802,28 @@ func TestReconciler(t *testing.T) {
 					Obj(),
 			},
 		},
+		"PodsReady under Dynamic Allocation sizes off the live executor Pod count, not stale spec.executor.instances": {
+			reconcilerOptions: []jobframework.Option{
+				jobframework.WithManageJobsWithoutQueueName(true),
+				jobframework.WithManagedJobsNamespaceSelector(labels.Everything()),
+				jobframework.WithWaitForPodsReady(baseWaitForPodsReadyConf),
+			},
+			sparkApp:     sparkAppDALiveExecutors,
+			executorPods: sparkAppDALiveExecutorPods,
+			workloads: []kueue.Workload{
+				*makeAdmittedWorkloadFromPodSets(sparkAppDALiveExecutors, sparkAppDALivePodSets).Obj(),
+			},
+			wantWorkloads: []kueue.Workload{
+				*makeAdmittedWorkloadFromPodSets(sparkAppDALiveExecutors, sparkAppDALivePodSets).
+					Condition(metav1.Condition{
+						Type:    kueue.WorkloadPodsReady,
+						Status:  metav1.ConditionTrue,
+						Reason:  kueue.WorkloadStarted,
+						Message: "All pods reached readiness and the workload is running",
+					}).
+					Obj(),
+			},
+		},
 	}
 
 	for name, tc := range cases {
@@ -756,8 +832,12 @@ func TestReconciler(t *testing.T) {
 
 			clientBuilder := utiltesting.NewClientBuilder(sparkappv1beta2.AddToScheme).
 				WithInterceptorFuncs(interceptor.Funcs{SubResourcePatch: utiltesting.TreatSSAAsStrategicMerge})
+			objs := []client.Object{tc.sparkApp, testNamespace}
+			for _, pod := range tc.executorPods {
+				objs = append(objs, pod)
+			}
 			kClient := clientBuilder.
-				WithObjects(tc.sparkApp, testNamespace).
+				WithObjects(objs...).
 				WithStatusSubresource(&kueue.Workload{}).
 				Build()
 			// Pre-existing workloads must be created via the client (not WithObjects)
