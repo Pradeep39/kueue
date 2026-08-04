@@ -154,15 +154,6 @@ func (w *SparkApplicationWrapper) DynamicAllocation(dynamicAllocation *sparkappv
 	return w
 }
 
-// SparkConf sets an entry in the raw Spark configuration map.
-func (w *SparkApplicationWrapper) SparkConf(key, value string) *SparkApplicationWrapper {
-	if w.Spec.SparkConf == nil {
-		w.Spec.SparkConf = make(map[string]string)
-	}
-	w.Spec.SparkConf[key] = value
-	return w
-}
-
 // DriverServiceAccount sets the driver service account.
 func (w *SparkApplicationWrapper) DriverServiceAccount(sa string) *SparkApplicationWrapper {
 	w.Spec.Driver.ServiceAccount = new(sa)
