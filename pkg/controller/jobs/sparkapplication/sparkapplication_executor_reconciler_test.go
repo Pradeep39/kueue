@@ -89,6 +89,14 @@ func TestExecutorInstancesReconciler(t *testing.T) {
 			},
 			wantInstances: ptr.To[int32](2),
 		},
+		"scale down to zero live executors: clamped to 1 since spec.executor.instances requires >= 1": {
+			sparkApp: elasticDynamicAllocationSparkApp("app", "ns").ExecutorInstances(3).Obj(),
+			pods: []*corev1.Pod{
+				makeExecutorPod("exec-1", "ns", "app").StatusPhase(corev1.PodSucceeded).Obj(),
+				makeExecutorPod("exec-2", "ns", "app").StatusPhase(corev1.PodSucceeded).Obj(),
+			},
+			wantInstances: ptr.To[int32](1),
+		},
 		"no-op: live count already matches spec.executor.instances": {
 			sparkApp: elasticDynamicAllocationSparkApp("app", "ns").ExecutorInstances(2).Obj(),
 			pods: []*corev1.Pod{
