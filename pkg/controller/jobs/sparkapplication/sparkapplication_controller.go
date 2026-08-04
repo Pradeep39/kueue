@@ -51,14 +51,13 @@ const (
 
 func init() {
 	utilruntime.Must(jobframework.RegisterIntegration(FrameworkName, jobframework.IntegrationCallbacks{
-		SetupIndexes:             SetupIndexes,
-		NewJob:                   NewJob,
-		NewReconciler:            NewReconciler,
-		NewAdditionalReconcilers: []jobframework.ReconcilerFactory{NewExecutorInstancesReconciler},
-		SetupWebhook:             SetupWebhook,
-		JobType:                  &sparkv1beta2.SparkApplication{},
-		AddToScheme:              sparkv1beta2.AddToScheme,
-		CanSupportIntegration:    CanSupportIntegration,
+		SetupIndexes:          SetupIndexes,
+		NewJob:                NewJob,
+		NewReconciler:         NewReconciler,
+		SetupWebhook:          SetupWebhook,
+		JobType:               &sparkv1beta2.SparkApplication{},
+		AddToScheme:           sparkv1beta2.AddToScheme,
+		CanSupportIntegration: CanSupportIntegration,
 	}))
 }
 
