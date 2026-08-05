@@ -20,12 +20,14 @@ package workloadslicing
 import (
 	"cmp"
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/client-go/util/retry"
 	"k8s.io/klog/v2"
 	"k8s.io/utils/clock"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -201,8 +203,13 @@ func EnsureWorkloadSlices(
 		// a. It hasn't been admitted (no quota reserved), or
 		// b. It's a scale-down event.
 		if !workload.HasQuotaReservation(wl) || ScaledDown(wlPodSetsCounts, jobPodSetsCounts) {
-			workload.ApplyPodSetCounts(wl, jobPodSetsCounts)
-			if err := clnt.Update(ctx, wl); err != nil {
+			if err := updatePodSetCountsWithRetry(ctx, clnt, wl, jobPodSetsCounts); err != nil {
+				if errors.Is(err, errWorkloadAdmittedConcurrently) {
+					// Kueue's scheduler admitted this workload while we were updating it, at
+					// a count that no longer qualifies for an in-place patch. Fall through to
+					// create a new slice instead of desyncing spec from the admission record.
+					return nil, true, nil
+				}
 				return nil, true, fmt.Errorf("failed to update workload's pod sets counts: %w", err)
 			}
 			return wl, true, nil
@@ -212,7 +219,7 @@ func EnsureWorkloadSlices(
 		return nil, true, nil
 
 	default:
-		selectedWorkload, err := normalizeActiveSlices(ctx, clnt, clk, workloads)
+		selectedWorkload, err := NormalizeActiveSlices(ctx, clnt, clk, workloads)
 		if err != nil {
 			return nil, true, err
 		}
@@ -231,8 +238,10 @@ func EnsureWorkloadSlices(
 		}
 
 		if !workload.HasQuotaReservation(selectedWorkload) || ScaledDown(selectedCounts, jobPodSetsCounts) {
-			workload.ApplyPodSetCounts(selectedWorkload, jobPodSetsCounts)
-			if err := clnt.Update(ctx, selectedWorkload); err != nil {
+			if err := updatePodSetCountsWithRetry(ctx, clnt, selectedWorkload, jobPodSetsCounts); err != nil {
+				if errors.Is(err, errWorkloadAdmittedConcurrently) {
+					return nil, true, nil
+				}
 				return nil, true, fmt.Errorf("failed to update workload pod set counts: %w", err)
 			}
 			return selectedWorkload, true, nil
@@ -243,13 +252,52 @@ func EnsureWorkloadSlices(
 	}
 }
 
-// normalizeActiveSlices enforces the workload slice invariant:
+// errWorkloadAdmittedConcurrently indicates that, between the caller's eligibility check and
+// this update landing, Kueue's own scheduler admitted the workload at a count that no longer
+// qualifies for an in-place patch (i.e. it is now a scale-up on an admitted workload). The
+// caller should create a new slice instead of forcing this update through, which would leave
+// spec.PodSets desynced from the frozen status.admission.podSetAssignments snapshot that drives
+// ClusterQueue usage accounting.
+var errWorkloadAdmittedConcurrently = errors.New("workload was admitted concurrently and no longer qualifies for an in-place slice update")
+
+// updatePodSetCountsWithRetry applies counts to wl's pod sets and updates it, retrying on
+// optimistic-lock conflicts by re-fetching wl and reapplying counts before each retry.
+// Without the retry, a caller whose upstream pod set counts change in quick succession
+// (e.g. Dynamic Allocation scaling an executor pool up and down within milliseconds) can
+// have two back-to-back EnsureWorkloadSlices calls race on the same Workload's
+// ResourceVersion, turning a routine scale event into a hard error instead of converging on
+// the latest count.
+//
+// Before every attempt (including the first), it re-validates eligibility against the
+// current wl: if the workload has been admitted at a count that makes this no longer an
+// allowed in-place update, it returns errWorkloadAdmittedConcurrently rather than reapplying
+// the caller's target count blindly.
+func updatePodSetCountsWithRetry(ctx context.Context, clnt client.Client, wl *kueue.Workload, counts workload.PodSetsCounts) error {
+	key := client.ObjectKeyFromObject(wl)
+	first := true
+	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		if !first {
+			if err := clnt.Get(ctx, key, wl); err != nil {
+				return err
+			}
+		}
+		first = false
+		currentCounts := workload.ExtractPodSetCountsFromWorkload(wl)
+		if workload.HasQuotaReservation(wl) && !ScaledDown(currentCounts, counts) {
+			return errWorkloadAdmittedConcurrently
+		}
+		workload.ApplyPodSetCounts(wl, counts)
+		return clnt.Update(ctx, wl)
+	})
+}
+
+// NormalizeActiveSlices enforces the workload slice invariant:
 //   - One non-evicted admitted workload (latestWithQuotaReservation)
 //   - At most one non-evicted pending replacement that directly replaces it
 //   - When no non-evicted admitted workload exists, the newest non-evicted
 //     workload is kept
 //   - Evicted workloads are always finished (they hold quota that must be released)
-func normalizeActiveSlices(
+func NormalizeActiveSlices(
 	ctx context.Context,
 	clnt client.Client,
 	clk clock.Clock,
