@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+	"strconv"
 
 	sparkv1beta2 "github.com/kubeflow/spark-operator/v2/api/v1beta2"
 	sparkcommon "github.com/kubeflow/spark-operator/v2/pkg/common"
@@ -95,6 +96,7 @@ type SparkApplication struct {
 }
 
 var _ jobframework.GenericJob = (*SparkApplication)(nil)
+var _ jobframework.ElasticWorkloadNameProvider = (*SparkApplication)(nil)
 
 func (j *SparkApplication) Object() client.Object {
 	return j.SparkApplication
@@ -118,6 +120,26 @@ func (j *SparkApplication) GVK() schema.GroupVersionKind {
 
 func (j *SparkApplication) PodLabelSelector() string {
 	return fmt.Sprintf("%s=%s", sparkcommon.LabelSparkAppName, j.Name)
+}
+
+// GetWorkloadNameExtraPart implements jobframework.ElasticWorkloadNameProvider.
+//
+// The default extra part newWorkloadName() would otherwise fall back to is
+// object.GetGeneration(), which only changes when SparkApplication.Spec changes.
+// Dynamic Allocation scales executors by creating/deleting live Pods directly
+// against the API server without ever touching Spec (the whole point of
+// liveExecutorCount() is to avoid that, since any Spec write makes the Spark
+// Operator kill and resubmit the running app) — so generation alone stays frozen
+// across every scale-up after the first, causing every subsequent new workload
+// slice to hash to the same name as the one already admitted and collide on
+// creation. Folding in the live executor count, which does change per slice,
+// makes each scale-up produce a distinct name.
+func (j *SparkApplication) GetWorkloadNameExtraPart() string {
+	extra := strconv.FormatInt(j.GetGeneration(), 10)
+	if j.cachedLiveExecutorCount != nil {
+		extra += "_" + strconv.FormatInt(int64(*j.cachedLiveExecutorCount), 10)
+	}
+	return extra
 }
 
 func (j *SparkApplication) PodSets(ctx context.Context, c client.Client) ([]kueue.PodSet, error) {
@@ -305,10 +327,6 @@ func (j *SparkApplication) RestorePodSetsInfo(ctx context.Context, podSetsInfo [
 		if !slices.Equal(sparkPodSpec.Template.Spec.SchedulingGates, podSetInfo.SchedulingGates) {
 			sparkPodSpec.Template.Spec.SchedulingGates = slices.Clone(podSetInfo.SchedulingGates)
 			changed = true
-		}
-
-		if role == sparkcommon.SparkRoleExecutor {
-			j.Spec.Executor.Instances = new(podSetInfo.Count)
 		}
 
 		return changed

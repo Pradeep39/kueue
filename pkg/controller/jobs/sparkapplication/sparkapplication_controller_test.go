@@ -251,6 +251,36 @@ func TestPodSets(t *testing.T) {
 	}
 }
 
+func TestGetWorkloadNameExtraPart(t *testing.T) {
+	sparkApp := sparkapplicationtesting.MakeSparkApplication("sparkapp", "ns").Obj()
+	sparkApp.Generation = 1
+
+	j := fromObject(sparkApp)
+
+	// Before liveExecutorCount() has ever run (cachedLiveExecutorCount is nil, e.g. a
+	// job type that hasn't implemented PodSets()-driven caching yet), the extra part
+	// falls back to the plain generation, matching newWorkloadName()'s default for job
+	// types that don't implement ElasticWorkloadNameProvider at all.
+	if got, want := j.GetWorkloadNameExtraPart(), "1"; got != want {
+		t.Errorf("GetWorkloadNameExtraPart() with no cached count = %q, want %q", got, want)
+	}
+
+	// Two scale-up events on the same generation (Dynamic Allocation never bumps
+	// generation, since it never writes to Spec) must still produce distinct extra
+	// parts, or newWorkloadName() will hash the same name for both slices and the
+	// second slice's Create will collide with the first, already-admitted one.
+	j.cachedLiveExecutorCount = new(int32(3))
+	firstSliceExtra := j.GetWorkloadNameExtraPart()
+
+	j2 := fromObject(sparkApp)
+	j2.cachedLiveExecutorCount = new(int32(5))
+	secondSliceExtra := j2.GetWorkloadNameExtraPart()
+
+	if firstSliceExtra == secondSliceExtra {
+		t.Errorf("GetWorkloadNameExtraPart() = %q for both a 3-executor and a 5-executor slice on the same generation, want distinct values", firstSliceExtra)
+	}
+}
+
 func TestRunWithPodsetsInfo(t *testing.T) {
 	toleration := corev1.Toleration{
 		Key:      "t1k",
@@ -486,7 +516,6 @@ func TestRestorePodSetsInfo(t *testing.T) {
 						},
 					},
 				}).
-				ExecutorInstances(3).
 				Obj(),
 			wantChanged: true,
 		},
@@ -586,7 +615,6 @@ func TestRestorePodSetsInfo(t *testing.T) {
 						},
 					},
 				}).
-				ExecutorInstances(3).
 				Obj(),
 			wantChanged: true,
 		},
@@ -602,6 +630,34 @@ func TestRestorePodSetsInfo(t *testing.T) {
 			},
 			wantSparkApp: testSparkApp.DeepCopy(),
 			wantChanged:  false,
+		},
+		"should never write spec.executor.instances, even when restoring a zero count from a scaled-down Dynamic Allocation slice": {
+			sparkApp: testSparkApp.DeepCopy(),
+			podsetsInfo: []podset.PodSetInfo{
+				{Name: "driver"},
+				{Name: "executor", Count: 0},
+			},
+			// spec.executor.instances is CRD-validated Minimum=1; a live count of 0 must
+			// never be written back onto the SparkApplication, only ever consumed by
+			// liveExecutorCount() via the Workload's PodSet. testSparkApp's default
+			// Instances(1) must survive untouched.
+			wantSparkApp: testSparkApp.Clone().
+				DriverTemplate(&corev1.PodTemplateSpec{
+					Spec: corev1.PodSpec{
+						Containers: []corev1.Container{
+							{Name: sparkcommon.SparkDriverContainerName},
+						},
+					},
+				}).
+				ExecutorTemplate(&corev1.PodTemplateSpec{
+					Spec: corev1.PodSpec{
+						Containers: []corev1.Container{
+							{Name: sparkcommon.Spark3DefaultExecutorContainerName},
+						},
+					},
+				}).
+				Obj(),
+			wantChanged: false,
 		},
 	}
 
