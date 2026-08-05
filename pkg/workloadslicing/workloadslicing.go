@@ -219,7 +219,7 @@ func EnsureWorkloadSlices(
 		return nil, true, nil
 
 	default:
-		selectedWorkload, err := normalizeActiveSlices(ctx, clnt, clk, workloads)
+		selectedWorkload, err := NormalizeActiveSlices(ctx, clnt, clk, workloads)
 		if err != nil {
 			return nil, true, err
 		}
@@ -291,13 +291,13 @@ func updatePodSetCountsWithRetry(ctx context.Context, clnt client.Client, wl *ku
 	})
 }
 
-// normalizeActiveSlices enforces the workload slice invariant:
+// NormalizeActiveSlices enforces the workload slice invariant:
 //   - One non-evicted admitted workload (latestWithQuotaReservation)
 //   - At most one non-evicted pending replacement that directly replaces it
 //   - When no non-evicted admitted workload exists, the newest non-evicted
 //     workload is kept
 //   - Evicted workloads are always finished (they hold quota that must be released)
-func normalizeActiveSlices(
+func NormalizeActiveSlices(
 	ctx context.Context,
 	clnt client.Client,
 	clk clock.Clock,

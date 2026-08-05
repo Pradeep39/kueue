@@ -1269,16 +1269,16 @@ func TestNormalizeActiveSlices(t *testing.T) {
 				WithObjects(objs...).
 				Build()
 
-			survivor, err := normalizeActiveSlices(ctx, clnt, fakeClock, tc.workloads)
+			survivor, err := NormalizeActiveSlices(ctx, clnt, fakeClock, tc.workloads)
 			if (err != nil) != tc.want.error {
-				t.Fatalf("normalizeActiveSlices() error = %v, wantErr %v", err, tc.want.error)
+				t.Fatalf("NormalizeActiveSlices() error = %v, wantErr %v", err, tc.want.error)
 			}
 			gotName := ""
 			if survivor != nil {
 				gotName = survivor.Name
 			}
 			if gotName != tc.want.survivor {
-				t.Errorf("normalizeActiveSlices() survivor = %q, want %q", gotName, tc.want.survivor)
+				t.Errorf("NormalizeActiveSlices() survivor = %q, want %q", gotName, tc.want.survivor)
 			}
 
 			for i := range tc.workloads {
