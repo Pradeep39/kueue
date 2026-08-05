@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+	"strconv"
 
 	sparkv1beta2 "github.com/kubeflow/spark-operator/v2/api/v1beta2"
 	sparkcommon "github.com/kubeflow/spark-operator/v2/pkg/common"
@@ -30,6 +31,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	kueue "sigs.k8s.io/kueue/apis/kueue/v1beta2"
@@ -63,17 +65,45 @@ func RegisterIntegration(m *jobframework.IntegrationManager) error {
 // +kubebuilder:rbac:groups=sparkoperator.k8s.io,resources=sparkapplications,verbs=get;list;watch;update;patch;delete
 
 func NewJob() jobframework.GenericJob {
-	return &SparkApplication{}
+	return &SparkApplication{SparkApplication: &sparkv1beta2.SparkApplication{}}
 }
 
-var NewReconciler = jobframework.NewGenericReconcilerFactory(NewJob)
+var NewReconciler = jobframework.NewGenericReconcilerFactory(NewJob,
+	func(b *builder.Builder, c client.Client) *builder.Builder {
+		if !features.Enabled(features.ElasticJobsViaWorkloadSlices) {
+			// Avoid registering a cluster-wide Pod watch when the feature this
+			// exists to support is off; liveExecutorCount() still runs on every
+			// normal reconcile, it just won't be prompted by Pod events alone.
+			return b
+		}
+		return b.Watches(&corev1.Pod{}, newExecutorPodHandler(), builder.WithPredicates(executorPodPredicate{}))
+	})
 
-type SparkApplication sparkv1beta2.SparkApplication
+// SparkApplication wraps the CRD type rather than aliasing it so reconcile-scoped cache
+// fields (cachedLiveExecutorCount, cachedWorkloadSequenceNumber) can live alongside it.
+// NewJob() allocates a fresh *SparkApplication per Reconcile() call, so the cache is
+// automatically scoped to a single reconcile pass and never leaks or goes stale across
+// reconciles.
+type SparkApplication struct {
+	*sparkv1beta2.SparkApplication
+
+	// cachedLiveExecutorCount memoizes liveExecutorCount() for the lifetime of this
+	// wrapper. PodSets() is called multiple times per Reconcile() (equivalence checks,
+	// workload construction, ...); without caching, two calls could observe different
+	// live executor Pod counts if Dynamic Allocation churns pods between them, causing
+	// spurious "not equivalent" verdicts and self-inflicted workload-slice churn.
+	cachedLiveExecutorCount *int32
+
+	// cachedWorkloadSequenceNumber memoizes workloadSequenceNumber() for the lifetime of
+	// this wrapper. See GetWorkloadNameExtraPart for why this exists.
+	cachedWorkloadSequenceNumber *int32
+}
 
 var _ jobframework.GenericJob = (*SparkApplication)(nil)
+var _ jobframework.ElasticWorkloadNameProvider = (*SparkApplication)(nil)
 
 func (j *SparkApplication) Object() client.Object {
-	return (*sparkv1beta2.SparkApplication)(j)
+	return j.SparkApplication
 }
 
 func (j *SparkApplication) IsSuspended() bool {
@@ -96,7 +126,35 @@ func (j *SparkApplication) PodLabelSelector() string {
 	return fmt.Sprintf("%s=%s", sparkcommon.LabelSparkAppName, j.Name)
 }
 
-func (j *SparkApplication) PodSets(ctx context.Context, _ client.Client) ([]kueue.PodSet, error) {
+// GetWorkloadNameExtraPart implements jobframework.ElasticWorkloadNameProvider.
+//
+// The default extra part newWorkloadName() would otherwise fall back to is
+// object.GetGeneration(), which only changes when SparkApplication.Spec changes.
+// Dynamic Allocation scales executors by creating/deleting live Pods directly
+// against the API server without ever touching Spec (the whole point of
+// liveExecutorCount() is to avoid that, since any Spec write makes the Spark
+// Operator kill and resubmit the running app) — so generation alone stays frozen
+// across every scale-up after the first.
+//
+// Folding in the live executor count (as this used to do) isn't enough either:
+// once a superseded slice is Finished it's never deleted (absent a configured
+// retention policy), so its deterministic name persists in etcd forever. Since
+// real Dynamic Allocation workloads oscillate within a narrow band of executor
+// counts, a later scale-up that revisits a previously-used count recomputes the
+// exact same hash and its Create collides with the old, dead object — a
+// permanent, self-reinforcing failure once every count in the band has been
+// "used up" once. workloadSequenceNumber(), the count of every Workload ever
+// owned by this job (Finished or not), only grows, so a name is never reused for
+// the lifetime of the SparkApplication.
+func (j *SparkApplication) GetWorkloadNameExtraPart() string {
+	extra := strconv.FormatInt(j.GetGeneration(), 10)
+	if j.cachedWorkloadSequenceNumber != nil {
+		extra += "_" + strconv.FormatInt(int64(*j.cachedWorkloadSequenceNumber), 10)
+	}
+	return extra
+}
+
+func (j *SparkApplication) PodSets(ctx context.Context, c client.Client) ([]kueue.PodSet, error) {
 	// driver and executor
 	podSets := make([]kueue.PodSet, 2)
 
@@ -134,16 +192,29 @@ func (j *SparkApplication) PodSets(ctx context.Context, _ client.Client) ([]kueu
 	if err != nil {
 		return nil, err
 	}
+	executorCount, err := j.liveExecutorCount(ctx, c)
+	if err != nil {
+		return nil, err
+	}
 	podSets[1] = kueue.PodSet{
 		Name:     executorPodSetName,
 		Template: *executorPodTemplateSpec,
-		Count:    j.numInitialExecutors(),
+		Count:    executorCount,
 	}
 
 	if err := setTopologyRequestToPodSetIfEnabled(
 		&podSets[1], executorPodTemplateSpec,
 	); err != nil {
 		return nil, err
+	}
+
+	// Pre-compute and cache the sequence number GetWorkloadNameExtraPart() needs, since
+	// that method has no client of its own to List() with. Only needed for elastic jobs,
+	// where the generated workload name must never be reused (see GetWorkloadNameExtraPart).
+	if jobframework.WorkloadSliceEnabled(j) {
+		if _, err := j.workloadSequenceNumber(ctx, c); err != nil {
+			return nil, err
+		}
 	}
 
 	return podSets, nil
@@ -279,10 +350,6 @@ func (j *SparkApplication) RestorePodSetsInfo(ctx context.Context, podSetsInfo [
 			changed = true
 		}
 
-		if role == sparkcommon.SparkRoleExecutor {
-			j.Spec.Executor.Instances = new(podSetInfo.Count)
-		}
-
 		return changed
 	}
 
@@ -307,7 +374,7 @@ func (j *SparkApplication) Finished(ctx context.Context) (message string, succes
 			j.Status.AppState.State == sparkv1beta2.ApplicationStateFailedSubmission
 }
 
-func (j *SparkApplication) PodsReady(ctx context.Context, _ client.Client) bool {
+func (j *SparkApplication) PodsReady(ctx context.Context, c client.Client) bool {
 	// Driver must be running.
 	if j.Status.AppState.State != sparkv1beta2.ApplicationStateRunning {
 		return false
@@ -316,7 +383,15 @@ func (j *SparkApplication) PodsReady(ctx context.Context, _ client.Client) bool 
 	// AppState.State alone goes to Running as soon as the driver starts even if
 	// executors are stuck (e.g. unschedulable), which would let the
 	// waitForPodsReady timeout never fire on heterogeneous resource shortages.
-	expected := int(ptr.Deref(j.Spec.Executor.Instances, 0))
+	//
+	// The expected count must agree with what PodSets() requested, or a
+	// Dynamic-Allocation-scaled-down application could report not-ready forever
+	// against a stale, higher expectation derived from spec.executor.instances.
+	executorCount, err := j.liveExecutorCount(ctx, c)
+	if err != nil {
+		return false
+	}
+	expected := int(executorCount)
 	if expected == 0 {
 		return true
 	}
@@ -346,5 +421,5 @@ func CanSupportIntegration(opts ...jobframework.Option) (bool, error) {
 }
 
 func fromObject(o runtime.Object) *SparkApplication {
-	return (*SparkApplication)(o.(*sparkv1beta2.SparkApplication))
+	return &SparkApplication{SparkApplication: o.(*sparkv1beta2.SparkApplication)}
 }
