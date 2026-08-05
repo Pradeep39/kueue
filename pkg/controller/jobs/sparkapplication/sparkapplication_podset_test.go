@@ -26,7 +26,9 @@ import (
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	kueue "sigs.k8s.io/kueue/apis/kueue/v1beta2"
 	utiltesting "sigs.k8s.io/kueue/pkg/util/testing"
+	utiltestingapi "sigs.k8s.io/kueue/pkg/util/testing/v1beta2"
 	sparkapplicationtesting "sigs.k8s.io/kueue/pkg/util/testingjobs/sparkapplication"
 )
 
@@ -335,5 +337,106 @@ func TestLiveExecutorCountCachedWithinReconcile(t *testing.T) {
 	}
 	if second != first {
 		t.Errorf("liveExecutorCount() second call = %d, want cached value %d", second, first)
+	}
+}
+
+func TestWorkloadSequenceNumber(t *testing.T) {
+	app := sparkapplicationtesting.MakeSparkApplication("app", "ns").Obj()
+	app.UID = "app-uid"
+
+	newWorkload := func(name string, finished bool) *kueue.Workload {
+		w := utiltestingapi.MakeWorkload(name, "ns").
+			ControllerReference(gvk, app.Name, string(app.UID))
+		if finished {
+			w = w.Condition(metav1.Condition{
+				Type:   kueue.WorkloadFinished,
+				Status: metav1.ConditionTrue,
+				Reason: "Succeeded",
+			})
+		}
+		return w.Obj()
+	}
+
+	tests := map[string]struct {
+		workloads []client.Object
+		want      int32
+	}{
+		"no workloads yet": {
+			want: 0,
+		},
+		"one not-finished workload": {
+			workloads: []client.Object{newWorkload("wl1", false)},
+			want:      1,
+		},
+		"finished workloads still count, since their names are never reused": {
+			workloads: []client.Object{
+				newWorkload("wl1", true),
+				newWorkload("wl2", true),
+				newWorkload("wl3", false),
+			},
+			want: 3,
+		},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			clientBuilder := utiltesting.NewClientBuilder().WithObjects(tc.workloads...)
+			c := clientBuilder.Build()
+			idx := utiltesting.AsIndexer(clientBuilder)
+			if err := SetupIndexes(t.Context(), idx); err != nil {
+				t.Fatalf("failed to setup indexes: %v", err)
+			}
+
+			j := fromObject(app)
+			got, err := j.workloadSequenceNumber(t.Context(), c)
+			if err != nil {
+				t.Fatalf("workloadSequenceNumber() returned an unexpected error: %v", err)
+			}
+			if got != tc.want {
+				t.Errorf("workloadSequenceNumber() = %d, want %d", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestWorkloadSequenceNumberCachedWithinReconcile(t *testing.T) {
+	app := sparkapplicationtesting.MakeSparkApplication("app", "ns").Obj()
+	app.UID = "app-uid"
+
+	clientBuilder := utiltesting.NewClientBuilder().WithObjects(
+		utiltestingapi.MakeWorkload("wl1", "ns").
+			ControllerReference(gvk, app.Name, string(app.UID)).
+			Obj(),
+	)
+	c := clientBuilder.Build()
+	idx := utiltesting.AsIndexer(clientBuilder)
+	if err := SetupIndexes(t.Context(), idx); err != nil {
+		t.Fatalf("failed to setup indexes: %v", err)
+	}
+
+	j := fromObject(app)
+	first, err := j.workloadSequenceNumber(t.Context(), c)
+	if err != nil {
+		t.Fatalf("workloadSequenceNumber() returned an unexpected error: %v", err)
+	}
+	if first != 1 {
+		t.Fatalf("workloadSequenceNumber() = %d, want 1", first)
+	}
+
+	// Simulate a new slice being created mid-reconcile (e.g. by an earlier call within
+	// the same reconcile pass): a second call against the same *SparkApplication
+	// instance must still return the cached value.
+	if err := c.Create(t.Context(), utiltestingapi.MakeWorkload("wl2", "ns").
+		ControllerReference(gvk, app.Name, string(app.UID)).
+		Obj()); err != nil {
+		t.Fatalf("failed to create workload: %v", err)
+	}
+
+	second, err := j.workloadSequenceNumber(t.Context(), c)
+	if err != nil {
+		t.Fatalf("workloadSequenceNumber() returned an unexpected error: %v", err)
+	}
+	if second != first {
+		t.Errorf("workloadSequenceNumber() second call = %d, want cached value %d", second, first)
 	}
 }

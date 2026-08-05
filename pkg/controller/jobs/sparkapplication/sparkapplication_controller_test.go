@@ -46,6 +46,7 @@ import (
 	utiltesting "sigs.k8s.io/kueue/pkg/util/testing"
 	utiltestingapi "sigs.k8s.io/kueue/pkg/util/testing/v1beta2"
 	sparkapplicationtesting "sigs.k8s.io/kueue/pkg/util/testingjobs/sparkapplication"
+	"sigs.k8s.io/kueue/pkg/workloadslicing"
 )
 
 var (
@@ -257,27 +258,41 @@ func TestGetWorkloadNameExtraPart(t *testing.T) {
 
 	j := fromObject(sparkApp)
 
-	// Before liveExecutorCount() has ever run (cachedLiveExecutorCount is nil, e.g. a
-	// job type that hasn't implemented PodSets()-driven caching yet), the extra part
-	// falls back to the plain generation, matching newWorkloadName()'s default for job
-	// types that don't implement ElasticWorkloadNameProvider at all.
+	// Before workloadSequenceNumber() has ever run (cachedWorkloadSequenceNumber is nil,
+	// e.g. a job type that hasn't implemented PodSets()-driven caching yet), the extra
+	// part falls back to the plain generation, matching newWorkloadName()'s default for
+	// job types that don't implement ElasticWorkloadNameProvider at all.
 	if got, want := j.GetWorkloadNameExtraPart(), "1"; got != want {
-		t.Errorf("GetWorkloadNameExtraPart() with no cached count = %q, want %q", got, want)
+		t.Errorf("GetWorkloadNameExtraPart() with no cached sequence number = %q, want %q", got, want)
 	}
 
 	// Two scale-up events on the same generation (Dynamic Allocation never bumps
 	// generation, since it never writes to Spec) must still produce distinct extra
 	// parts, or newWorkloadName() will hash the same name for both slices and the
-	// second slice's Create will collide with the first, already-admitted one.
-	j.cachedLiveExecutorCount = new(int32(3))
+	// second slice's Create will collide with the first, already-admitted one. A raw
+	// live executor count isn't sufficient for this (a later scale-up can revisit a
+	// previously-used count), so the extra part is keyed off a monotonically
+	// increasing sequence number instead — see GetWorkloadNameExtraPart's doc comment.
+	j.cachedWorkloadSequenceNumber = new(int32(3))
 	firstSliceExtra := j.GetWorkloadNameExtraPart()
 
 	j2 := fromObject(sparkApp)
-	j2.cachedLiveExecutorCount = new(int32(5))
+	j2.cachedWorkloadSequenceNumber = new(int32(4))
 	secondSliceExtra := j2.GetWorkloadNameExtraPart()
 
 	if firstSliceExtra == secondSliceExtra {
-		t.Errorf("GetWorkloadNameExtraPart() = %q for both a 3-executor and a 5-executor slice on the same generation, want distinct values", firstSliceExtra)
+		t.Errorf("GetWorkloadNameExtraPart() = %q for two different sequence numbers on the same generation, want distinct values", firstSliceExtra)
+	}
+
+	// Revisiting a previously-used executor count (e.g. Dynamic Allocation scales
+	// 3 -> 5 -> 3) must NOT reproduce a prior extra part, since the sequence number
+	// only ever grows within a SparkApplication's lifetime — unlike a raw live
+	// executor count, which would collide here.
+	j3 := fromObject(sparkApp)
+	j3.cachedWorkloadSequenceNumber = new(int32(5))
+	thirdSliceExtra := j3.GetWorkloadNameExtraPart()
+	if thirdSliceExtra == firstSliceExtra {
+		t.Errorf("GetWorkloadNameExtraPart() = %q reused a prior sequence number's extra part, want distinct values", thirdSliceExtra)
 	}
 }
 
@@ -933,5 +948,115 @@ func TestReconciler(t *testing.T) {
 				t.Errorf("Workloads after reconcile (-want,+got):\n%s", diff)
 			}
 		})
+	}
+}
+
+// TestReconcilerElasticScaleUpAvoidsStaleSliceNameCollision reproduces, end-to-end
+// through a real Reconcile() call, the bug workloadSequenceNumber() fixes: Dynamic
+// Allocation scaling to a live executor count that a superseded-but-never-deleted
+// Finished slice already claimed the deterministic name for, under the old naming
+// scheme that folded in the raw live executor count instead of a monotonic sequence
+// number. Before the fix, this scenario's Create call returned AlreadyExists and no
+// new slice was ever created for that SparkApplication again.
+func TestReconcilerElasticScaleUpAvoidsStaleSliceNameCollision(t *testing.T) {
+	features.SetFeatureGatesDuringTest(t, map[featuregate.Feature]bool{features.ElasticJobsViaWorkloadSlices: true})
+
+	ctx, _ := utiltesting.ContextWithLog(t)
+
+	testNamespace := utiltesting.MakeNamespaceWrapper("ns").Label(corev1.LabelMetadataName, "ns").Obj()
+	const testSparkAppUID types.UID = "elastic-sparkapp-uid"
+
+	sparkApp := sparkapplicationtesting.MakeSparkApplication("elastic-app", testNamespace.Name).
+		Annotation(workloadslicing.EnabledAnnotationKey, workloadslicing.EnabledAnnotationValue).
+		DynamicAllocation(&sparkappv1beta2.DynamicAllocation{Enabled: true}).
+		Obj()
+	sparkApp.UID = testSparkAppUID
+	sparkApp.Status.AppState.State = sparkappv1beta2.ApplicationStateRunning
+
+	newLiveExecutorPod := func(name string) *corev1.Pod {
+		return &corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      name,
+				Namespace: testNamespace.Name,
+				Labels: map[string]string{
+					sparkcommon.LabelSparkAppName: sparkApp.Name,
+					sparkcommon.LabelSparkRole:    sparkcommon.SparkRoleExecutor,
+				},
+			},
+			Status: corev1.PodStatus{Phase: corev1.PodRunning},
+		}
+	}
+	executorPods := []*corev1.Pod{
+		newLiveExecutorPod(sparkApp.Name + "-exec-1"),
+		newLiveExecutorPod(sparkApp.Name + "-exec-2"),
+		newLiveExecutorPod(sparkApp.Name + "-exec-3"),
+	}
+
+	// staleFinishedSlice simulates a slice created by an earlier scale-up to the same
+	// live executor count (3), using the pre-fix deterministic name — extra part
+	// "<generation>_3", with no sequence number folded in. It was later superseded
+	// and Finished, but never deleted (no retention policy configured), leaving its
+	// name permanently claimed in etcd.
+	staleFinishedSliceName := jobframework.GenerateWorkloadNameWithExtra(
+		sparkApp.Name, sparkApp.UID, gvk, fmt.Sprintf("%d_3", sparkApp.Generation),
+	)
+	staleFinishedSlice := utiltestingapi.MakeWorkload(staleFinishedSliceName, testNamespace.Name).
+		ControllerReference(gvk, sparkApp.Name, string(sparkApp.UID)).
+		Condition(metav1.Condition{
+			Type:   kueue.WorkloadFinished,
+			Status: metav1.ConditionTrue,
+			Reason: "OutOfSync",
+		}).
+		Obj()
+
+	clientBuilder := utiltesting.NewClientBuilder(sparkappv1beta2.AddToScheme).
+		WithInterceptorFuncs(interceptor.Funcs{SubResourcePatch: utiltesting.TreatSSAAsStrategicMerge})
+	objs := []client.Object{sparkApp, testNamespace}
+	for _, pod := range executorPods {
+		objs = append(objs, pod)
+	}
+	kClient := clientBuilder.
+		WithObjects(objs...).
+		WithStatusSubresource(&kueue.Workload{}).
+		Build()
+	if err := kClient.Create(ctx, staleFinishedSlice); err != nil {
+		t.Fatalf("Could not create pre-existing stale Finished slice: %v", err)
+	}
+
+	indexer := utiltesting.AsIndexer(clientBuilder)
+	if err := SetupIndexes(ctx, indexer); err != nil {
+		t.Fatalf("Could not setup indexes: %v", err)
+	}
+	recorder := &utiltesting.EventRecorder{}
+	reconciler, err := NewReconciler(ctx, kClient, indexer, recorder,
+		jobframework.WithManageJobsWithoutQueueName(true),
+		jobframework.WithManagedJobsNamespaceSelector(labels.Everything()),
+		jobframework.WithCache(schdcache.New(kClient)),
+		jobframework.WithClock(testingclock.NewFakeClock(time.Now())),
+	)
+	if err != nil {
+		t.Fatalf("Error creating the reconciler: %v", err)
+	}
+
+	if _, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(sparkApp)}); err != nil {
+		t.Fatalf("Reconcile returned an unexpected error (likely the AlreadyExists name collision this test guards against): %v", err)
+	}
+
+	var gotWorkloads kueue.WorkloadList
+	if err := kClient.List(ctx, &gotWorkloads); err != nil {
+		t.Fatalf("Could not list Workloads after reconcile: %v", err)
+	}
+
+	var newSlices []kueue.Workload
+	for _, wl := range gotWorkloads.Items {
+		if wl.Name != staleFinishedSlice.Name {
+			newSlices = append(newSlices, wl)
+		}
+	}
+	if len(newSlices) != 1 {
+		t.Fatalf("got %d new workload slices besides the stale Finished one, want exactly 1: %v", len(newSlices), gotWorkloads.Items)
+	}
+	if newSlices[0].Name == staleFinishedSlice.Name {
+		t.Errorf("new slice reused the stale Finished slice's name %q", staleFinishedSlice.Name)
 	}
 }
