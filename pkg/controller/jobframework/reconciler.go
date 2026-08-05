@@ -1481,7 +1481,7 @@ func ConstructWorkload(ctx context.Context, c client.Client, job GenericJob, lab
 }
 
 // prepareWorkloadSlice adds necessary workload slice annotations.
-func prepareWorkloadSlice(ctx context.Context, clnt client.Client, job GenericJob, wl *kueue.Workload) error {
+func prepareWorkloadSlice(ctx context.Context, clnt client.Client, clk clock.Clock, job GenericJob, wl *kueue.Workload) error {
 	// Annotate the workload to indicate that elastic-job support is enabled.
 	// This annotation makes it possible to distinguish workloads with elastic-job
 	// support directly at the workload level, without requiring access to the
@@ -1493,6 +1493,25 @@ func prepareWorkloadSlice(ctx context.Context, clnt client.Client, job GenericJo
 	workloadSlices, err := workloadslicing.FindNotFinishedWorkloads(ctx, clnt, job.Object(), job.GVK())
 	if err != nil {
 		return fmt.Errorf("failure looking up workload slices: %w", err)
+	}
+
+	// A count of 2+ isn't necessarily invalid: EnsureWorkloadSlices' own read of not-finished
+	// workloads, moments earlier in this same reconcile, can legitimately observe "one admitted
+	// slice + one pending replacement" and decide to normalize down to a single admitted slice by
+	// Finish()-ing the rest directly against the API server. That Finish patch takes effect
+	// immediately server-side, but this List reads through the watch cache, whose corresponding
+	// event may not have propagated yet — so this List can still observe the old, not-yet-synced
+	// slice alongside the legitimate pending replacement. Reuse the same selection logic
+	// EnsureWorkloadSlices uses so this case converges on the same answer instead of erroring.
+	if len(workloadSlices) > 1 {
+		selected, err := workloadslicing.NormalizeActiveSlices(ctx, clnt, clk, workloadSlices)
+		if err != nil {
+			return fmt.Errorf("failure normalizing workload slices: %w", err)
+		}
+		if selected == nil {
+			return fmt.Errorf("unexpected workload-slices count: %d", len(workloadSlices))
+		}
+		workloadSlices = []kueue.Workload{*selected}
 	}
 
 	switch len(workloadSlices) {
@@ -1511,9 +1530,7 @@ func prepareWorkloadSlice(ctx context.Context, clnt client.Client, job GenericJo
 		metav1.SetMetaDataAnnotation(&wl.ObjectMeta, kueue.WorkloadSliceNameAnnotation, originName)
 		return nil
 	default:
-		// Any other slices length is invalid. I.E, we expect to have at most 1 "current/old" workload slice.
-		// Failing here, would trigger job re-processing, and hopefully giving a chance to clear up (preempt/deactivate)
-		// old slice.
+		// Unreachable: the len > 1 branch above always narrows to exactly one workload or returns.
 		return fmt.Errorf("unexpected workload-slices count: %d", len(workloadSlices))
 	}
 }
@@ -1553,7 +1570,7 @@ func (r *JobReconciler) prepareWorkload(ctx context.Context, job GenericJob, wl 
 	wl.Spec.PodSets = clearMinCountsIfFeatureDisabled(wl.Spec.PodSets)
 
 	if WorkloadSliceEnabled(job) {
-		return prepareWorkloadSlice(ctx, r.client, job, wl)
+		return prepareWorkloadSlice(ctx, r.client, r.clock, job, wl)
 	}
 	wl.Spec.Active = active
 	return nil
