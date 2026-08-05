@@ -33,6 +33,9 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+
+	kueue "sigs.k8s.io/kueue/apis/kueue/v1beta2"
+	"sigs.k8s.io/kueue/pkg/controller/jobframework"
 )
 
 var (
@@ -196,6 +199,36 @@ func (j *SparkApplication) computeLiveExecutorCount(ctx context.Context, c clien
 		}
 	}
 	return liveCount, nil
+}
+
+// workloadSequenceNumber returns the number of Workloads ever created for this
+// SparkApplication (Finished or not), caching the result on j for the lifetime of this
+// *SparkApplication instance. GetWorkloadNameExtraPart folds this into the generated
+// workload name so a name is never reused across the SparkApplication's lifetime — see
+// its doc comment for why a raw live executor count isn't sufficient.
+func (j *SparkApplication) workloadSequenceNumber(ctx context.Context, c client.Client) (int32, error) {
+	if j.cachedWorkloadSequenceNumber != nil {
+		return *j.cachedWorkloadSequenceNumber, nil
+	}
+	if c == nil {
+		// No client available (e.g. webhook validation): there's nothing to list
+		// against, so this isn't cached and every call recomputes to 0. This only
+		// matters for building a PodSet template to inspect metadata, never for
+		// actually naming a workload that gets created.
+		return 0, nil
+	}
+
+	wlList := &kueue.WorkloadList{}
+	if err := c.List(ctx, wlList,
+		client.InNamespace(j.Namespace),
+		jobframework.OwnerReferenceIndexFieldMatcher(gvk, j.Name),
+	); err != nil {
+		return 0, err
+	}
+
+	count := int32(len(wlList.Items))
+	j.cachedWorkloadSequenceNumber = ptr.To(count)
+	return count, nil
 }
 
 // initialExecutorCount returns the executor count to assume for a Dynamic-Allocation-enabled

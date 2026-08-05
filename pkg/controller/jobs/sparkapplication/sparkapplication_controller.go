@@ -80,10 +80,11 @@ var NewReconciler = jobframework.NewGenericReconcilerFactory(NewJob,
 		return b.Watches(&corev1.Pod{}, newExecutorPodHandler(), builder.WithPredicates(executorPodPredicate{}))
 	})
 
-// SparkApplication wraps the CRD type rather than aliasing it so a reconcile-scoped cache
-// field (cachedLiveExecutorCount) can live alongside it. NewJob() allocates a fresh
-// *SparkApplication per Reconcile() call, so the cache is automatically scoped to a single
-// reconcile pass and never leaks or goes stale across reconciles.
+// SparkApplication wraps the CRD type rather than aliasing it so reconcile-scoped cache
+// fields (cachedLiveExecutorCount, cachedWorkloadSequenceNumber) can live alongside it.
+// NewJob() allocates a fresh *SparkApplication per Reconcile() call, so the cache is
+// automatically scoped to a single reconcile pass and never leaks or goes stale across
+// reconciles.
 type SparkApplication struct {
 	*sparkv1beta2.SparkApplication
 
@@ -93,6 +94,10 @@ type SparkApplication struct {
 	// live executor Pod counts if Dynamic Allocation churns pods between them, causing
 	// spurious "not equivalent" verdicts and self-inflicted workload-slice churn.
 	cachedLiveExecutorCount *int32
+
+	// cachedWorkloadSequenceNumber memoizes workloadSequenceNumber() for the lifetime of
+	// this wrapper. See GetWorkloadNameExtraPart for why this exists.
+	cachedWorkloadSequenceNumber *int32
 }
 
 var _ jobframework.GenericJob = (*SparkApplication)(nil)
@@ -130,14 +135,22 @@ func (j *SparkApplication) PodLabelSelector() string {
 // against the API server without ever touching Spec (the whole point of
 // liveExecutorCount() is to avoid that, since any Spec write makes the Spark
 // Operator kill and resubmit the running app) — so generation alone stays frozen
-// across every scale-up after the first, causing every subsequent new workload
-// slice to hash to the same name as the one already admitted and collide on
-// creation. Folding in the live executor count, which does change per slice,
-// makes each scale-up produce a distinct name.
+// across every scale-up after the first.
+//
+// Folding in the live executor count (as this used to do) isn't enough either:
+// once a superseded slice is Finished it's never deleted (absent a configured
+// retention policy), so its deterministic name persists in etcd forever. Since
+// real Dynamic Allocation workloads oscillate within a narrow band of executor
+// counts, a later scale-up that revisits a previously-used count recomputes the
+// exact same hash and its Create collides with the old, dead object — a
+// permanent, self-reinforcing failure once every count in the band has been
+// "used up" once. workloadSequenceNumber(), the count of every Workload ever
+// owned by this job (Finished or not), only grows, so a name is never reused for
+// the lifetime of the SparkApplication.
 func (j *SparkApplication) GetWorkloadNameExtraPart() string {
 	extra := strconv.FormatInt(j.GetGeneration(), 10)
-	if j.cachedLiveExecutorCount != nil {
-		extra += "_" + strconv.FormatInt(int64(*j.cachedLiveExecutorCount), 10)
+	if j.cachedWorkloadSequenceNumber != nil {
+		extra += "_" + strconv.FormatInt(int64(*j.cachedWorkloadSequenceNumber), 10)
 	}
 	return extra
 }
@@ -194,6 +207,15 @@ func (j *SparkApplication) PodSets(ctx context.Context, c client.Client) ([]kueu
 		&podSets[1], executorPodTemplateSpec,
 	); err != nil {
 		return nil, err
+	}
+
+	// Pre-compute and cache the sequence number GetWorkloadNameExtraPart() needs, since
+	// that method has no client of its own to List() with. Only needed for elastic jobs,
+	// where the generated workload name must never be reused (see GetWorkloadNameExtraPart).
+	if jobframework.WorkloadSliceEnabled(j) {
+		if _, err := j.workloadSequenceNumber(ctx, c); err != nil {
+			return nil, err
+		}
 	}
 
 	return podSets, nil
