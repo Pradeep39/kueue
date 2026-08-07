@@ -21,6 +21,7 @@ import (
 
 	"github.com/google/go-cmp/cmp"
 	sparkappv1beta2 "github.com/kubeflow/spark-operator/v2/api/v1beta2"
+	sparkcommon "github.com/kubeflow/spark-operator/v2/pkg/common"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/util/validation/field"
@@ -70,8 +71,34 @@ func TestValidateCreate(t *testing.T) {
 				MinExecutors:     new(int32(1)),
 				InitialExecutors: new(int32(2)),
 				MaxExecutors:     new(int32(3)),
+			}).ExecutorTemplate(&corev1.PodTemplateSpec{
+				Spec: corev1.PodSpec{
+					SchedulingGates: []corev1.PodSchedulingGate{{Name: kueue.ElasticJobSchedulingGate}},
+				},
 			}).Obj(),
 			wantErr: nil,
+		},
+		"elastic job with executor scheduling gate": {
+			featureGates: map[featuregate.Feature]bool{features.ElasticJobsViaWorkloadSlices: true},
+			sparkApp: testSparkApp.Clone().Queue("local-queue").Annotation(
+				workloadslicing.EnabledAnnotationKey, workloadslicing.EnabledAnnotationValue,
+			).ExecutorTemplate(&corev1.PodTemplateSpec{
+				Spec: corev1.PodSpec{
+					SchedulingGates: []corev1.PodSchedulingGate{{Name: kueue.ElasticJobSchedulingGate}},
+				},
+			}).Obj(),
+			wantErr: nil,
+		},
+		"elastic job missing executor scheduling gate": {
+			featureGates: map[featuregate.Feature]bool{features.ElasticJobsViaWorkloadSlices: true},
+			sparkApp: testSparkApp.Clone().Queue("local-queue").Annotation(
+				workloadslicing.EnabledAnnotationKey, workloadslicing.EnabledAnnotationValue,
+			).Obj(),
+			wantErr: field.ErrorList{field.Invalid(
+				executorTemplateSpecPath.Child("schedulingGates"),
+				[]corev1.PodSchedulingGate(nil),
+				"an elastic job must have the ElasticJobSchedulingGate on its executor pod template",
+			)}.ToAggregate(),
 		},
 		"base with TAS": {
 			featureGates: map[featuregate.Feature]bool{features.TopologyAwareScheduling: true},
@@ -125,6 +152,7 @@ func TestDefault(t *testing.T) {
 		managedJobsNamespacesSelector labels.Selector
 		manageJobsWithoutQueueName    bool
 		withDefaultLocalQueue         bool
+		featureGates                  map[featuregate.Feature]bool
 		wantSparkApp                  *sparkappv1beta2.SparkApplication
 		wantErr                       error
 	}{
@@ -163,9 +191,30 @@ func TestDefault(t *testing.T) {
 			wantSparkApp:          testSparkApp.DeepCopy(),
 			withDefaultLocalQueue: false,
 		},
+		"should gate the executor template for an elastic job": {
+			sparkApp: testSparkApp.Clone().Queue(testLocalQueue.Name).Annotation(
+				workloadslicing.EnabledAnnotationKey, workloadslicing.EnabledAnnotationValue,
+			).Obj(),
+			wantSparkApp: testSparkApp.Clone().Queue(testLocalQueue.Name).Annotation(
+				workloadslicing.EnabledAnnotationKey, workloadslicing.EnabledAnnotationValue,
+			).Suspend(true).ExecutorTemplate(&corev1.PodTemplateSpec{
+				Spec: corev1.PodSpec{
+					Containers:      []corev1.Container{{Name: sparkcommon.Spark3DefaultExecutorContainerName}},
+					SchedulingGates: []corev1.PodSchedulingGate{{Name: kueue.ElasticJobSchedulingGate}},
+				},
+			}).Obj(),
+			featureGates: map[featuregate.Feature]bool{features.ElasticJobsViaWorkloadSlices: true},
+		},
+		"should not gate the executor template for a non-elastic job": {
+			sparkApp: testSparkApp.Clone().Queue(testLocalQueue.Name).Obj(),
+			wantSparkApp: testSparkApp.Clone().Queue(testLocalQueue.Name).
+				Suspend(true).
+				Obj(),
+		},
 	}
 	for name, tc := range testCases {
 		t.Run(name, func(t *testing.T) {
+			features.SetFeatureGatesDuringTest(t, tc.featureGates)
 			ctx, _ := utiltesting.ContextWithLog(t)
 
 			kClient := utiltesting.NewClientBuilder().WithObjects(testManagedNamespace.Obj()).Build()
