@@ -35,6 +35,8 @@ import (
 	cfg "sigs.k8s.io/kueue/apis/config/v1beta2"
 	kueue "sigs.k8s.io/kueue/apis/kueue/v1beta2"
 	"sigs.k8s.io/kueue/pkg/cache/hierarchy"
+	"sigs.k8s.io/kueue/pkg/constants"
+	controllerconsts "sigs.k8s.io/kueue/pkg/controller/constants"
 	"sigs.k8s.io/kueue/pkg/features"
 	"sigs.k8s.io/kueue/pkg/metrics"
 	"sigs.k8s.io/kueue/pkg/resources"
@@ -63,6 +65,23 @@ type clusterQueue struct {
 	Preemption        kueue.ClusterQueuePreemption
 	FairWeight        float64
 	FlavorFungibility kueue.FlavorFungibility
+
+	// sliceGroups maps a workload-slice chain (namespace + the chain-root name carried in
+	// kueue.WorkloadSliceNameAnnotation) to the cached slices belonging to it.
+	//
+	// Every slice in a chain describes the same elastic job. A scale-up creates a
+	// replacement slice and Finishes its predecessor, but the Finish is asynchronous and
+	// is not retried on failure (Scheduler.replaceOldWorkloadSlice), so several slices of
+	// one chain can sit in the cache at once. Counting all of them charges the overlap
+	// repeatedly and can push ClusterQueue.status.flavorsUsage above nominalQuota, so only
+	// the chain's latest cached slice contributes usage — see sliceGroupTip.
+	sliceGroups map[string]sets.Set[workload.Reference]
+
+	// countedSliceInGroup records, per chain, the slice whose usage is currently included
+	// in this ClusterQueue's totals, so membership changes can move the accounting from
+	// one slice to another without double-adding or double-subtracting.
+	countedSliceInGroup map[string]workload.Reference
+
 	// Aggregates AdmissionChecks from both .spec.AdmissionChecks and .spec.AdmissionCheckStrategy
 	// Sets hold ResourceFlavors to which an AdmissionCheck should apply.
 	AdmissionChecks workload.AdmissionChecks
@@ -495,6 +514,136 @@ func (c *clusterQueue) updateWithAdmissionChecks(log logr.Logger, checks map[kue
 	}
 }
 
+// sliceChainKey returns the key identifying the workload-slice chain w belongs to, or ""
+// if w is not a workload slice and should be accounted for directly.
+//
+// All slices of one elastic job must map to the same key, and slices of different jobs must
+// never collide. jobframework's prepareWorkloadSlice sets
+// kueue.WorkloadSliceNameAnnotation (the chain-root workload name) on every slice it
+// creates, including the root, which makes that the reliable grouping key. The job UID is
+// folded in because a deleted-and-recreated job's slices can inherit the previous
+// instance's chain-root name; without it, two independent job instances would share a
+// chain and only the newest would be counted, understating usage.
+//
+// The remaining branches are defensive, for a slice that somehow lacks the chain-root
+// annotation: a replacement falls back to the slice it replaces (correct for a two-slice
+// chain, which is by far the common case), and anything else roots a chain at itself.
+//
+// Workloads with no elastic-job or slice annotation at all return "" and keep the original,
+// allocation-free accounting path.
+func sliceChainKey(w *kueue.Workload) string {
+	if !features.Enabled(features.ElasticJobsViaWorkloadSlices) {
+		return ""
+	}
+	annotations := w.GetAnnotations()
+	// Scopes the chain to one job instance; empty for a workload whose owner UID could not
+	// be labelled, which merely falls back to the pre-existing (name-only) grouping.
+	jobUID := w.GetLabels()[controllerconsts.JobUIDLabel]
+	if root := annotations[kueue.WorkloadSliceNameAnnotation]; root != "" {
+		return w.Namespace + "/" + root + "#" + jobUID
+	}
+	if replaced := annotations[constants.WorkloadSliceReplacementForAnnotation]; replaced != "" {
+		return replaced + "#" + jobUID
+	}
+	if annotations[constants.ElasticJobAnnotation] == "true" {
+		return string(workload.Key(w)) + "#" + jobUID
+	}
+	return ""
+}
+
+// sliceReplacementFor returns the key of the workload slice w declares itself a replacement
+// for, or nil if w is not a workload-slice replacement.
+func sliceReplacementFor(w *kueue.Workload) *workload.Reference {
+	key, found := w.GetAnnotations()[constants.WorkloadSliceReplacementForAnnotation]
+	if !found || key == "" {
+		return nil
+	}
+	ref := workload.Reference(key)
+	return &ref
+}
+
+// sliceIsLater reports whether slice b comes after slice a in their shared chain.
+//
+// Creation timestamp is the primary ordering, matching workloadslicing's own
+// FindNotFinishedWorkloads. Slices created within the same second are ordered by the
+// replacement annotation, which is authoritative when present; UID breaks any remaining tie
+// so the result is deterministic.
+func sliceIsLater(a, b *kueue.Workload) bool {
+	if !a.CreationTimestamp.Equal(&b.CreationTimestamp) {
+		return b.CreationTimestamp.After(a.CreationTimestamp.Time)
+	}
+	if replaced := sliceReplacementFor(b); replaced != nil && *replaced == workload.Key(a) {
+		return true
+	}
+	if replaced := sliceReplacementFor(a); replaced != nil && *replaced == workload.Key(b) {
+		return false
+	}
+	return a.UID < b.UID
+}
+
+// sliceGroupTip returns the cached slice of the given chain whose usage should be counted:
+// the latest one. Every earlier slice in the chain has been superseded by it and describes
+// Pods already accounted for by it. Returns "" if the chain has no cached slices.
+func (c *clusterQueue) sliceGroupTip(groupKey string) workload.Reference {
+	var tip workload.Reference
+	var tipObj *kueue.Workload
+	for key := range c.sliceGroups[groupKey] {
+		wi, ok := c.Workloads[key]
+		if !ok {
+			continue
+		}
+		if tipObj == nil || sliceIsLater(tipObj, wi.Obj) {
+			tip, tipObj = key, wi.Obj
+		}
+	}
+	return tip
+}
+
+// reconcileSliceGroup moves the chain's usage onto its current tip, releasing whichever
+// slice was previously counted. Called after any change to the chain's cached membership.
+// The previously counted slice must still be present in c.Workloads so its exact recorded
+// contribution can be subtracted.
+func (c *clusterQueue) reconcileSliceGroup(log logr.Logger, groupKey string) {
+	tip := c.sliceGroupTip(groupKey)
+	prev, hadPrev := c.countedSliceInGroup[groupKey]
+	if hadPrev && prev == tip {
+		return
+	}
+	if hadPrev {
+		if wi, ok := c.Workloads[prev]; ok {
+			c.updateWorkloadUsage(log, wi, subtract)
+		}
+	}
+	if tip == "" {
+		delete(c.countedSliceInGroup, groupKey)
+		return
+	}
+	c.updateWorkloadUsage(log, c.Workloads[tip], add)
+	c.countedSliceInGroup[groupKey] = tip
+	if hadPrev {
+		log.V(3).Info("Workload slice chain usage moved to a later slice",
+			"chain", groupKey, "from", prev, "to", tip)
+	}
+}
+
+// supersededSliceKeys returns the keys of cached workload slices whose usage is NOT counted
+// because a later slice of the same chain supersedes them, for the scheduler snapshot.
+func (c *clusterQueue) supersededSliceKeys() sets.Set[workload.Reference] {
+	if len(c.sliceGroups) == 0 {
+		return nil
+	}
+	keys := sets.New[workload.Reference]()
+	for groupKey, members := range c.sliceGroups {
+		counted := c.countedSliceInGroup[groupKey]
+		for key := range members {
+			if key != counted {
+				keys.Insert(key)
+			}
+		}
+	}
+	return keys
+}
+
 func (c *clusterQueue) addOrUpdateWorkload(log logr.Logger, w *kueue.Workload) {
 	k := workload.Key(w)
 	if _, exist := c.Workloads[k]; exist {
@@ -506,7 +655,17 @@ func (c *clusterQueue) addOrUpdateWorkload(log logr.Logger, w *kueue.Workload) {
 	if features.Enabled(features.CustomMetricLabels) {
 		c.customLabels.Store(cfg.SourceKindWorkload, string(k), w.Labels, w.Annotations)
 	}
-	c.updateWorkloadUsage(log, wi, add)
+	// A workload slice is accounted for through its chain, so that only the chain's latest
+	// cached slice contributes usage. Everything else is accounted for directly.
+	if groupKey := sliceChainKey(w); groupKey != "" {
+		if c.sliceGroups[groupKey] == nil {
+			c.sliceGroups[groupKey] = sets.New[workload.Reference]()
+		}
+		c.sliceGroups[groupKey].Insert(k)
+		c.reconcileSliceGroup(log, groupKey)
+	} else {
+		c.updateWorkloadUsage(log, wi, add)
+	}
 	if c.podsReadyTracking && !apimeta.IsStatusConditionTrue(w.Status.Conditions, kueue.WorkloadPodsReady) {
 		c.WorkloadsNotReady.Insert(k)
 	}
@@ -522,7 +681,21 @@ func (c *clusterQueue) deleteWorkload(log logr.Logger, wlKey workload.Reference)
 	if !exist {
 		return
 	}
-	c.updateWorkloadUsage(log, wi, subtract)
+	groupKey := sliceChainKey(wi.Obj)
+	if groupKey == "" {
+		c.updateWorkloadUsage(log, wi, subtract)
+	} else {
+		// Drop this slice from its chain and re-settle the chain's accounting while the
+		// slice is still in c.Workloads, so a counted slice can be subtracted exactly.
+		// If it was not the counted one, nothing is subtracted for it.
+		if members := c.sliceGroups[groupKey]; members != nil {
+			members.Delete(wlKey)
+			if members.Len() == 0 {
+				delete(c.sliceGroups, groupKey)
+			}
+		}
+		c.reconcileSliceGroup(log, groupKey)
+	}
 	if c.podsReadyTracking {
 		c.WorkloadsNotReady.Delete(wlKey)
 	}
