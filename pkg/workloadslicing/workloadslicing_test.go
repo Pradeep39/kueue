@@ -526,12 +526,12 @@ func TestEnsureWorkloadSlices(t *testing.T) {
 		},
 		"OneWorkloadSlice_ReservedQuota_ScaleDown": {
 			args: args{
-				clnt: testWorkloadClientBuilder().WithObjects(
+				clnt: testWorkloadClientBuilder().WithStatusSubresource(&kueue.Workload{}).WithObjects(
 					utiltestingapi.MakeWorkload(testJobObject.Name+"-1", testJobObject.Namespace).
 						OwnerReference(testJobGVK, testJobObject.Name, string(testJobObject.UID)).
 						ResourceVersion("1").
 						PodSets(*utiltestingapi.MakePodSet(kueue.DefaultPodSetName, 3).Request(corev1.ResourceCPU, "1").Obj()).
-						ReserveQuotaAt(utiltestingapi.MakeAdmission("default").PodSets(utiltestingapi.MakePodSetAssignment(kueue.DefaultPodSetName).Assignment(corev1.ResourceCPU, "default", "1").Count(3).Obj()).Obj(), now).
+						ReserveQuotaAt(utiltestingapi.MakeAdmission("default").PodSets(utiltestingapi.MakePodSetAssignment(kueue.DefaultPodSetName).Assignment(corev1.ResourceCPU, "default", "3").Count(3).Obj()).Obj(), now).
 						Obj()).Build(),
 				jobPodSets:   []kueue.PodSet{*utiltestingapi.MakePodSet(kueue.DefaultPodSetName, 1).Request(corev1.ResourceCPU, "1").Obj()},
 				jobObject:    testJobObject,
@@ -541,15 +541,15 @@ func TestEnsureWorkloadSlices(t *testing.T) {
 				compatible: true,
 				workload: utiltestingapi.MakeWorkload(testJobObject.Name+"-1", testJobObject.Namespace).
 					OwnerReference(testJobGVK, testJobObject.Name, string(testJobObject.UID)).
-					ResourceVersion("2").
+					ResourceVersion("3").
 					PodSets(*utiltestingapi.MakePodSet(kueue.DefaultPodSetName, 1).Request(corev1.ResourceCPU, "1").Obj()).
-					ReserveQuotaAt(utiltestingapi.MakeAdmission("default").PodSets(utiltestingapi.MakePodSetAssignment(kueue.DefaultPodSetName).Assignment(corev1.ResourceCPU, "default", "1").Count(3).Obj()).Obj(), now).
+					ReserveQuotaAt(utiltestingapi.MakeAdmission("default").PodSets(utiltestingapi.MakePodSetAssignment(kueue.DefaultPodSetName).Assignment(corev1.ResourceCPU, "default", "1").Count(1).Obj()).Obj(), now).
 					Obj(),
 			},
 		},
 		"OneWorkloadSlice_ReservedQuota_ScaleDown_MultiplePodSets": {
 			args: args{
-				clnt: testWorkloadClientBuilder().WithObjects(
+				clnt: testWorkloadClientBuilder().WithStatusSubresource(&kueue.Workload{}).WithObjects(
 					utiltestingapi.MakeWorkload(testJobObject.Name+"-1", testJobObject.Namespace).
 						OwnerReference(testJobGVK, testJobObject.Name, string(testJobObject.UID)).
 						ResourceVersion("1").
@@ -558,8 +558,8 @@ func TestEnsureWorkloadSlices(t *testing.T) {
 							*utiltestingapi.MakePodSet("stay-the-same", 3).Request(corev1.ResourceCPU, "1").Obj()).
 						ReserveQuotaAt(utiltestingapi.MakeAdmission("default").
 							PodSets(
-								utiltestingapi.MakePodSetAssignment("scale-down").Assignment(corev1.ResourceCPU, "default", "1").Count(3).Obj(),
-								utiltestingapi.MakePodSetAssignment("stay-the-same").Assignment(corev1.ResourceCPU, "default", "1").Count(3).Obj(),
+								utiltestingapi.MakePodSetAssignment("scale-down").Assignment(corev1.ResourceCPU, "default", "3").Count(3).Obj(),
+								utiltestingapi.MakePodSetAssignment("stay-the-same").Assignment(corev1.ResourceCPU, "default", "3").Count(3).Obj(),
 							).
 							Obj(), now).
 						Obj()).Build(),
@@ -574,14 +574,14 @@ func TestEnsureWorkloadSlices(t *testing.T) {
 				compatible: true,
 				workload: utiltestingapi.MakeWorkload(testJobObject.Name+"-1", testJobObject.Namespace).
 					OwnerReference(testJobGVK, testJobObject.Name, string(testJobObject.UID)).
-					ResourceVersion("2").
+					ResourceVersion("3").
 					PodSets(
 						*utiltestingapi.MakePodSet("scale-down", 1).Request(corev1.ResourceCPU, "1").Obj(),
 						*utiltestingapi.MakePodSet("stay-the-same", 3).Request(corev1.ResourceCPU, "1").Obj()).
 					ReserveQuotaAt(utiltestingapi.MakeAdmission("default").
 						PodSets(
-							utiltestingapi.MakePodSetAssignment("scale-down").Assignment(corev1.ResourceCPU, "default", "1").Count(3).Obj(),
-							utiltestingapi.MakePodSetAssignment("stay-the-same").Assignment(corev1.ResourceCPU, "default", "1").Count(3).Obj(),
+							utiltestingapi.MakePodSetAssignment("scale-down").Assignment(corev1.ResourceCPU, "default", "1").Count(1).Obj(),
+							utiltestingapi.MakePodSetAssignment("stay-the-same").Assignment(corev1.ResourceCPU, "default", "3").Count(3).Obj(),
 						).
 						Obj(), now).
 					Obj(),

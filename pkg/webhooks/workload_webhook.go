@@ -348,7 +348,7 @@ func ValidateWorkloadUpdate(newObj, oldObj *kueue.Workload) field.ErrorList {
 	if workload.HasQuotaReservation(newObj) && workload.HasQuotaReservation(oldObj) {
 		allErrs = append(allErrs, validateReclaimablePodsUpdate(newObj, oldObj, field.NewPath("status", "reclaimablePods"))...)
 	}
-	allErrs = append(allErrs, validateAdmissionUpdate(newObj.Status.Admission, oldObj.Status.Admission, field.NewPath("status", "admission"))...)
+	allErrs = append(allErrs, validateAdmissionUpdate(newObj.Status.Admission, oldObj.Status.Admission, field.NewPath("status", "admission"), workloadslicing.Enabled(newObj))...)
 	allErrs = append(allErrs, validateImmutablePodSetUpdates(newObj, oldObj, statusPath.Child("admissionChecks"))...)
 	allErrs = append(allErrs, validateClusterNameUpdate(newObj, oldObj, statusPath)...)
 
@@ -361,7 +361,19 @@ func ValidateWorkloadUpdate(newObj, oldObj *kueue.Workload) field.ErrorList {
 
 // validateAdmissionUpdate validates that admission can be set or unset, but the
 // fields within can't change.
-func validateAdmissionUpdate(new, old *kueue.Admission, path *field.Path) field.ErrorList {
+//
+// Elastic workloads are an exception on scale-down: the granted PodSetAssignment
+// Count/ResourceUsage (and TopologyAssignment) are lowered in step with
+// spec.podSets[].Count so the released quota is actually given back. Without this,
+// status.admission stays frozen at the high-water mark, the scheduler cache keeps
+// charging it (usage is derived from status.admission, not spec), and a slice
+// replacement is then admitted on a delta computed against the frozen count — so
+// ClusterQueue.status.flavorsUsage can sit above nominalQuota indefinitely.
+//
+// This mirrors validateImmutablePodSet's existing scale-down exception for
+// spec.podSets[].Count. Non-elastic workloads (plain batch/v1 Jobs and anything else
+// without the elastic-job annotation) keep a fully immutable admission.
+func validateAdmissionUpdate(new, old *kueue.Admission, path *field.Path, elastic bool) field.ErrorList {
 	if old == nil || new == nil {
 		return nil
 	}
@@ -373,6 +385,22 @@ func validateAdmissionUpdate(new, old *kueue.Admission, path *field.Path) field.
 		for i := range new.PodSetAssignments {
 			old.PodSetAssignments[i].TopologyAssignment = new.PodSetAssignments[i].TopologyAssignment
 			old.PodSetAssignments[i].DelayedTopologyRequest = new.PodSetAssignments[i].DelayedTopologyRequest
+		}
+	}
+	if elastic && features.Enabled(features.ElasticJobsViaWorkloadSlices) {
+		if len(new.PodSetAssignments) != len(old.PodSetAssignments) {
+			return apivalidation.ValidateImmutableField(new, old, path)
+		}
+		for i := range new.PodSetAssignments {
+			newPSA, oldPSA := &new.PodSetAssignments[i], &old.PodSetAssignments[i]
+			if newPSA.Count == nil || oldPSA.Count == nil || *newPSA.Count >= *oldPSA.Count {
+				continue
+			}
+			// Scale-down: accept the lowered count and the resource usage that goes
+			// with it by copying them onto the old value before the immutability
+			// check. Anything else that differs is still rejected.
+			oldPSA.Count = newPSA.Count
+			oldPSA.ResourceUsage = newPSA.ResourceUsage
 		}
 	}
 	return apivalidation.ValidateImmutableField(new, old, path)

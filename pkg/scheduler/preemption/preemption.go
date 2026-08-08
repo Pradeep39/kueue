@@ -564,13 +564,18 @@ func flavorResourcesNeedPreemption(assignment flavorassigner.Assignment) sets.Se
 func findCandidatesForPolicy(
 	log logr.Logger,
 	wl *kueue.Workload,
-	workloadsToFilter map[workload.Reference]*workload.Info,
+	candidateCQ *schdcache.ClusterQueueSnapshot,
 	policy kueue.PreemptionPolicy,
 	frsNeedPreemption sets.Set[resources.FlavorResource],
 	workloadOrdering workload.Ordering,
 ) []*workload.Info {
 	var candidates []*workload.Info
-	for _, candidateWl := range workloadsToFilter {
+	for key, candidateWl := range candidateCQ.Workloads {
+		// A workload slice superseded by a cached replacement contributes no usage, so
+		// preempting it would free nothing while wrongly reducing the recorded usage.
+		if candidateCQ.SliceSuperseded(key) {
+			continue
+		}
 		if !preemptioncommon.SatisfiesPreemptionPolicy(
 			log,
 			wl,
@@ -595,7 +600,7 @@ func (p *Preemptor) findCandidates(log logr.Logger, wl *kueue.Workload, cq *schd
 	var candidates []*workload.Info
 
 	if cq.Preemption.WithinClusterQueue != kueue.PreemptionPolicyNever {
-		newCandidates := findCandidatesForPolicy(log, wl, cq.Workloads, cq.Preemption.WithinClusterQueue, frsNeedPreemption, p.workloadOrdering)
+		newCandidates := findCandidatesForPolicy(log, wl, cq, cq.Preemption.WithinClusterQueue, frsNeedPreemption, p.workloadOrdering)
 		candidates = append(candidates, newCandidates...)
 	}
 
@@ -605,7 +610,7 @@ func (p *Preemptor) findCandidates(log logr.Logger, wl *kueue.Workload, cq *schd
 				// Can't reclaim quota from itself or ClusterQueues that are not borrowing.
 				continue
 			}
-			newCandidates := findCandidatesForPolicy(log, wl, cohortCQ.Workloads, cq.Preemption.ReclaimWithinCohort, frsNeedPreemption, p.workloadOrdering)
+			newCandidates := findCandidatesForPolicy(log, wl, cohortCQ, cq.Preemption.ReclaimWithinCohort, frsNeedPreemption, p.workloadOrdering)
 			candidates = append(candidates, newCandidates...)
 		}
 	}
