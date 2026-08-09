@@ -78,6 +78,20 @@ type ClusterQueueSnapshot struct {
 
 	flavorsForProvReqACs sets.Set[kueue.ResourceFlavorReference]
 	hasMultiKueueAC      bool
+
+	// supersededSlices holds the keys of workload slices that a cached replacement slice
+	// supersedes. Their usage is not included in ResourceNode, so they must not be offered
+	// as preemption candidates: removing one would subtract usage that was never added,
+	// understating the ClusterQueue's usage and over-admitting. Preempting a superseded
+	// slice would free nothing anyway — its Pods are accounted to its replacement.
+	// See clusterQueue.sliceReplacements.
+	supersededSlices sets.Set[workload.Reference]
+}
+
+// SliceSuperseded reports whether wlKey is a workload slice superseded by a cached
+// replacement, and therefore contributes no usage to this snapshot.
+func (c *ClusterQueueSnapshot) SliceSuperseded(wlKey workload.Reference) bool {
+	return c.supersededSlices.Has(wlKey)
 }
 
 // RGByResource returns the ResourceGroup which contains capacity

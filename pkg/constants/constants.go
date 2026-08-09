@@ -86,4 +86,13 @@ const (
 
 	// ElasticJobAnnotation is an annotation set on the Job to indicate that it is an elastic job.
 	ElasticJobAnnotation = "kueue.x-k8s.io/elastic-job"
+
+	// WorkloadSliceReplacementForAnnotation is set on a new workload slice to name the
+	// workload slice it replaces (the "old" slice being superseded).
+	//
+	// It lives here, rather than in pkg/workloadslicing next to the rest of the slicing
+	// helpers, because pkg/cache/scheduler needs it to avoid counting a replaced slice's
+	// quota twice and cannot import pkg/workloadslicing (which imports the cache).
+	// pkg/workloadslicing re-exports it as WorkloadSliceReplacementFor.
+	WorkloadSliceReplacementForAnnotation = "kueue.x-k8s.io/workload-slice-replacement-for"
 )

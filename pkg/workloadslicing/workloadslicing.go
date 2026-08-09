@@ -30,6 +30,7 @@ import (
 	"k8s.io/client-go/util/retry"
 	"k8s.io/klog/v2"
 	"k8s.io/utils/clock"
+	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -38,7 +39,9 @@ import (
 	"sigs.k8s.io/kueue/pkg/constants"
 	"sigs.k8s.io/kueue/pkg/controller/core/indexer"
 	"sigs.k8s.io/kueue/pkg/features"
+	"sigs.k8s.io/kueue/pkg/resources"
 	"sigs.k8s.io/kueue/pkg/scheduler/preemption"
+	utiltas "sigs.k8s.io/kueue/pkg/util/tas"
 	"sigs.k8s.io/kueue/pkg/workload"
 	workloadevict "sigs.k8s.io/kueue/pkg/workload/evict"
 	workloadfinish "sigs.k8s.io/kueue/pkg/workload/finish"
@@ -80,7 +83,10 @@ func IsElasticWorkload(workload *kueue.Workload) bool {
 const (
 	// WorkloadSliceReplacementFor is the annotation key set on a new workload slice to indicate
 	// the key of the workload slice it is intended to replace (i.e., the "old" slice being preempted).
-	WorkloadSliceReplacementFor = "kueue.x-k8s.io/workload-slice-replacement-for"
+	//
+	// Defined in pkg/constants so pkg/cache/scheduler can read it without importing this
+	// package (which would be an import cycle).
+	WorkloadSliceReplacementFor = constants.WorkloadSliceReplacementForAnnotation
 )
 
 // ReplacementForKey returns a value for workload "WorkloadSliceReplacementFor" annotation
@@ -260,6 +266,47 @@ func EnsureWorkloadSlices(
 // ClusterQueue usage accounting.
 var errWorkloadAdmittedConcurrently = errors.New("workload was admitted concurrently and no longer qualifies for an in-place slice update")
 
+// scaleDownAdmission lowers wl's granted PodSetAssignments to counts, returning whether
+// anything changed.
+//
+// The scheduler cache derives a workload's usage from status.admission
+// (workload.totalRequestsFromAdmission), NOT from spec.podSets. So patching only the spec
+// on scale-down leaves the ClusterQueue charged for pods that no longer exist. Worse, a
+// later slice replacement is admitted on a delta computed against the frozen count
+// (flavorassigner.Assignment.append), which never re-checks the absolute total against
+// nominalQuota — so once the ledger drifts high it stays there. Lowering the granted
+// counts here is what actually releases the quota.
+//
+// ResourceUsage is the podSet total, so it is rescaled proportionally. A TopologyAssignment
+// is truncated to the new count so TAS domain accounting stays consistent.
+func scaleDownAdmission(wl *kueue.Workload, counts workload.PodSetsCounts) bool {
+	if wl.Status.Admission == nil {
+		return false
+	}
+	changed := false
+	for i := range wl.Status.Admission.PodSetAssignments {
+		psa := &wl.Status.Admission.PodSetAssignments[i]
+		newCount, ok := counts[psa.Name]
+		if !ok || psa.Count == nil || newCount >= *psa.Count {
+			continue
+		}
+		oldCount := *psa.Count
+		psa.Count = ptr.To(newCount)
+		if psa.ResourceUsage != nil {
+			usage := resources.NewRequestsFromResourceList(psa.ResourceUsage)
+			usage.Divide(int64(oldCount))
+			usage.Mul(int64(newCount))
+			psa.ResourceUsage = usage.ToResourceList(nil)
+		}
+		if psa.TopologyAssignment != nil {
+			psa.TopologyAssignment = utiltas.V1Beta2From(
+				utiltas.TruncateAssignment(utiltas.InternalFrom(psa.TopologyAssignment), newCount))
+		}
+		changed = true
+	}
+	return changed
+}
+
 // updatePodSetCountsWithRetry applies counts to wl's pod sets and updates it, retrying on
 // optimistic-lock conflicts by re-fetching wl and reapplying counts before each retry.
 // Without the retry, a caller whose upstream pod set counts change in quick succession
@@ -272,10 +319,13 @@ var errWorkloadAdmittedConcurrently = errors.New("workload was admitted concurre
 // current wl: if the workload has been admitted at a count that makes this no longer an
 // allowed in-place update, it returns errWorkloadAdmittedConcurrently rather than reapplying
 // the caller's target count blindly.
+//
+// For an admitted workload this also lowers the granted counts in status.admission, so the
+// freed quota is released instead of staying charged — see scaleDownAdmission.
 func updatePodSetCountsWithRetry(ctx context.Context, clnt client.Client, wl *kueue.Workload, counts workload.PodSetsCounts) error {
 	key := client.ObjectKeyFromObject(wl)
 	first := true
-	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		if !first {
 			if err := clnt.Get(ctx, key, wl); err != nil {
 				return err
@@ -288,6 +338,22 @@ func updatePodSetCountsWithRetry(ctx context.Context, clnt client.Client, wl *ku
 		}
 		workload.ApplyPodSetCounts(wl, counts)
 		return clnt.Update(ctx, wl)
+	}); err != nil {
+		return err
+	}
+
+	// The spec is now authoritative; bring the granted counts down to match. This is a
+	// separate call because admission lives on the status subresource. A failure here
+	// leaves the pre-fix behavior (spec low, admission frozen high) and is retried on the
+	// next reconcile, so it degrades rather than corrupting anything.
+	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		if err := clnt.Get(ctx, key, wl); err != nil {
+			return err
+		}
+		if !workload.HasQuotaReservation(wl) || !scaleDownAdmission(wl, counts) {
+			return nil
+		}
+		return clnt.Status().Update(ctx, wl)
 	})
 }
 
