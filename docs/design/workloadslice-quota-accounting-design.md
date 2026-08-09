@@ -1,4 +1,4 @@
-# Design: Workload-slice quota accounting — overlapping slices and stale grants
+# Design: Workload-slice quota accounting — overlapping slices, stale grants, ungating beyond grant
 
 ## 1. Goal
 
@@ -6,14 +6,30 @@ Make `ClusterQueue.status.flavorsUsage` reflect what an elastic (workload-slice)
 holds, so it cannot exceed `nominalQuota`, and so quota is not left reserved for pods that no
 longer exist.
 
-Two related defects are addressed. Both live in generic `ElasticJobsViaWorkloadSlices` code,
-not in the SparkApplication integration, but both were found while running SparkApplication
-with Spark Dynamic Allocation — the workload that exercises slice replacement hardest.
+Three related defects are addressed. All were found while running SparkApplication with Spark
+Dynamic Allocation — the workload that exercises slice replacement hardest — and all live in
+generic `ElasticJobsViaWorkloadSlices` code rather than in the SparkApplication integration.
 
-Scope note, stated up front: **defect 1 is a quota-correctness fix; defect 2 is hygiene.**
-Defect 2 was initially believed to cause the observed overcommit. It does not — see §4.2 —
-and it is included because it removes real staleness and lets two validation workarounds be
-retired, not because it changes accounting.
+Scope note, stated up front:
+
+- **Defect 1** (§3) — overlapping slices double-counted. Quota correctness: usage could exceed
+  `nominalQuota`.
+- **Defect 2** (§4) — `status.admission` left stale after a scale-down. **Hygiene only.** It
+  was initially believed to cause the observed overcommit; it does not (§4.2). Included because
+  it removes real staleness and lets two validation workarounds be retired.
+- **Defect 3** (§5) — Pods ungated beyond their grant. Quota correctness in the opposite
+  direction: the ledger stays inside `nominalQuota` while the cluster is oversubscribed. Found
+  only after 1 and 2 were deployed and a validation harness was watching both invariants.
+
+The two invariants this design is written against, and which the validation harness checks
+continuously:
+
+```
+CEILING   flavorsUsage <= nominalQuota
+GRANT     sum(running pods * per-pod request) <= flavorsUsage
+```
+
+Defect 1 breaks CEILING. Defect 3 breaks GRANT. Defect 2 breaks neither.
 
 ## 2. Background
 
@@ -63,12 +79,12 @@ which exactly two lacked a `Finished` condition — i.e. only two were eligible 
 | `als-2-2011a` | 3 | 7 (3584Mi) | 2Gi |
 
 Total real demand: **4Gi**, comfortably inside quota. The gap between that and the reported
-9Gi is **not explained by either defect below** and remains open — see §7.
+9Gi is **not explained by defects 1 or 2** and remains open — see §8.
 
 Controller logs from the same window also showed a replacement slice's own requested size
 climbing 6656Mi → 11776Mi (13 → 23 executors) while it waited for quota, because
 gate-blocked executor Pods are counted as live by the SparkApplication integration. That is
-a separate issue, tracked in §7.
+a separate issue, tracked in §8.
 
 ## 3. Defect 1: overlapping slices double-counted in the persistent cache
 
@@ -223,7 +239,61 @@ on elastic jobs. **Non-elastic workloads keep a fully immutable admission**, so 
 `batch/v1` Job behavior under `ElasticJobsViaWorkloadSlices` is unchanged — that property is
 the reason this shape was chosen over relaxing immutability generally.
 
-## 5. Mechanisms investigated and ruled out
+## 5. Defect 3: Pods ungated beyond their grant
+
+Found by running the validation harness against three concurrent Dynamic-Allocation
+SparkApplications after defects 1 and 2 were deployed. The ceiling invariant held — usage
+never exceeded `nominalQuota` — but a second invariant broke: **running Pods × 512Mi exceeded
+`flavorsUsage`**, i.e. Pods were running that no grant covered.
+
+### 5.1 Evidence
+
+One incident, three jobs, one live slice each:
+
+| Job | granted `[driver, executor]` | running | Δ |
+|---|---|---|---|
+| als-1 | `[1, 2]` = 3 slots | 1 driver + **3** executors = 4 | **+1** |
+| als-2 | `[1, 3]` = 4 slots | 1 driver + 3 executors = 4 | 0 |
+| als-3 | `[1, 4]` = 5 slots | 1 driver + 4 executors = 5 | 0 |
+
+Grants summed to 12 slots = 6144Mi, exactly the reported `flavorsUsage`, and exactly
+`nominalQuota`. So the ledger was internally consistent and inside quota; reality had one Pod
+more. The scheduler log confirms `als-1`'s slice was admitted at executor count 2
+(`resourceUsage: 1Gi, count: 2`) while its `spec.podSets[executor].count` read 3.
+
+Sustained across 39 samples and four incidents in one run, always exactly one Pod per affected
+job.
+
+### 5.2 Mechanism
+
+`elasticJobUngater.podsToUngate` capped ungating by the **requested** count:
+
+```go
+granted := workload.ExtractPodSetCountsFromWorkload(wl)   // returns wl.Spec.PodSets counts
+```
+
+despite the variable name and the comment above it both saying *granted*. For an elastic job
+the request can exceed the grant (§2.1: a scale-up creates a replacement slice instead of
+growing the grant; a stale read can raise the request on an already-admitted slice), so the
+ungater authorized more Pods than the scheduler had paid for.
+
+This is the mirror image of defect 1 and arguably worse. An over-count is visible — usage
+climbs above `nominalQuota` and someone notices. An under-count is invisible: the queue looks
+healthy and correct, and Kueue admits further work into capacity that is already in use.
+
+### 5.3 Fix
+
+`workload.ExtractGrantedPodSetCounts` reads `status.admission.podSetAssignments[].Count`, and
+`podsToUngate` uses it. `PodSetAssignment.Count` is optional in the API — the scheduler always
+sets it via `Assignment.ToAPI`, but an assignment lacking it falls back to the PodSet's own
+count, matching `totalRequestsFromAdmission` so a hand-written or legacy admission is not read
+as a grant of zero.
+
+`ExtractPodSetCountsFromWorkload` keeps its behavior and gains a doc note pointing at the new
+function, since the naming is what made this defect easy to introduce and easy to miss on
+review.
+
+## 6. Mechanisms investigated and ruled out
 
 Recorded so they are not re-litigated:
 
@@ -243,7 +313,7 @@ Upstream search found no existing issue or PR for either defect. Related but dis
 preempted slice usage), and the `#12958` / `#13044` / `#12670` / `#13117` chain
 (reclaimable-pods-after-scale-down, which operates on `Status.ReclaimablePods`).
 
-## 6. Testing
+## 7. Testing
 
 | Test | Covers |
 |---|---|
@@ -256,38 +326,72 @@ preempted slice usage), and the `#12958` / `#13044` / `#12670` / `#13117` chain
 | `webhooks: TestValidateAdmissionUpdateElasticScaleDown` | §4.5: decrease allowed for elastic; increase, flavor change, and non-elastic decrease all rejected |
 | `webhooks: TestValidateAdmissionUpdateElasticGateOff` | Exception inert with the gate off |
 | `workloadslicing: TestEnsureWorkloadSlices` (scale-down cases) | Grant shrinks with the spec |
+| `elasticjobs: TestReconcile/"cap is the granted count, not the requested count"` | Defect 3: spec 3, grant 2, three gated Pods, exactly two ungated |
 
-Each defect-1 test was negative-controlled: with the fix disabled they fail with the bug's
-signature (9Gi end-to-end, 7Gi/9Gi in the unit cases), confirming they are not tautologies.
+Every defect-1 and defect-3 test was negative-controlled: with the fix disabled they fail with
+the bug's signature (9Gi end-to-end and 7Gi/9Gi in the defect-1 unit cases; all three Pods
+ungated for defect 3), confirming they are not tautologies.
+
+Fixing defect 3 also required correcting five pre-existing `TestReconcile` fixtures whose
+admission records were internally inconsistent — they declared `resourceUsage` for N Pods while
+leaving `PodSetAssignment.Count` at the wrapper default of 1, and passed only because the cap
+was read from the spec. They now set `Count` to match, which is what the scheduler always
+produces.
+
 `go build ./...`, `go vet ./pkg/...`, `gofmt`, `go test ./pkg/...` and
 `go test -race ./pkg/cache/scheduler ./pkg/scheduler/...` all pass.
 
-Not covered: envtest and live-cluster integration tests, which the development sandbox cannot
-run.
+Not covered by unit tests: envtest and live-cluster integration tests, which the development
+sandbox cannot run.
 
-## 7. Open items
+### 7.1 Cluster validation
 
-1. **The residual overcommit is unexplained.** The capture accounts for 4Gi of live demand
-   against a reported 9Gi. Neither defect here closes a 5Gi gap. The leading hypothesis is
-   that the cache retains usage for slices already `Finished` in the API — most of the ~75
-   slices in the capture were Finished, many stuck terminating with the
-   `kueue.x-k8s.io/resource-in-use` finalizer. Defect 1's fix suppresses exactly that (a
-   superseded slice contributes zero whether or not its `Finish` landed), so it may resolve
-   the symptom, but that is not yet demonstrated. Next step: compare
-   `kueue_cluster_queue_resource_usage` against the sum of live workloads at the same
-   instant; a metric far above the API sum confirms cache/API divergence.
+Defects 1 and 2 were deployed to the reporting cluster and exercised with two, then three,
+concurrent Dynamic-Allocation SparkApplications against the same 6Gi `nominalQuota` that
+originally reported 9Gi.
+
+A validation harness sampled both invariants every 2s, reading a pods snapshot *before* the
+ClusterQueue snapshot (so a scale-up landing between the two biases against false GRANT
+positives) and re-reading once before reporting any violation.
+
+Two-app run, ~30 samples: `flavorsUsage` tracked live Pods exactly at 512Mi each (5→2560Mi,
+8→4Gi, 9→4608Mi, 10→5Gi, 11→5632Mi, 12→6Gi) and **never exceeded 6Gi**, including sustained
+stretches pinned at the cap. Previously the same workload reported 9Gi.
+
+Three-app run, 316 samples: **CEILING held on every sample** (peak usage 6144Mi = exactly
+`nominalQuota`). **GRANT failed on 39 samples** across four incidents — which is how defect 3
+was found. Peak gated Pods reached 44 against a 12-slot quota, quantifying open item 2.
+
+## 8. Open items
+
+1. **The original 9Gi overcommit is resolved empirically, mechanism unconfirmed.** Across 346
+   post-fix samples spanning two- and three-app runs, `flavorsUsage` never exceeded
+   `nominalQuota` (§7.1), where the same workload previously reported 9Gi. But the pre-fix
+   capture only ever accounted for 4Gi of live demand, so the 5Gi gap was never explained, and
+   no post-fix measurement distinguishes *which* mechanism was responsible. The leading
+   hypothesis remains that the cache retained usage for slices already `Finished` in the API —
+   most of the ~75 slices in the capture were Finished, many stuck terminating with the
+   `kueue.x-k8s.io/resource-in-use` finalizer — which defect 1's fix suppresses regardless of
+   whether the `Finish` landed. Confirming it needs
+   `kueue_cluster_queue_resource_usage` compared against the live-workload sum at the same
+   instant, on a build *without* the defect-1 fix. Treat this as fixed-in-practice,
+   not root-caused.
 2. **Gated executor Pods inflate the requested count.** `isVerifiedLiveExecutor` counts any
    Pod not `Succeeded`/`Failed`, including Pods still blocked by
    `kueue.ElasticJobSchedulingGate`. A replacement slice that cannot be admitted therefore
    keeps growing (observed: 13 → 23 executors against a 12-slot quota) while DA adds more
    gated Pods, resolving only when `executorIdleTimeout` reaps them — a 23s admission delay
-   with heavy reconcile-conflict churn in the observed run. Not addressed here.
+   with heavy reconcile-conflict churn. The three-app run reached **44 gated Pods**. Fixing
+   defect 3 makes this *more* visible, because surplus executors now correctly stay `Pending`
+   instead of running. Note the trap: gated Pods must keep being counted or scale-up is never
+   detected at all, so the fix has to bound or clamp the requested count rather than filter
+   them out. Not addressed here.
 3. **`Finish` is not retried** by `Scheduler.replaceOldWorkloadSlice`. Defect 1's fix makes
    this harmless for quota accounting, so it is left alone, but it remains a latent gap.
 4. Retiring `scaledDownPodSetNames` / `isPreexistingStaleCount` once §4.4 has shipped long
    enough that no pre-existing objects carry stale grants.
 
-## 8. Files changed
+## 9. Files changed
 
 - `pkg/cache/scheduler/clusterqueue.go` — chain grouping, `sliceChainKey`, `sliceIsLater`,
   `sliceGroupTip`, `reconcileSliceGroup`, `supersededSliceKeys`.
@@ -303,3 +407,8 @@ run.
   `updatePodSetCountsWithRetry`.
 - `pkg/webhooks/workload_webhook.go` — elastic scale-down exception in
   `validateAdmissionUpdate`.
+- `pkg/workload/podsetscounts.go` — `ExtractGrantedPodSetCounts`, plus a doc note on
+  `ExtractPodSetCountsFromWorkload` distinguishing requested from granted counts.
+- `pkg/controller/elasticjobs/elastic_job_ungater.go` — `podsToUngate` caps by the grant.
+- `docs/design/sparkapplication-executor-quota-gate-design.md` — §7 records the ungating-cap
+  correction against the design that introduced it.

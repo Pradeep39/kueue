@@ -19,6 +19,8 @@ package workload
 import (
 	"maps"
 
+	"k8s.io/utils/ptr"
+
 	kueue "sigs.k8s.io/kueue/apis/kueue/v1beta2"
 	utilslices "sigs.k8s.io/kueue/pkg/util/slices"
 )
@@ -66,10 +68,42 @@ func ExtractPodSetCounts(podSets []kueue.PodSet) PodSetsCounts {
 
 // ExtractPodSetCountsFromWorkload returns a PodSetsCounts map derived from the provided Workload.
 //
+// Note this reports what the Workload *requests* (spec.podSets), which for an elastic job can
+// exceed what was actually granted. Use ExtractGrantedPodSetCounts wherever the answer must be
+// bounded by the quota the scheduler handed out.
+//
 // Important: This function assumes the Workload is not nil. It does not perform a nil check,
 // and calling it with a nil Workload will result in a panic.
 func ExtractPodSetCountsFromWorkload(wl *kueue.Workload) PodSetsCounts {
 	return ExtractPodSetCounts(wl.Spec.PodSets)
+}
+
+// ExtractGrantedPodSetCounts returns a PodSetsCounts map of what the scheduler actually granted,
+// read from status.admission.podSetAssignments. It returns an empty map when the Workload has no
+// admission, i.e. nothing has been granted yet.
+//
+// This is deliberately distinct from ExtractPodSetCountsFromWorkload: for an elastic job the
+// requested count in spec.podSets can exceed the granted count (a scale-up creates a replacement
+// slice rather than growing the grant in place, and a stale read can raise the request on an
+// already-admitted slice). Anything that authorizes real consumption — ungating Pods, for
+// example — must be capped by the grant, never by the request.
+//
+// PodSetAssignment.Count is optional. The scheduler always sets it (Assignment.ToAPI), but for an
+// assignment that lacks it this falls back to the PodSet's own count, matching what
+// totalRequestsFromAdmission does. That keeps a hand-written or legacy admission from being read
+// as a grant of zero.
+//
+// Important: This function assumes the Workload is not nil.
+func ExtractGrantedPodSetCounts(wl *kueue.Workload) PodSetsCounts {
+	counts := make(PodSetsCounts)
+	if wl.Status.Admission == nil {
+		return counts
+	}
+	requested := ExtractPodSetCountsFromWorkload(wl)
+	for _, psa := range wl.Status.Admission.PodSetAssignments {
+		counts[psa.Name] = ptr.Deref(psa.Count, requested[psa.Name])
+	}
+	return counts
 }
 
 // ApplyPodSetCounts updates the count values of a Workload's PodSets based on the provided counts.

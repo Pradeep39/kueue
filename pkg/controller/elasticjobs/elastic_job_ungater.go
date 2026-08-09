@@ -198,7 +198,13 @@ func (r *elasticJobUngater) podsToUngate(ctx context.Context, wl *kueue.Workload
 		return nil, fmt.Errorf("listing pods for workload slice: %w", err)
 	}
 
-	granted := workload.ExtractPodSetCountsFromWorkload(wl)
+	// The cap must come from status.admission, NOT from spec.podSets: for an elastic job the
+	// requested count can exceed the granted one (a scale-up creates a replacement slice
+	// instead of growing the grant, and a stale read can raise the request on an
+	// already-admitted slice). Capping by the request ungates Pods that hold no quota —
+	// observed on a real cluster as 3 executors running against a grant of 2, leaving the
+	// ClusterQueue honest while the cluster was oversubscribed.
+	granted := workload.ExtractGrantedPodSetCounts(wl)
 	gatedPerPodSet := make(map[kueue.PodSetReference][]*corev1.Pod)
 	ungatedPerPodSet := make(map[kueue.PodSetReference]int32)
 	for i := range podList.Items {

@@ -284,3 +284,46 @@ No real envtest integration test exists yet for the gate/ungate path against a l
 envtest during development (same constraint noted in PR #16). The manual cluster test in
 this section is the only end-to-end verification to date; an envtest-based integration
 test remains open follow-up work.
+
+## 7. Correction: the ungating cap was the requested count, not the grant
+
+Found on a real cluster after this design shipped, and fixed alongside the workload-slice
+quota-accounting work (see `workloadslice-quota-accounting-design.md` §5).
+
+`elasticJobUngater.podsToUngate` computed its cap as:
+
+```go
+granted := workload.ExtractPodSetCountsFromWorkload(wl)   // reads wl.Spec.PodSets
+```
+
+The variable name and the comment above it both claimed this was the *granted* count. It is
+not: `ExtractPodSetCountsFromWorkload` returns `spec.podSets[].Count`, i.e. what the slice
+**requests**. For an elastic job those two numbers diverge — a scale-up creates a replacement
+slice rather than growing the grant in place, and a stale read of an already-admitted slice
+can raise its request without the grant following.
+
+Observed consequence: an `als-1` slice admitted with `status.admission` executor count **2**
+had `spec.podSets[executor].count` of **3**, and **all three** of its executors were ungated
+and running. `ClusterQueue.status.flavorsUsage` correctly reported the 2 it had granted, so
+nothing looked wrong from the queue's side while the cluster was oversubscribed by one Pod.
+
+This is the mirror image of the overcommit that motivated the sibling design doc, and
+arguably more dangerous: the ledger stays inside `nominalQuota`, so Kueue will happily admit
+another job into capacity that is already consumed. It was reproduced across four separate
+incidents and 39 samples in one run, always by exactly one Pod per affected job.
+
+**Fix.** A new `workload.ExtractGrantedPodSetCounts` reads
+`status.admission.podSetAssignments[].Count` (falling back to the PodSet's own count only when
+an assignment omits `Count`, matching `totalRequestsFromAdmission`), and `podsToUngate` uses
+it. `ExtractPodSetCountsFromWorkload` gained a doc note pointing at it, so the next reader is
+less likely to reach for the request when they mean the grant.
+
+Regression test: `TestReconcile/"cap is the granted count, not the requested count"` — spec 3,
+grant 2, three gated Pods, exactly two ungated. Negative-controlled: reverting to the
+request-based cap ungates all three and the test fails.
+
+**Interaction to keep in mind.** With the cap correct, surplus executors stay `Pending` rather
+than running, so a saturated queue accumulates more gated Pods. That amplifies the unfixed
+issue where gate-blocked Pods are counted as live by `isVerifiedLiveExecutor` and inflate a
+pending slice's requested count (34–44 gated Pods against a 12-slot quota were observed in the
+same run). The two want addressing together.
