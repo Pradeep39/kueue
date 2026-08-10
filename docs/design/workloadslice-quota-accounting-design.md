@@ -362,6 +362,25 @@ Three-app run, 316 samples: **CEILING held on every sample** (peak usage 6144Mi 
 `nominalQuota`). **GRANT failed on 39 samples** across four incidents — which is how defect 3
 was found. Peak gated Pods reached 44 against a 12-slot quota, quantifying open item 2.
 
+#### What the memory results do *not* establish
+
+The harness computes the GRANT side as `running Pods × POD_MIB` with `POD_MIB=512`, taken from
+`spec.executor.memory`. That is the same number Kueue itself charges, so for **memory** the check
+compared Kueue's ledger against a restatement of its own assumption. It could not have detected a
+systematic under-charge, and §9 shows there is one: the real Pods request 896Mi each.
+
+The memory GRANT results above should therefore be read as "the ledger is internally consistent and
+tracks Pod *count* correctly", not as "the queue's usage matches what the cluster reserved". The
+CEILING results are unaffected — they compare `flavorsUsage` against `nominalQuota`, both of which
+are Kueue's own numbers by definition, which is exactly what SC-1 asserts.
+
+CPU was caught only because the under-charge there is total rather than proportional: `flavorsUsage`
+reported `cpu: 0` against running Pods, which is too stark to be mistaken for agreement.
+
+Before the next validation round the harness must sum **actual** Pod requests
+(`.spec.containers[].resources.requests`) instead of a configured constant. Until then, a memory
+`OK` verdict carries no information about the §9 under-charge.
+
 ## 8. Open items
 
 1. **The original 9Gi overcommit is resolved empirically, mechanism unconfirmed.** Across 346
@@ -390,8 +409,130 @@ was found. Peak gated Pods reached 44 against a 12-slot quota, quantifying open 
    this harmless for quota accounting, so it is left alone, but it remains a latent gap.
 4. Retiring `scaledDownPodSetNames` / `isPreexistingStaleCount` once §4.4 has shipped long
    enough that no pre-existing objects carry stale grants.
+5. **The SparkApplication PodSet under-charges CPU and memory.** Accepted with a
+   configuration workaround for CPU; memory has none. Not a workload-slice defect. See §9.
 
-## 9. Files changed
+## 9. Recorded, not fixed: the SparkApplication PodSet under-charges CPU and memory
+
+Found after the defects above were fixed, while adding CPU columns to the validation harness.
+Both halves are in **upstream** code —
+`pkg/controller/jobs/sparkapplication/sparkapplication_podset.go`, commit `e787fd071`
+(upstream PR #7268) — not in any of the fork's work, and neither is a workload-slice defect.
+They are recorded here because they invalidate part of §7.1 and because they bound
+what the GRANT invariant can currently prove.
+
+### 9.1 CPU: no fallback to `cores`
+
+```go
+// sparkapplication_podset.go:548
+var cpuRequests *string
+if sparkutil.IsDriverPod(pod) {
+	cpuRequests = app.Spec.Driver.CoreRequest
+} else if sparkutil.IsExecutorPod(pod) {
+	cpuRequests = app.Spec.Executor.CoreRequest
+}
+
+if cpuRequests == nil {
+	return nil          // PodSet carries no cpu entry at all
+}
+```
+
+With `coreRequest` unset — the common case, since `cores` is the field users set — the PodSet
+template has no `cpu` request, so the Workload charges none and `flavorsUsage` reports `cpu: 0`
+however many Pods are running. Confirmed on the cluster: 11 running Pods, each with
+`requests.cpu: "1"`, against `flavorsUsage` `cpu: 0` of a `nominalQuota` of 15.
+
+Spark's own precedence, from `BasicExecutorFeatureStep.scala` (Spark 4.0.1):
+
+```scala
+if (isDefaultProfile && kubernetesConf.sparkConf.contains(KUBERNETES_EXECUTOR_REQUEST_CORES)) {
+      kubernetesConf.get(KUBERNETES_EXECUTOR_REQUEST_CORES).get
+} else {
+      execResources.cores.get.toString      // spark.executor.cores
+}
+...
+.addToRequests("cpu", executorCpuQuantity)
+```
+
+So the correct derivation is `request.cores ?? cores`. Note there is deliberately **no** fallback
+to `limit.cores`: Spark reads `spark.kubernetes.executor.limit.cores` only for the CPU *limit*, and
+only for the default profile. `Cores` is `*int32` where `CoreRequest` is `*string`, so a fix needs a
+conversion rather than an assignment.
+
+### 9.2 Memory: `memoryOverhead` is dropped
+
+`addMemoryRequests` (line 606) uses `Spec.{Driver,Executor}.Memory` verbatim. `grep -rn Overhead`
+over the whole integration returns nothing, so `spec.executor.memoryOverhead` and
+`spec.memoryOverheadFactor` are both ignored — including when set explicitly. This is not only a
+missing default.
+
+Spark's total, from `ResourceProfile.scala` and `internal/config/package.scala`:
+
+```
+overhead = spark.executor.memoryOverhead
+        ?? max(factor × memory, spark.executor.minMemoryOverhead)     // defaults: 0.1, 384m
+total    = memory + overhead + offHeap + pysparkMemory
+```
+
+The factor is read from `spark.executor.memoryOverheadFactor` **only if explicitly set** (Spark
+tests it with `contains`), otherwise from the deprecated `spark.kubernetes.memoryOverheadFactor`.
+
+One divergence to be careful of if this is ever fixed: Spark selects the 0.4 non-JVM factor from
+`APP_RESOURCE_TYPE == python` — **Python only, no R check** — whereas the Spark Operator's
+`isJavaApp` treats `Java || Scala` as JVM and therefore R as non-JVM. The two disagree for
+`type: R`. Mirroring the operator would mispredict what Spark actually requests.
+
+### 9.3 Measured impact
+
+At the test configuration (512m executors, 6Gi `nominalQuota`, 1 core each):
+
+| | Charged by Kueue | Reserved by kubelet | Shortfall |
+|---|---|---|---|
+| Per executor | 512Mi | 896Mi | 384Mi (**75%**) |
+| 11 Pods | 5632Mi | 9856Mi | 4224Mi |
+| At the 6Gi ceiling (12 slots) | 6144Mi | 10752Mi | **4608Mi over quota** |
+| CPU, 11 Pods | 0 | 11 cores | **11 cores** |
+
+A queue reporting itself exactly at its limit had reserved roughly 10.5Gi and 12 cores.
+
+### 9.4 Why admission still worked
+
+Worth stating explicitly, because the CPU result looks impossible otherwise: Kueue does not vend
+CPU. `PodSets()` builds a *synthetic* template from the CR for ledger arithmetic; the executor Pod
+that actually runs is built independently by the Spark driver, and Kueue never reads it back. A
+resource absent from the template is simply not enforced — the kube-scheduler still placed each Pod
+against its real 1-core request, and the `cpu: 15` `nominalQuota` was decorative. Divergence between
+the two derivations is silent by construction.
+
+### 9.5 Decision: accepted with a configuration workaround
+
+Not fixed, deliberately, to avoid widening scope into upstream resource-derivation code.
+
+**`coreRequest` is treated as a mandatory attribute** on both driver and executor specs:
+
+```yaml
+driver:
+  cores: 1
+  coreRequest: 1000m
+executor:
+  cores: 1
+  coreRequest: 1000m
+```
+
+Verified on the cluster: `flavorsUsage` then tracks CPU. Use `1000m` rather than `"1"` — the field
+is `*string` with no coercion, and an unquoted `1` is rejected by Kueue's own
+`msparkapplication.kb.io` webhook with `json: cannot unmarshal number into Go struct field
+DriverSpec.spec.driver.coreRequest of type string`, which names neither the manifest nor the
+quoting as the cause. `1000m` cannot be parsed as a YAML number, so it removes the trap.
+
+The workaround is viable and not constraining: it sets a value Spark already derives from `cores`,
+so the Pods' real requests do not change. It closes the accounting gap without affecting placement.
+
+**It does not cover memory.** There is no equivalent field to set, because Kueue ignores
+`memoryOverhead` even when specified. Memory remains under-charged by the overhead term, and no
+configuration avoids it. This is the residual known gap.
+
+## 10. Files changed
 
 - `pkg/cache/scheduler/clusterqueue.go` — chain grouping, `sliceChainKey`, `sliceIsLater`,
   `sliceGroupTip`, `reconcileSliceGroup`, `supersededSliceKeys`.
