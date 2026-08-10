@@ -183,6 +183,7 @@ subject of the companion design document.
 | **R-10** | Existing elastic integrations MUST be unaffected. | Met |
 | **R-11** | The number of workers awaiting quota SHOULD remain proportionate to the quota available. | **Not met** — §7.2 |
 | **R-12** | Time-to-admission under a saturated queue SHOULD remain bounded. | **Not met** — §7.2 |
+| **R-13** | The per-worker resource cost used for accounting MUST match what the framework actually requests of Kubernetes, for every resource the queue governs. | **Not met** — §7.5 |
 
 ## 4.1 Success criteria
 
@@ -199,6 +200,10 @@ queue reports that it is healthy** — an invisible failure, and the more danger
 SC-1 fails loudly; someone notices usage above quota. SC-2 fails silently. A proposal for elastic
 quota management should be judged against both.
 
+Note that SC-2 is only as strong as the per-worker cost it is measured against. If that cost is
+taken from the same value the queue charges, the check is circular and passes regardless. §7.5
+records a case where exactly that happened, and what it hid.
+
 # 5. Risks and mitigations
 
 | Risk | Mitigation |
@@ -208,6 +213,7 @@ quota management should be judged against both.
 | Elasticity weakens guarantees non-elastic users depend on. | R-9; the reference implementation confines every relaxation to elastic workloads. |
 | A workload is admitted, then starved of the growth it needs. | R-8; and §7.2 documents the case where this is currently imperfect. |
 | Silent oversubscription. | SC-2 is a first-class success criterion, not an implementation detail. |
+| The predicted worker Pod diverges from the one the framework actually creates. | R-13; **currently unmet** — §7.5 records two live instances and why validation missed them. |
 | Elastic accounting is subtle and easy to get wrong. | Acknowledged: three distinct accounting defects were found and fixed during implementation, two of them only under sustained load. §6 explains why that argues *for* upstreaming rather than against. |
 
 # 6. Reference implementation
@@ -244,8 +250,13 @@ Spark applications with Dynamic Allocation, in a 6Gi queue.
 | Mid-implementation | 316 | Held on every sample | **Violated on 39 samples** — which is how the second defect was found |
 | Final | 159 | Held on every sample; peak equal to quota | Held on every sample |
 
-Reported usage tracked the workload's real footprint exactly, and quota released on scale-down was
-promptly reusable by the other applications.
+Reported usage tracked the workload's footprint **as counted in workers** exactly, and quota
+released on scale-down was promptly reusable by the other applications.
+
+The qualification matters: the harness derived each worker's cost from the same configured value
+Kueue charges, so the SC-2 column above confirms that every running worker had a grant *at the cost
+Kueue believed in*. It does not confirm that cost matched what Kubernetes actually reserved. §7.5 is
+that gap.
 
 # 7. Open questions and known gaps
 
@@ -282,6 +293,45 @@ is documented rather than claimed as closed.
 
 Multi-cluster support, Spark operators other than Kubeflow's, and integration testing against a
 live scheduler in CI are all outstanding.
+
+## 7.5 Per-worker cost can diverge from what the framework requests (R-13)
+
+Distinct from every gap above, and the one a reviewer should weigh most carefully, because it is a
+property of the *approach* rather than of this implementation.
+
+Kueue admits a workload by reconstructing a predicted worker Pod from the workload's resource and
+charging quota for it. The Pod that actually runs is built independently — by the framework, from
+the framework's own configuration. Nothing reconciles the two, and Kueue never reads the running
+Pod back. When the two derivations disagree, **the cluster follows reality and the ledger follows
+the prediction**, silently.
+
+This is not hypothetical. Two such divergences were found in the existing Spark integration after
+the accounting work was complete:
+
+- **A resource omitted entirely.** The predicted Pod carried no CPU request, because the derivation
+  read only an optional field and did not fall back to the one users actually set. The queue reported
+  `cpu: 0` while eleven workers each held a core against a nominal quota of 15. The CPU quota was
+  decorative, and admission was governed by memory alone.
+- **A resource under-stated proportionally.** The predicted Pod omitted Spark's memory overhead term,
+  charging 512Mi where the kubelet reserved 896Mi — a 75% under-charge. A queue reporting itself
+  exactly at its 6Gi limit had reserved roughly 10.5Gi.
+
+Both are violations of SC-2, and both were invisible to the harness for the reason given in §6.2.
+The CPU case surfaced only because a zero is too stark to mistake for agreement; the memory case
+surfaced only once actual Pod requests were compared against the ledger.
+
+**Why this belongs in a proposal rather than a bug tracker.** Any integration that predicts a worker
+Pod from a custom resource inherits this failure mode, and elasticity makes it worse: a static
+workload's divergence is a fixed error found once, whereas an autoscaling workload multiplies it by
+a worker count that changes continuously and without bound. A design for elastic quota management
+should therefore say how the predicted cost is kept faithful — by validating it against observed
+Pods, by deriving it from the framework's own logic rather than re-implementing it, or by reporting
+a discrepancy rather than absorbing it. This proposal does not yet answer that, and R-13 is
+consequently marked not met.
+
+In the reference implementation the CPU case is worked around by configuration, treating the
+relevant field as mandatory; the memory case has no workaround, because the overhead field is
+ignored even when set explicitly.
 
 # 8. Alternatives considered
 

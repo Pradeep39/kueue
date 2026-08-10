@@ -567,6 +567,14 @@ On violation it captures Pods, ClusterQueue, Workloads, LocalQueues, SparkApplic
 events, controller logs (current and previous), filtered metrics, and a per-slice breakdown of spec
 versus granted counts with chain and job UID.
 
+One limitation, since it changes how §10.3 should be read: the harness computes the GRANT side as
+`running Pods × POD_MIB`, with `POD_MIB` a constant set from `spec.executor.memory`. That is the
+same figure Kueue charges, so for **memory** the check compares Kueue's ledger against a
+restatement of its own assumption. It verifies that the ledger tracks Pod *count* correctly; it
+cannot detect a systematic per-Pod under-charge, and §11.3 establishes that there is one. Summing
+actual `resources.requests` from the Pod snapshot removes the circularity and is a prerequisite for
+the next validation round.
+
 ## 10.3 Results
 
 | Run | Build | Samples | CEILING | GRANT |
@@ -580,6 +588,10 @@ Before this work the same two-app workload reported 9Gi against a 6Gi `nominalQu
 The final run also produced the first in-cluster evidence for §6.1, previously only test-proven: a
 sample showing four quota-reserved, non-Finished workloads charging only three jobs' worth of
 quota — one slice contributing zero mid-replacement.
+
+Scope of the GRANT column, per §10.2: it establishes that every running Pod is backed by a grant
+*at the per-Pod cost Kueue believes in*. It does not establish that that cost matches what the
+kubelet reserved. §11.3 is that gap.
 
 # 11. Known gaps
 
@@ -616,7 +628,48 @@ own proposal:
 Configuration mitigations, pending measurement: size `maxExecutors` against available quota, and
 set `initialExecutors` equal to `minExecutors` so the floor is admitted atomically (§4.4).
 
-## 11.3 Smaller items
+## 11.3 The PodSet under-charges CPU and memory (accepted; workaround for CPU only)
+
+Found after §6.1–§6.3 had shipped, while extending the harness to CPU. Both halves are in upstream
+`sparkapplication_podset.go` (commit `e787fd071`, upstream PR #7268) — outside this work, and not
+workload-slice defects. They are recorded because they bound what §10.3 proves.
+
+**CPU has no fallback to `cores`.** `addCPURequests` reads only `Spec.*.CoreRequest` and returns
+early when it is nil, so the PodSet carries no `cpu` entry and `flavorsUsage` reports `cpu: 0`
+however many Pods run. Observed: 11 Pods each requesting 1 core, against `cpu: 0` of a
+`nominalQuota` of 15. Spark's own precedence is
+`spark.kubernetes.executor.request.cores ?? spark.executor.cores`
+(`BasicExecutorFeatureStep.scala`); there is deliberately no fallback to `limit.cores`, which Spark
+reads only for the CPU limit.
+
+**Memory drops `memoryOverhead`.** `addMemoryRequests` uses `Spec.*.Memory` verbatim, and the
+integration contains no reference to overhead at all, so `spec.executor.memoryOverhead` is ignored
+even when set explicitly. Spark charges
+`memory + (overhead ?? max(factor × memory, minMemoryOverhead)) + offHeap + pysparkMemory`, with
+defaults 0.1 and 384m. At 512m executors that is 896Mi actual against 512Mi charged — a 75%
+under-charge, so a queue reporting itself exactly at 6Gi had reserved roughly 10.5Gi.
+
+**Why admission still succeeded**, which the CPU result makes worth stating plainly: Kueue does not
+vend CPU. `PodSets()` builds a synthetic template for ledger arithmetic, while the Pod that runs is
+built independently by the Spark driver and never read back. A resource absent from the template is
+simply unenforced — the kube-scheduler placed each Pod against its real request, and the `cpu` quota
+was decorative. Divergence between the two derivations is silent by construction, which generalises
+to any integration reconstructing a Pod template from a CR (§12).
+
+**Decision.** Not fixed, to avoid widening scope into upstream resource derivation. `coreRequest` is
+instead treated as a **mandatory attribute** on driver and executor specs, written as `1000m` rather
+than `"1"` — the field is `*string` with no coercion, and an unquoted `1` fails inside Kueue's own
+`msparkapplication.kb.io` webhook with `cannot unmarshal number into Go struct field ... of type
+string`, an error that names neither the manifest nor the quoting. The workaround is viable and not
+constraining: it supplies a value Spark already derives from `cores`, so real Pod requests do not
+change and only the ledger moves. Verified on the cluster.
+
+Memory has **no equivalent workaround**, since the overhead field is ignored even when set, so it
+remains under-charged by the overhead term. Anything that does fix it must not copy the Spark
+Operator's `isJavaApp(Java || Scala)` test: Spark selects its 0.4 non-JVM factor from a
+**Python-only** check, so the two disagree for `type: R`.
+
+## 11.4 Smaller items
 
 - `Scheduler.replaceOldWorkloadSlice` does not retry a failed `Finish`. Harmless for accounting
   after §6.1, but latent.
