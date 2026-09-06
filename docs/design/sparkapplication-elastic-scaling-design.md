@@ -180,17 +180,17 @@ SparkApplication, and are proposed as a separate PR for that reason.
    `EnsureWorkloadSlices` already uses — to resolve the ambiguity into a single answer
    instead of erroring.
 
-## 5. External dependency: Spark Operator `spec.Parallelism`
+## 5. No external Spark Operator dependency
 
 See [`spark-operator-parallelism-dependency.md`](./spark-operator-parallelism-dependency.md)
-for the full write-up. Summary: `Pradeep39/spark-operator#1` adds a
-`Spec.Parallelism *int32` field to `SparkApplicationSpec`, intended as a stable,
-operator-agnostic place for an external system to record a desired executor count. **The
-design in this document does not use it** — §2.3's live-Pod-count derivation supersedes
-the need for it, since Kueue never needs to *write* a desired count anywhere; it only
-*reads* the live state. The field is retained in the fork as a forward-looking, currently
-inert addition and called out explicitly so it isn't mistaken for a required dependency
-of PR #16.
+for the full write-up. Summary: **this design requires no change to
+`kubeflow/spark-operator`.** It runs against the released, open-source operator and its
+unmodified `v1beta2` CRD, with Dynamic Allocation enabled and no Kueue-specific count field
+on the CR. A `Spec.Parallelism *int32` addition was prototyped in a fork as a stable,
+operator-agnostic place for an external system to record a desired executor count; §2.3's
+live-Pod-count derivation supersedes the need for it, since Kueue never needs to *write* a
+desired count anywhere — it only *reads* live state. That fork addition is being reverted, and
+the linked document records the rationale plus how to confirm the dependency is zero.
 
 ## 6. Alternatives considered
 
@@ -199,12 +199,13 @@ of PR #16.
 - **`workqueue.AddAfter` for debouncing**: rejected — `AddAfter` items fire independently
   per call, so a burst of N Pod events produces N staggered reconciles, not one coalesced
   reconcile. A small explicit per-key timer map (§3.3) was needed instead.
-- **Writing the live count into `spec.Parallelism`** (once that field existed in the
-  Spark Operator fork) and reading it back in `PodSets()`: considered and rejected as an
-  unnecessary indirection — it would still require *someone* to write it (recreating the
-  exact problem in §2.2, just against a different field, unless the write is scoped to
-  only pre-running phases), and live-Pod listing is strictly more accurate since it
-  reflects DA's actual current state rather than a value someone last wrote.
+- **Writing the live count into a dedicated `spec.parallelism` field on `SparkApplication`**
+  (which would have required adding one to the Spark Operator API) and reading it back in
+  `PodSets()`: considered and rejected as an unnecessary indirection — it would still require
+  *someone* to write it (recreating the exact problem in §2.2, just against a different field,
+  unless the write is scoped to only pre-running phases), and live-Pod listing is strictly
+  more accurate since it reflects DA's actual current state rather than a value someone last
+  wrote. Rejecting it is also what keeps this design free of any Spark Operator change (§5).
 
 ## 7. Testing
 
