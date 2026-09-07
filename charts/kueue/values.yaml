@@ -176,6 +176,7 @@ managerConfig:
       - "workload.codeflare.dev/appwrapper"
       - "trainer.kubeflow.org/trainjob"
     #  - "sparkoperator.k8s.io/sparkapplication"
+    #  - "spark.apache.org/sparkapplication"
       - "pod"
       - "deployment"
       - "statefulset"

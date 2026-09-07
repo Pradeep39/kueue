@@ -313,6 +313,15 @@ const (
 	// Enables the Kubeflow's SparkApplication integration
 	SparkApplicationIntegration featuregate.Feature = "SparkApplicationIntegration"
 
+	// owner: @Pradeep39
+	//
+	// Enables the Apache Spark Kubernetes Operator's SparkApplication integration
+	// (spark.apache.org/v1), which is a different CRD from Kubeflow's
+	// sparkoperator.k8s.io/v1beta2 SparkApplication gated by
+	// SparkApplicationIntegration. Requires an operator build that serves
+	// .spec.suspend.
+	ApacheSparkApplicationIntegration featuregate.Feature = "ApacheSparkApplicationIntegration"
+
 	// owner: @kshalot
 	//
 	// issue: https://github.com/kubernetes-sigs/kueue/issues/8303
@@ -711,6 +720,9 @@ var defaultVersionedFeatureGates = map[featuregate.Feature]featuregate.Versioned
 		{Version: version.MustParse("0.17"), Default: false, PreRelease: featuregate.Alpha},
 	},
 	SparkApplicationIntegration: {
+		{Version: version.MustParse("0.17"), Default: false, PreRelease: featuregate.Alpha},
+	},
+	ApacheSparkApplicationIntegration: {
 		{Version: version.MustParse("0.17"), Default: false, PreRelease: featuregate.Alpha},
 	},
 	MultiKueueOrchestratedPreemption: {
