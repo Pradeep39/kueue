@@ -80,6 +80,9 @@ SparkApplication.Spec is never written to while the app is Running.
 Nothing about `EnsureWorkloadSlices` needed to change to make this work — it already
 takes "desired `PodSet` counts" as an opaque input and doesn't care where they came from.
 
+Step-by-step sequence diagrams of both the scale-up and scale-down paths, with the owning
+Go file named on every arrow, are in [`diagrams/`](./diagrams/README.md).
+
 ## 3. Implementation
 
 ### 3.1 Live executor count derivation (`sparkapplication_podset.go`)
