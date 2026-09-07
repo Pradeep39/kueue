@@ -20,6 +20,7 @@ import (
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 
 	"sigs.k8s.io/kueue/pkg/controller/jobframework"
+	"sigs.k8s.io/kueue/pkg/controller/jobs/apachesparkapplication"
 	"sigs.k8s.io/kueue/pkg/controller/jobs/appwrapper"
 	"sigs.k8s.io/kueue/pkg/controller/jobs/deployment"
 	"sigs.k8s.io/kueue/pkg/controller/jobs/job"
@@ -47,6 +48,7 @@ func NewIntegrationManager() *jobframework.IntegrationManager {
 // RegisterIntegrations registers all built-in job integrations with manager.
 func RegisterIntegrations(manager *jobframework.IntegrationManager) error {
 	for _, register := range []func(*jobframework.IntegrationManager) error{
+		apachesparkapplication.RegisterIntegration,
 		appwrapper.RegisterIntegration,
 		deployment.RegisterIntegration,
 		job.RegisterIntegration,
