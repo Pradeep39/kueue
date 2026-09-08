@@ -28,6 +28,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	kueue "sigs.k8s.io/kueue/apis/kueue/v1beta2"
@@ -90,6 +91,13 @@ const (
 	// podSetCount is driver + executor.
 	podSetCount = 2
 
+	// controllerName disambiguates this controller from the Kubeflow SparkApplication
+	// integration. controller-runtime derives a controller's name from the Kind of the
+	// object passed to For(), and both CRDs are Kind "SparkApplication", so without an
+	// explicit name the second integration to be set up fails the manager's uniqueness
+	// check and the whole controller manager refuses to start.
+	controllerName = "apachesparkapplication"
+
 	// appNameLabel is the label the operator stamps on every resource it owns, and
 	// which it also injects into the executor pod template so the driver-created
 	// executor pods carry it too. See org.apache.spark.k8s.operator.Constants
@@ -115,7 +123,10 @@ func NewJob() jobframework.GenericJob {
 	return &SparkApplication{SparkApplication: &sparkv1.SparkApplication{}}
 }
 
-var NewReconciler = jobframework.NewGenericReconcilerFactory(NewJob)
+var NewReconciler = jobframework.NewGenericReconcilerFactory(NewJob,
+	func(b *builder.Builder, _ client.Client) *builder.Builder {
+		return b.Named(controllerName)
+	})
 
 // SparkApplication wraps the CRD type so the GenericJob methods can hang off it without
 // taking a dependency on the API package from jobframework.
