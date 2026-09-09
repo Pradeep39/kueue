@@ -18,7 +18,10 @@ package apachesparkapplication
 
 import (
 	"context"
+	"fmt"
+	"slices"
 
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -31,8 +34,10 @@ import (
 	"sigs.k8s.io/kueue/pkg/controller/jobframework"
 	sparkv1 "sigs.k8s.io/kueue/pkg/controller/jobs/apachesparkapplication/api/v1"
 	"sigs.k8s.io/kueue/pkg/features"
+	utilpod "sigs.k8s.io/kueue/pkg/util/pod"
 	"sigs.k8s.io/kueue/pkg/util/podset"
 	"sigs.k8s.io/kueue/pkg/util/webhook"
+	"sigs.k8s.io/kueue/pkg/workloadslicing"
 )
 
 var (
@@ -95,7 +100,21 @@ func (w *SparkApplicationWebhook) Default(ctx context.Context, obj *sparkv1.Spar
 	}
 	jobframework.ApplyDefaultForManagedBy(job, w.queues, w.cache, log)
 
+	if isAnElasticJob(obj) {
+		// Ensure the scheduling gate is present in the executor pod template. The operator
+		// materialises that template into a file and hands it to the driver as
+		// spark.kubernetes.executor.podTemplateFile, so Dynamic-Allocation-created executor
+		// pods inherit the gate and stay unschedulable until the ElasticJobUngater confirms
+		// the owning workload slice has been granted quota for them.
+		utilpod.GateTemplate(job.ensureTemplateSpec(roleExecutor), kueue.ElasticJobSchedulingGate)
+	}
+
 	return nil
+}
+
+// isAnElasticJob reports whether the application opted into workload slices.
+func isAnElasticJob(app *sparkv1.SparkApplication) bool {
+	return workloadslicing.Enabled(app)
 }
 
 // +kubebuilder:webhook:path=/validate-spark-apache-org-v1-sparkapplication,mutating=false,failurePolicy=fail,sideEffects=None,groups=spark.apache.org,resources=sparkapplications,verbs=create;update,versions=v1,name=vapachesparkapplication.kb.io,admissionReviewVersions=v1
@@ -124,13 +143,20 @@ func (w *SparkApplicationWebhook) validateCreate(ctx context.Context, obj *spark
 				"only ClusterMode is supported for a Kueue managed job"))
 		}
 
-		// Dynamic Allocation lets the driver create and delete executors directly
-		// against the API server without touching the spec, so the executor PodSet
-		// count would drift from reality and quota accounting would silently rot.
-		if job.dynamicAllocationEnabled() {
+		// Dynamic Allocation lets the driver create and delete executors directly against
+		// the API server without touching the spec. That is only safe to admit when
+		// workload slices are in play, because then the executor PodSet count is re-derived
+		// from live pods and each scale-up is gated on a new slice being granted quota.
+		// Without slices the count would go stale and quota accounting would silently rot.
+		if isAnElasticJob(obj) {
+			allErrors = append(allErrors, validateElasticJob(obj)...)
+		} else if job.dynamicAllocationEnabled() {
 			allErrors = append(allErrors, field.Invalid(
 				sparkConfPath.Key("spark.dynamicAllocation.enabled"), true,
-				"a Kueue managed job cannot use dynamicAllocation, because executor counts would not be reflected in the reserved quota"))
+				fmt.Sprintf("a Kueue managed job can use dynamicAllocation only when the %s feature gate is on "+
+					"and the application is annotated %s=%s",
+					features.ElasticJobsViaWorkloadSlices,
+					workloadslicing.EnabledAnnotationKey, workloadslicing.EnabledAnnotationValue)))
 		}
 
 		// Surface an unparseable resource value here rather than letting every
@@ -150,6 +176,28 @@ func (w *SparkApplicationWebhook) validateCreate(ctx context.Context, obj *spark
 	}
 
 	return allErrors, nil
+}
+
+// validateElasticJob checks the invariant the workload-slice scheme depends on: executor
+// pods must come up gated, or Dynamic Allocation would schedule them before the slice
+// covering them had been granted quota.
+func validateElasticJob(app *sparkv1.SparkApplication) field.ErrorList {
+	var allErrors field.ErrorList
+
+	var gates []corev1.PodSchedulingGate
+	if template := templateSpec(app, roleExecutor); template != nil {
+		gates = template.Spec.SchedulingGates
+	}
+
+	if !slices.Contains(gates, corev1.PodSchedulingGate{Name: kueue.ElasticJobSchedulingGate}) {
+		allErrors = append(allErrors, field.Invalid(
+			executorSpecPath.Child("podTemplateSpec").Child("spec").Child("schedulingGates"),
+			gates,
+			fmt.Sprintf("an elastic job must carry the %s scheduling gate on its executor pod template",
+				kueue.ElasticJobSchedulingGate)))
+	}
+
+	return allErrors
 }
 
 func (w *SparkApplicationWebhook) validateTopologyRequest(ctx context.Context, job *SparkApplication) (field.ErrorList, error) {
