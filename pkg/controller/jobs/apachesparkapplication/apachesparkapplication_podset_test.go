@@ -272,7 +272,7 @@ func TestCPURequestAndLimit(t *testing.T) {
 	}
 }
 
-func TestExecutorCount(t *testing.T) {
+func TestStaticExecutorCount(t *testing.T) {
 	cases := map[string]struct {
 		spec    sparkv1.ApplicationSpec
 		want    int32
@@ -306,21 +306,6 @@ func TestExecutorCount(t *testing.T) {
 			}},
 			want: defaultExecutorInstances,
 		},
-		"dynamic allocation initialExecutors wins": {
-			spec: sparkv1.ApplicationSpec{SparkConf: map[string]string{
-				"spark.dynamicAllocation.enabled":          "true",
-				"spark.dynamicAllocation.initialExecutors": "7",
-				"spark.executor.instances":                 "2",
-			}},
-			want: 7,
-		},
-		"dynamic allocation falls back to minExecutors": {
-			spec: sparkv1.ApplicationSpec{SparkConf: map[string]string{
-				"spark.dynamicAllocation.enabled":      "true",
-				"spark.dynamicAllocation.minExecutors": "4",
-			}},
-			want: 4,
-		},
 		"non numeric instances is an error": {
 			spec:    sparkv1.ApplicationSpec{SparkConf: map[string]string{"spark.executor.instances": "many"}},
 			wantErr: true,
@@ -329,18 +314,18 @@ func TestExecutorCount(t *testing.T) {
 
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			got, err := wrap(tc.spec).executorCount()
+			got, err := wrap(tc.spec).staticExecutorCount()
 			if tc.wantErr {
 				if err == nil {
-					t.Fatalf("executorCount() = %d, want error", got)
+					t.Fatalf("staticExecutorCount() = %d, want error", got)
 				}
 				return
 			}
 			if err != nil {
-				t.Fatalf("executorCount() returned unexpected error: %v", err)
+				t.Fatalf("staticExecutorCount() returned unexpected error: %v", err)
 			}
 			if got != tc.want {
-				t.Errorf("executorCount() = %d, want %d", got, tc.want)
+				t.Errorf("staticExecutorCount() = %d, want %d", got, tc.want)
 			}
 		})
 	}
