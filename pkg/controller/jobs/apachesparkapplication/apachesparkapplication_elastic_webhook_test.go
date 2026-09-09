@@ -22,8 +22,10 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 
 	kueue "sigs.k8s.io/kueue/apis/kueue/v1beta2"
+	"sigs.k8s.io/kueue/pkg/controller/jobframework"
 	sparkv1 "sigs.k8s.io/kueue/pkg/controller/jobs/apachesparkapplication/api/v1"
 	"sigs.k8s.io/kueue/pkg/features"
 	utilpod "sigs.k8s.io/kueue/pkg/util/pod"
@@ -188,5 +190,27 @@ func TestDefaultGatesOnlyElasticJobs(t *testing.T) {
 	}
 	if hasElasticGate(plain) {
 		t.Error("a plain application must not carry the elastic scheduling gate")
+	}
+}
+
+// TestGVKIsAllowedForElasticJobs guards against the framework-level allowlist in
+// jobframework.ValidateElasticJobAnnotation, which is keyed by GVK and independent of
+// anything this package registers. Omitting the GVK there rejects every elastic
+// SparkApplication at admission with "elastic job is not supported", no matter how complete
+// the integration is.
+func TestGVKIsAllowedForElasticJobs(t *testing.T) {
+	features.SetFeatureGateDuringTest(t, features.ElasticJobsViaWorkloadSlices, true)
+
+	app := elasticApp(sparkv1.ApplicationSpec{})
+
+	if errs := jobframework.ValidateElasticJobAnnotation(app, gvk); len(errs) > 0 {
+		t.Errorf("ValidateElasticJobAnnotation() rejected %s: %v", gvk, errs)
+	}
+
+	// Negative control: an unrelated GVK must still be rejected, so the assertion above
+	// is not passing because the check is inert.
+	other := schema.GroupVersionKind{Group: "example.com", Version: "v1", Kind: "Widget"}
+	if errs := jobframework.ValidateElasticJobAnnotation(app, other); len(errs) == 0 {
+		t.Errorf("ValidateElasticJobAnnotation() accepted %s, want it rejected", other)
 	}
 }
