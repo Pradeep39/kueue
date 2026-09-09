@@ -17,7 +17,9 @@ limitations under the License.
 package apachesparkapplication
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
@@ -264,4 +266,58 @@ func TestIsTrackedExecutorPod(t *testing.T) {
 			t.Error("isTrackedExecutorPod() = true for a non-Pod object, want false")
 		}
 	})
+}
+
+// TestEnsureTemplateSpecNeverMarshalsNullContainers is a regression guard.
+//
+// corev1.PodSpec.Containers carries no omitempty, so a bare &corev1.PodTemplateSpec{}
+// marshals to `"containers": null`. The CRD schema declares containers as `type: array`,
+// so the API server rejects the object outright with:
+//
+//	spec.executorSpec.podTemplateSpec.spec.containers: Invalid value: "null":
+//	... in body must be of type array: "null"
+//
+// This bites whenever an application omits driverSpec/executorSpec, which is the common
+// case, both when the webhook gates an elastic job and when RunWithPodSetsInfo injects
+// pod set info on admission.
+func TestEnsureTemplateSpecNeverMarshalsNullContainers(t *testing.T) {
+	cases := map[string]struct {
+		spec sparkv1.ApplicationSpec
+		role sparkRole
+	}{
+		"executor template absent entirely": {role: roleExecutor},
+		"driver template absent entirely":   {role: roleDriver},
+		"executor wrapper present, template nil": {
+			spec: sparkv1.ApplicationSpec{ExecutorSpec: &sparkv1.BaseApplicationTemplateSpec{}},
+			role: roleExecutor,
+		},
+		"template present but containers nil": {
+			spec: sparkv1.ApplicationSpec{
+				ExecutorSpec: &sparkv1.BaseApplicationTemplateSpec{
+					PodTemplateSpec: &corev1.PodTemplateSpec{},
+				},
+			},
+			role: roleExecutor,
+		},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			job := jobInNamespace(tc.spec)
+			template := job.ensureTemplateSpec(tc.role)
+
+			if template.Spec.Containers == nil {
+				t.Fatal("Containers is nil, which marshals to null and fails CRD validation")
+			}
+
+			// Assert on the wire form, since that is what the API server validates.
+			encoded, err := json.Marshal(job.SparkApplication)
+			if err != nil {
+				t.Fatalf("failed to marshal the application: %v", err)
+			}
+			if bytes.Contains(encoded, []byte(`"containers":null`)) {
+				t.Errorf("marshalled application contains a null containers list:\n%s", encoded)
+			}
+		})
+	}
 }

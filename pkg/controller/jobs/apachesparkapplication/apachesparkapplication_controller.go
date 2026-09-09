@@ -377,6 +377,12 @@ func (j *SparkApplication) RestorePodSetsInfo(ctx context.Context, podSetsInfo [
 
 // ensureTemplateSpec returns the pod template for the given role, allocating the
 // intermediate spec wrapper when the application did not declare one.
+//
+// The freshly allocated template is seeded with the Spark container rather than left bare.
+// corev1.PodSpec.Containers has no omitempty, so an empty PodSpec marshals to
+// `"containers": null`, which the CRD's `type: array` schema rejects with
+// "must be of type array". Seeding also keeps the template consistent with what
+// buildPodTemplateSpec looks for when it overlays resources.
 func (j *SparkApplication) ensureTemplateSpec(role sparkRole) *corev1.PodTemplateSpec {
 	holder := &j.Spec.DriverSpec
 	if role == roleExecutor {
@@ -386,7 +392,15 @@ func (j *SparkApplication) ensureTemplateSpec(role sparkRole) *corev1.PodTemplat
 		*holder = &sparkv1.BaseApplicationTemplateSpec{}
 	}
 	if (*holder).PodTemplateSpec == nil {
-		(*holder).PodTemplateSpec = &corev1.PodTemplateSpec{}
+		(*holder).PodTemplateSpec = &corev1.PodTemplateSpec{
+			Spec: corev1.PodSpec{
+				Containers: []corev1.Container{{Name: j.containerName(role)}},
+			},
+		}
+	}
+	if (*holder).PodTemplateSpec.Spec.Containers == nil {
+		// A template supplied without any containers would marshal back as null too.
+		(*holder).PodTemplateSpec.Spec.Containers = []corev1.Container{{Name: j.containerName(role)}}
 	}
 	return (*holder).PodTemplateSpec
 }
