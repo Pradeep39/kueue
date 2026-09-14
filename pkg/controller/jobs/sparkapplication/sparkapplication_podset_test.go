@@ -284,6 +284,101 @@ func TestLiveExecutorCount(t *testing.T) {
 			nilClient: true,
 			want:      3,
 		},
+		// A reconcile landing while the driver is still creating its initial executors sees a
+		// transient prefix of them. Without the minExecutors floor the derived count is 1, which
+		// EnsureWorkloadSlices reads as a scale-down and patches the granted PodSet down to 1 --
+		// dismantling the gang it was just admitted with. Observed on a real cluster as an
+		// executor PodSet admitted at 3 and patched to 1 seven seconds later.
+		"live count below minExecutors is raised to the floor": {
+			app: func() *sparkv1beta2.SparkApplication {
+				app := sparkapplicationtesting.MakeSparkApplication("app", "ns").Obj()
+				app.Spec.Executor.Instances = nil
+				app.Spec.SparkConf = map[string]string{
+					"spark.dynamicAllocation.enabled":      "true",
+					"spark.dynamicAllocation.minExecutors": "3",
+					"spark.dynamicAllocation.maxExecutors": "30",
+				}
+				return app
+			}(),
+			pods: []client.Object{executorPod("e1", corev1.PodRunning, false)},
+			want: 3,
+		},
+		"live count above maxExecutors is capped at the ceiling": {
+			app: sparkapplicationtesting.MakeSparkApplication("app", "ns").
+				DynamicAllocation(&sparkv1beta2.DynamicAllocation{
+					Enabled:      true,
+					MinExecutors: ptr.To[int32](1),
+					MaxExecutors: ptr.To[int32](2),
+				}).
+				Obj(),
+			pods: []client.Object{
+				executorPod("e1", corev1.PodRunning, false),
+				executorPod("e2", corev1.PodPending, false),
+				executorPod("e3", corev1.PodPending, false),
+				executorPod("e4", corev1.PodPending, false),
+			},
+			want: 2,
+		},
+		"live count within the bounds is reported as observed": {
+			app: sparkapplicationtesting.MakeSparkApplication("app", "ns").
+				DynamicAllocation(&sparkv1beta2.DynamicAllocation{
+					Enabled:      true,
+					MinExecutors: ptr.To[int32](1),
+					MaxExecutors: ptr.To[int32](10),
+				}).
+				Obj(),
+			pods: []client.Object{
+				executorPod("e1", corev1.PodRunning, false),
+				executorPod("e2", corev1.PodRunning, false),
+			},
+			want: 2,
+		},
+		// maxExecutors is applied last, so an inverted configuration can never inflate the
+		// count above the declared maximum.
+		"minExecutors above maxExecutors never exceeds the maximum": {
+			app: sparkapplicationtesting.MakeSparkApplication("app", "ns").
+				DynamicAllocation(&sparkv1beta2.DynamicAllocation{
+					Enabled:      true,
+					MinExecutors: ptr.To[int32](8),
+					MaxExecutors: ptr.To[int32](2),
+				}).
+				Obj(),
+			pods: []client.Object{executorPod("e1", corev1.PodRunning, false)},
+			want: 2,
+		},
+		"instances below minExecutors reserves the Dynamic Allocation floor": {
+			app: func() *sparkv1beta2.SparkApplication {
+				app := sparkapplicationtesting.MakeSparkApplication("app", "ns").
+					ExecutorInstances(1).
+					DynamicAllocation(&sparkv1beta2.DynamicAllocation{
+						Enabled:      true,
+						MinExecutors: ptr.To[int32](3),
+					}).
+					Obj()
+				return app
+			}(),
+			want: 3,
+		},
+		"instances above minExecutors wins, matching Spark's max semantics": {
+			app: sparkapplicationtesting.MakeSparkApplication("app", "ns").
+				ExecutorInstances(5).
+				DynamicAllocation(&sparkv1beta2.DynamicAllocation{
+					Enabled:      true,
+					MinExecutors: ptr.To[int32](3),
+				}).
+				Obj(),
+			want: 5,
+		},
+		"no Dynamic Allocation bounds set leaves the observed count untouched": {
+			app: sparkapplicationtesting.MakeSparkApplication("app", "ns").
+				DynamicAllocation(&sparkv1beta2.DynamicAllocation{Enabled: true}).
+				Obj(),
+			pods: []client.Object{
+				executorPod("e1", corev1.PodRunning, false),
+				executorPod("e2", corev1.PodRunning, false),
+			},
+			want: 2,
+		},
 	}
 
 	for name, tc := range tests {
