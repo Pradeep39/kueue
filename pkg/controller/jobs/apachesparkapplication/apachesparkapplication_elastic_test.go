@@ -161,6 +161,56 @@ func TestLiveExecutorCount(t *testing.T) {
 			},
 			want: 1,
 		},
+		// A reconcile landing while the driver is still creating its initial executors sees a
+		// strictly smaller prefix of them. Without the minExecutors floor the derived count is
+		// 1, which EnsureWorkloadSlices reads as a scale-down and patches the granted PodSet
+		// down to 1 -- dismantling the gang it was just admitted with.
+		"live count below minExecutors is raised to the floor": {
+			spec: daSpec(map[string]string{
+				"spark.dynamicAllocation.minExecutors": "3",
+				"spark.dynamicAllocation.maxExecutors": "30",
+			}),
+			pods: []client.Object{executorPod("e0", corev1.PodRunning, false)},
+			want: 3,
+		},
+		"live count above maxExecutors is capped at the ceiling": {
+			spec: daSpec(map[string]string{
+				"spark.dynamicAllocation.minExecutors": "1",
+				"spark.dynamicAllocation.maxExecutors": "2",
+			}),
+			pods: []client.Object{
+				executorPod("e0", corev1.PodRunning, false),
+				executorPod("e1", corev1.PodPending, false),
+				executorPod("e2", corev1.PodPending, false),
+				executorPod("e3", corev1.PodPending, false),
+			},
+			want: 2,
+		},
+		// maxExecutors is applied last, so an inverted configuration can never inflate the
+		// count above the declared maximum.
+		"minExecutors above maxExecutors never exceeds the maximum": {
+			spec: daSpec(map[string]string{
+				"spark.dynamicAllocation.minExecutors": "8",
+				"spark.dynamicAllocation.maxExecutors": "2",
+			}),
+			pods: []client.Object{executorPod("e0", corev1.PodRunning, false)},
+			want: 2,
+		},
+		"declared instances below minExecutors reserves the floor before any pods exist": {
+			spec: daSpec(map[string]string{
+				"spark.executor.instances":             "1",
+				"spark.dynamicAllocation.minExecutors": "3",
+			}),
+			want: 3,
+		},
+		"declared instances above the dynamic allocation counts wins": {
+			spec: daSpec(map[string]string{
+				"spark.executor.instances":                 "6",
+				"spark.dynamicAllocation.initialExecutors": "2",
+				"spark.dynamicAllocation.minExecutors":     "1",
+			}),
+			want: 6,
+		},
 	}
 
 	for name, tc := range cases {
