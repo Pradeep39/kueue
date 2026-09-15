@@ -387,6 +387,17 @@ rules:
   - list
   - watch
 - apiGroups:
+  - spark.apache.org
+  resources:
+  - sparkapplications
+  verbs:
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
   - sparkoperator.k8s.io
   resources:
   - sparkapplications
