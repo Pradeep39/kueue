@@ -102,29 +102,49 @@ Three deliberate choices:
   rejects it at admission with a message naming the field, so the failure is immediate and
   legible rather than a silently unaccounted run.
 
-On the Dynamic Allocation path, `declaredInitialExecutors()` applies the same principle as a
-precedence ladder, structured field before `sparkConf` for each property:
+On the Dynamic Allocation path, `declaredInitialExecutors()` resolves the count exactly as
+Spark's `Utils.getDynamicAllocationInitialExecutors` does — **the largest of** `minExecutors`,
+`initialExecutors` and the resolved executor-instances count:
 
-1. `spec.executor.instances` — with Dynamic Allocation on this is treated as the **initial**
-   executor count, since that is the role it plays for Spark
-2. `spark.executor.instances` from `sparkConf`, the fallback for the above
-3. `initialExecutors`, structured then `sparkConf`
-4. `minExecutors`, structured then `sparkConf`
-5. zero, which the caller's clamp raises to `minExecutors` when one is configured
+```go
+count, err := j.numInitialExecutors()   // instances: field -> sparkConf -> Spark's 2
+if n, ok := j.dynamicAllocationExecutorCount("initialExecutors"); ok {
+	count = max(count, n)
+}
+if n, ok := j.dynamicAllocationExecutorCount("minExecutors"); ok {
+	count = max(count, n)
+}
+```
 
-### Divergence from Spark, and what it costs
+Only the three-way combination is a maximum. Each individual property still resolves its own
+structured field before its `sparkConf` equivalent, so the two rules compose without
+contradiction: precedence decides *where a property's value comes from*, the maximum decides
+*which property governs the initial count*.
 
-Spark's own `Utils.getDynamicAllocationInitialExecutors` takes the **largest** of
-`minExecutors`, `initialExecutors` and `spark.executor.instances`. Precedence therefore
-under-reserves for one configuration: `spec.executor.instances: 2` alongside
-`initialExecutors: 7` reserves 2 while Spark starts 7.
+Spark starts the largest of the three regardless of which one the author considered
+authoritative, so a precedence ladder across them would under-reserve — `spec.executor.instances: 2`
+alongside `initialExecutors: 7` would reserve two executors while Spark started seven.
 
-`minExecutors` still acts as a floor through `clampToDynamicAllocationBounds`, so the common
-shape — a small `instances` with a larger `minExecutors` — is covered. A deliberate
-`instances < initialExecutors` configuration is not. This was accepted knowingly: predictable
-precedence between a structured field and its `sparkConf` fallback was preferred over matching
-Spark's arithmetic exactly, and the two values disagreeing is a configuration to correct rather
-than a shape to support.
+## 3a. Memory: a pod-template request is authoritative
+
+`spec.{driver,executor}.memory` is the **JVM heap size**, not the pod's request. Spark derives
+the request by adding overhead — explicit `memoryOverhead`, or a factor-derived value with a
+384MiB floor — so reading the field verbatim under-charges, which is the defect recorded in
+PR #23.
+
+A memory request or limit written directly on `spec.{driver,executor}.template` is a different
+kind of statement: it is the total the submitter intends the pod to ask for, overhead already
+included. `addMemoryRequests`/`addMemoryLimit` therefore use a template value verbatim and fall
+back to `spec.{driver,executor}.memory` only when the template declares none. Applying overhead
+arithmetic on top of a template value would either double-count it or contradict what the pod
+will actually request.
+
+Note what this does **not** do: the fallback path still reads `spec.{driver,executor}.memory`
+without adding overhead, so an application that declares memory only through that field is
+still under-charged. Closing that requires porting Spark's overhead formula into this
+integration, which changes charging for every existing application and is deliberately out of
+scope here. The Apache integration already implements the formula, and this change gates it
+behind the same template check.
 
 ## 4. What is unchanged
 
@@ -152,11 +172,14 @@ in both directions (smaller and larger than the `sparkConf` value), no count dec
 a malformed conf value, the Dynamic Allocation path falling back to the `sparkConf` count, and
 `instances` outranking an explicit `initialExecutors`.
 
-Negative-controlled: restoring max-based resolution on both paths fails exactly
-`structured_field_takes_precedence_over_sparkConf_when_smaller` and
-`instances_is_treated_as_initialExecutors_and_outranks_initialExecutors`. Restoring the
-original structured-field-only read fails the sparkConf-fallback cases, including the
-cluster-observed signature of a sparkConf-declared count resolving to 0.
+`TestAddMemoryPrefersThePodTemplate` covers a template request and limit used verbatim, and
+the fallback to `spec.executor.memory` when the template declares neither.
+
+Negative-controlled: replacing the three-way maximum with a precedence ladder fails
+`initial_count_is_the_largest_of_instances,_initialExecutors_and_minExecutors`; ignoring the
+pod template fails `template_request_and_limit_are_used_verbatim`; and restoring the original
+structured-field-only read fails the sparkConf-fallback cases, including the cluster-observed
+signature of a sparkConf-declared count resolving to 0.
 
 `gofmt -l` clean, `go vet`, `go test`, `go test -race -count=1` on the package, and
 `go build ./...` across the tree.

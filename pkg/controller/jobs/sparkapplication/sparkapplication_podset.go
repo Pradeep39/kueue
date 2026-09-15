@@ -93,8 +93,8 @@ func (j *SparkApplication) sparkConfExecutorInstances() (int32, bool, error) {
 // spark.executor.instances: "15" and no structured field: 15 executors ran against a
 // ClusterQueue that had charged for one driver.
 //
-// Note the precedence is not what Spark itself computes when both are set; see
-// declaredInitialExecutors for the same caveat on the Dynamic Allocation path.
+// This ladder is also the instances term of declaredInitialExecutors, so both paths agree on
+// where an executor count comes from.
 func (j *SparkApplication) numInitialExecutors() (int32, error) {
 	if j.Spec.Executor.Instances != nil {
 		return *j.Spec.Executor.Instances, nil
@@ -294,44 +294,33 @@ func (j *SparkApplication) initialExecutorCount() (int32, error) {
 	return j.clampToDynamicAllocationBounds(count), nil
 }
 
-// declaredInitialExecutors resolves the declared initial executor count for a
-// Dynamic-Allocation-enabled application, consulting each surface in precedence order and
-// preferring a structured field over its sparkConf equivalent:
+// declaredInitialExecutors resolves the initial executor count for a
+// Dynamic-Allocation-enabled application exactly as Spark's
+// Utils.getDynamicAllocationInitialExecutors does: the largest of minExecutors,
+// initialExecutors and the resolved spark.executor.instances.
 //
-//  1. spec.executor.instances - when Dynamic Allocation is on this is treated as the
-//     initial executor count, since that is the role it plays for Spark
-//  2. spark.executor.instances from sparkConf, the fallback for the above
-//  3. initialExecutors, structured then sparkConf
-//  4. minExecutors, structured then sparkConf
-//  5. zero, which the caller's clamp raises to minExecutors when one is configured
+// The instances term is resolved by precedence - the structured spec.executor.instances
+// field, else spark.executor.instances from sparkConf, else Spark's default of 2 - which is
+// the same ladder numInitialExecutors uses when Dynamic Allocation is off. So only the
+// three-way combination is a maximum; each individual property still prefers its structured
+// field over its sparkConf equivalent.
 //
-// This is precedence rather than a maximum, which is a deliberate divergence from Spark's
-// own Utils.getDynamicAllocationInitialExecutors - that takes the largest of minExecutors,
-// initialExecutors and spark.executor.instances. The consequence is that an application
-// setting spec.executor.instances lower than its initialExecutors reserves the smaller
-// number while Spark starts the larger one. minExecutors still acts as a floor through the
-// clamp, so the common case is covered; a deliberate instances < initialExecutors
-// configuration is not.
+// Taking the maximum matters because Spark starts the largest of the three regardless of
+// which one the author considered authoritative. Resolving the combination by precedence
+// would let spec.executor.instances: 2 alongside initialExecutors: 7 reserve two executors
+// while Spark started seven.
 func (j *SparkApplication) declaredInitialExecutors() (int32, error) {
-	if j.Spec.Executor.Instances != nil {
-		return *j.Spec.Executor.Instances, nil
-	}
-
-	n, ok, err := j.sparkConfExecutorInstances()
+	count, err := j.numInitialExecutors()
 	if err != nil {
 		return 0, err
 	}
-	if ok {
-		return n, nil
-	}
-
 	if n, ok := j.dynamicAllocationExecutorCount("initialExecutors"); ok {
-		return n, nil
+		count = max(count, n)
 	}
 	if n, ok := j.dynamicAllocationExecutorCount("minExecutors"); ok {
-		return n, nil
+		count = max(count, n)
 	}
-	return 0, nil
+	return count, nil
 }
 
 // clampToDynamicAllocationBounds constrains an executor count to the bounds Dynamic
@@ -721,10 +710,67 @@ func addCPULimit(pod *corev1.Pod, app *sparkv1beta2.SparkApplication) error {
 	return nil
 }
 
+// templateContainer returns the Spark container of a pod template, matching by name and
+// falling back to the first entry the way Spark overlays its own container.
+func templateContainer(tmpl *corev1.PodTemplateSpec, name string) *corev1.Container {
+	if tmpl == nil {
+		return nil
+	}
+	if i := slices.IndexFunc(tmpl.Spec.Containers, func(c corev1.Container) bool {
+		return c.Name == name
+	}); i >= 0 {
+		return &tmpl.Spec.Containers[i]
+	}
+	if len(tmpl.Spec.Containers) > 0 {
+		return &tmpl.Spec.Containers[0]
+	}
+	return nil
+}
+
+// templateMemory reports a memory request or limit declared on the Spark container of the
+// role's pod template.
+//
+// A value declared there is authoritative and used verbatim: spec.{driver,executor}.memory is
+// the JVM heap size, from which Spark derives the pod's actual request by adding overhead,
+// whereas a request written directly on the template is already that total. Deriving anything
+// from it would either double-count the overhead or contradict what the pod will ask for.
+func templateMemory(app *sparkv1beta2.SparkApplication, pod *corev1.Pod, limit bool) (resource.Quantity, bool) {
+	var (
+		tmpl *corev1.PodTemplateSpec
+		name string
+	)
+	switch {
+	case sparkutil.IsDriverPod(pod):
+		tmpl, name = app.Spec.Driver.Template, sparkcommon.SparkDriverContainerName
+	case sparkutil.IsExecutorPod(pod):
+		tmpl, name = app.Spec.Executor.Template, sparkcommon.SparkExecutorContainerName
+	default:
+		return resource.Quantity{}, false
+	}
+	c := templateContainer(tmpl, name)
+	if c == nil {
+		return resource.Quantity{}, false
+	}
+	list := c.Resources.Requests
+	if limit {
+		list = c.Resources.Limits
+	}
+	q, ok := list[corev1.ResourceMemory]
+	return q, ok
+}
+
 func addMemoryRequests(pod *corev1.Pod, app *sparkv1beta2.SparkApplication) error {
 	i := findContainer(pod)
 	if i < 0 {
 		return fmt.Errorf("failed to add memory requests as Spark container was not found in pod %s", pod.Name)
+	}
+
+	if q, ok := templateMemory(app, pod, false); ok {
+		if pod.Spec.Containers[i].Resources.Requests == nil {
+			pod.Spec.Containers[i].Resources.Requests = corev1.ResourceList{}
+		}
+		pod.Spec.Containers[i].Resources.Requests[corev1.ResourceMemory] = q
+		return nil
 	}
 
 	var memoryRequests *string
@@ -757,6 +803,14 @@ func addMemoryLimit(pod *corev1.Pod, app *sparkv1beta2.SparkApplication) error {
 	i := findContainer(pod)
 	if i < 0 {
 		return fmt.Errorf("failed to add memory limit as Spark container was not found in pod %s", pod.Name)
+	}
+
+	if q, ok := templateMemory(app, pod, true); ok {
+		if pod.Spec.Containers[i].Resources.Limits == nil {
+			pod.Spec.Containers[i].Resources.Limits = corev1.ResourceList{}
+		}
+		pod.Spec.Containers[i].Resources.Limits[corev1.ResourceMemory] = q
+		return nil
 	}
 
 	var memoryLimit *string

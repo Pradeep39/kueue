@@ -22,6 +22,7 @@ import (
 	sparkv1beta2 "github.com/kubeflow/spark-operator/v2/api/v1beta2"
 	sparkcommon "github.com/kubeflow/spark-operator/v2/pkg/common"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -199,6 +200,80 @@ func TestAddVolumes(t *testing.T) {
 				if gotMounts[i] != name {
 					t.Errorf("container.VolumeMounts[%d] = %v, want %v", i, gotMounts[i], name)
 				}
+			}
+		})
+	}
+}
+
+func executorAppWithTemplateMemory(request, limit *string, memoryField *string) *sparkv1beta2.SparkApplication {
+	tmpl := &corev1.PodTemplateSpec{
+		Spec: corev1.PodSpec{
+			Containers: []corev1.Container{{Name: sparkcommon.SparkExecutorContainerName}},
+		},
+	}
+	if request != nil {
+		tmpl.Spec.Containers[0].Resources.Requests = corev1.ResourceList{
+			corev1.ResourceMemory: resource.MustParse(*request),
+		}
+	}
+	if limit != nil {
+		tmpl.Spec.Containers[0].Resources.Limits = corev1.ResourceList{
+			corev1.ResourceMemory: resource.MustParse(*limit),
+		}
+	}
+	return &sparkv1beta2.SparkApplication{
+		Spec: sparkv1beta2.SparkApplicationSpec{
+			Executor: sparkv1beta2.ExecutorSpec{
+				SparkPodSpec: sparkv1beta2.SparkPodSpec{
+					Memory:      memoryField,
+					MemoryLimit: memoryField,
+					Template:    tmpl,
+				},
+			},
+		},
+	}
+}
+
+// A memory value written on the pod template is the total the submitter intends, so
+// spec.executor.memory must not override it. spec.executor.memory is the JVM heap size, from
+// which Spark derives the pod request by adding overhead.
+func TestAddMemoryPrefersThePodTemplate(t *testing.T) {
+	tests := map[string]struct {
+		app       *sparkv1beta2.SparkApplication
+		wantReq   string
+		wantLimit string
+	}{
+		"template request and limit are used verbatim": {
+			app:       executorAppWithTemplateMemory(ptr.To("896Mi"), ptr.To("1Gi"), ptr.To("512m")),
+			wantReq:   "896Mi",
+			wantLimit: "1Gi",
+		},
+		"no template values falls back to spec.executor.memory": {
+			app:       executorAppWithTemplateMemory(nil, nil, ptr.To("512m")),
+			wantReq:   "512Mi",
+			wantLimit: "512Mi",
+		},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			pod := executorPod("e", corev1.PodRunning, false)
+			pod.Spec.Containers = []corev1.Container{{Name: sparkcommon.Spark3DefaultExecutorContainerName}}
+
+			if err := addMemoryRequests(pod, tc.app); err != nil {
+				t.Fatalf("addMemoryRequests() returned an unexpected error: %v", err)
+			}
+			if err := addMemoryLimit(pod, tc.app); err != nil {
+				t.Fatalf("addMemoryLimit() returned an unexpected error: %v", err)
+			}
+
+			gotReq := pod.Spec.Containers[0].Resources.Requests[corev1.ResourceMemory]
+			if want := resource.MustParse(tc.wantReq); gotReq.Cmp(want) != 0 {
+				t.Errorf("memory request = %s, want %s", gotReq.String(), want.String())
+			}
+			gotLimit := pod.Spec.Containers[0].Resources.Limits[corev1.ResourceMemory]
+			if want := resource.MustParse(tc.wantLimit); gotLimit.Cmp(want) != 0 {
+				t.Errorf("memory limit = %s, want %s", gotLimit.String(), want.String())
 			}
 		})
 	}
@@ -440,10 +515,10 @@ func TestLiveExecutorCount(t *testing.T) {
 				Obj(),
 			want: 5,
 		},
-		// With Dynamic Allocation on, spec.executor.instances is treated as the initial
-		// executor count and takes precedence over an explicitly configured
-		// initialExecutors. This diverges from Spark, which would take the larger.
-		"instances is treated as initialExecutors and outranks initialExecutors": {
+		// Spark's Utils.getDynamicAllocationInitialExecutors takes the largest of
+		// minExecutors, initialExecutors and spark.executor.instances, so a smaller
+		// instances value must not shrink the reservation below what Spark will start.
+		"initial count is the largest of instances, initialExecutors and minExecutors": {
 			app: sparkapplicationtesting.MakeSparkApplication("app", "ns").
 				ExecutorInstances(2).
 				DynamicAllocation(&sparkv1beta2.DynamicAllocation{
@@ -451,7 +526,18 @@ func TestLiveExecutorCount(t *testing.T) {
 					InitialExecutors: ptr.To[int32](7),
 				}).
 				Obj(),
-			want: 2,
+			want: 7,
+		},
+		"instances larger than the dynamic allocation counts still wins the max": {
+			app: sparkapplicationtesting.MakeSparkApplication("app", "ns").
+				ExecutorInstances(9).
+				DynamicAllocation(&sparkv1beta2.DynamicAllocation{
+					Enabled:          true,
+					InitialExecutors: ptr.To[int32](3),
+					MinExecutors:     ptr.To[int32](2),
+				}).
+				Obj(),
+			want: 9,
 		},
 		"no Dynamic Allocation bounds set leaves the observed count untouched": {
 			app: sparkapplicationtesting.MakeSparkApplication("app", "ns").
