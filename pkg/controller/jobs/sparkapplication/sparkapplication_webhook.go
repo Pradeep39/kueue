@@ -42,6 +42,7 @@ import (
 
 var (
 	specPath                     = field.NewPath("spec")
+	sparkConfPath                = specPath.Child("sparkConf")
 	dynamicAllocationEnabledPath = specPath.Child("dynamicAllocation").Child("enabled")
 	driverSpecPath               = specPath.Child("driver")
 	executorSpecPath             = specPath.Child("executor")
@@ -150,6 +151,18 @@ func (w *SparkApplicationWebhook) validateCreate(ctx context.Context, job *spark
 				field.Invalid(dynamicAllocationEnabledPath,
 					ptr.Deref(spec.DynamicAllocation, sparkv1beta2.DynamicAllocation{}).Enabled,
 					"a kueue managed job can use dynamicAllocation only when the ElasticJobsViaWorkloadSlices feature gate is on and the job is an elastic job",
+				),
+			)
+		}
+
+		// The executor count feeds the executor PodSet directly, so a value Kueue cannot
+		// parse would silently size that PodSet from the structured field alone - leaving
+		// the declared executors unaccounted. Reject it at create time instead.
+		if _, _, err := kueueJob.sparkConfExecutorInstances(); err != nil {
+			allErrors = append(allErrors,
+				field.Invalid(sparkConfPath.Key("spark.executor.instances"),
+					spec.SparkConf["spark.executor.instances"],
+					"must be an integer so Kueue can size the executor PodSet",
 				),
 			)
 		}

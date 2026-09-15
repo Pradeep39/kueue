@@ -55,11 +55,58 @@ var (
 	}
 )
 
-// numInitialExecutors returns the executor count to size the executor PodSet with
-// when Dynamic Allocation is disabled, or before any executor Pods have been created
-// yet. It falls back to the static spec.executor.instances field.
-func (j *SparkApplication) numInitialExecutors() int32 {
-	return ptr.Deref(j.Spec.Executor.Instances, 0)
+// defaultExecutorInstances is Spark's own default for spark.executor.instances, used when
+// an application declares no executor count through any surface. Sizing the executor PodSet
+// at zero instead would reserve nothing while the driver goes on to create Spark's default
+// two executors outside Kueue's accounting.
+const defaultExecutorInstances int32 = 2
+
+// sparkConfExecutorInstances reads spark.executor.instances from spec.sparkConf.
+//
+// A malformed value is reported as an error rather than ignored: silently treating it as
+// absent would resurrect the accounting hole this function exists to close.
+func (j *SparkApplication) sparkConfExecutorInstances() (int32, bool, error) {
+	raw, ok := j.Spec.SparkConf["spark.executor.instances"]
+	if !ok {
+		return 0, false, nil
+	}
+	n, err := strconv.ParseInt(raw, 10, 32)
+	if err != nil {
+		return 0, false, fmt.Errorf("spark.executor.instances: %w", err)
+	}
+	return int32(n), true, nil
+}
+
+// numInitialExecutors returns the executor count to size the executor PodSet with when
+// Dynamic Allocation is disabled, or before any executor Pods have been created yet.
+//
+// Both surfaces are consulted, because Spark Operator accepts an executor count through
+// either the structured spec.executor.instances field or the raw spark.executor.instances
+// key in spec.sparkConf, and maps the former onto the latter when submitting. Reading only
+// the structured field left every sparkConf-declared executor unaccounted: the PodSet was
+// sized at zero, Kueue reserved quota for the driver alone, and - with no elastic
+// scheduling gate on a non-elastic job - the driver then created its executors directly,
+// entirely outside quota management. Observed on a real cluster with
+// spark.executor.instances: "15" and no structured field: 15 executors ran against a
+// ClusterQueue that had charged for one driver.
+//
+// The larger of the two wins when both are set, so a disagreement between them can only
+// ever over-reserve, never leave executors uncounted.
+func (j *SparkApplication) numInitialExecutors() (int32, error) {
+	count := ptr.Deref(j.Spec.Executor.Instances, 0)
+
+	n, ok, err := j.sparkConfExecutorInstances()
+	if err != nil {
+		return 0, err
+	}
+	if ok {
+		count = max(count, n)
+	}
+
+	if !ok && j.Spec.Executor.Instances == nil {
+		return defaultExecutorInstances, nil
+	}
+	return count, nil
 }
 
 // dynamicAllocationEnabled reports whether Dynamic Allocation is enabled, checking
@@ -167,7 +214,7 @@ func (j *SparkApplication) liveExecutorCount(ctx context.Context, c client.Clien
 // see clampToDynamicAllocationBounds for why the lower bound is load-bearing.
 func (j *SparkApplication) computeLiveExecutorCount(ctx context.Context, c client.Client) (int32, error) {
 	if !j.dynamicAllocationEnabled() {
-		return j.numInitialExecutors(), nil
+		return j.numInitialExecutors()
 	}
 
 	if c == nil {
@@ -175,7 +222,7 @@ func (j *SparkApplication) computeLiveExecutorCount(ctx context.Context, c clien
 		// validation building a PodSet template solely to inspect its metadata).
 		// There's nothing to list against, so fall back to the same initial
 		// estimate used before any executor Pods exist.
-		return j.initialExecutorCount(), nil
+		return j.initialExecutorCount()
 	}
 
 	podList := &corev1.PodList{}
@@ -194,7 +241,7 @@ func (j *SparkApplication) computeLiveExecutorCount(ctx context.Context, c clien
 		// fall back to whatever initial/minimum count Dynamic Allocation is
 		// configured to request at startup, so the very first PodSet reservation
 		// isn't sized at zero.
-		return j.initialExecutorCount(), nil
+		return j.initialExecutorCount()
 	}
 
 	var liveCount int32
@@ -247,15 +294,24 @@ func (j *SparkApplication) workloadSequenceNumber(ctx context.Context, c client.
 // bounds — e.g. instances=1 with minExecutors=3 reserved quota for one executor while Spark
 // immediately asked for three, so the driver was admitted without its initial executors and
 // the remainder had to arrive as a scale-up slice.
-func (j *SparkApplication) initialExecutorCount() int32 {
+func (j *SparkApplication) initialExecutorCount() (int32, error) {
 	count := ptr.Deref(j.Spec.Executor.Instances, 0)
+
+	n, ok, err := j.sparkConfExecutorInstances()
+	if err != nil {
+		return 0, err
+	}
+	if ok {
+		count = max(count, n)
+	}
+
 	if n, ok := j.dynamicAllocationExecutorCount("initialExecutors"); ok {
 		count = max(count, n)
 	}
 	if n, ok := j.dynamicAllocationExecutorCount("minExecutors"); ok {
 		count = max(count, n)
 	}
-	return j.clampToDynamicAllocationBounds(count)
+	return j.clampToDynamicAllocationBounds(count), nil
 }
 
 // clampToDynamicAllocationBounds constrains an executor count to the bounds Dynamic

@@ -234,12 +234,82 @@ func TestLiveExecutorCount(t *testing.T) {
 		pods      []client.Object
 		nilClient bool
 		want      int32
+		wantErr   bool
 	}{
 		"dynamic allocation disabled uses the static instances field": {
 			app: sparkapplicationtesting.MakeSparkApplication("app", "ns").
 				ExecutorInstances(5).Obj(),
 			pods: []client.Object{executorPod("e1", corev1.PodRunning, false)},
 			want: 5,
+		},
+		// Spark Operator accepts the executor count through sparkConf as well as the
+		// structured field, and maps the structured field onto the same key when submitting.
+		// Reading only the structured field sized the executor PodSet at zero, so Kueue
+		// charged for the driver alone while the driver created its executors outside quota
+		// management. Observed on a real cluster with 15 executors running against a
+		// ClusterQueue that had reserved one driver.
+		"dynamic allocation disabled reads spark.executor.instances from sparkConf": {
+			app: func() *sparkv1beta2.SparkApplication {
+				app := sparkapplicationtesting.MakeSparkApplication("app", "ns").Obj()
+				app.Spec.Executor.Instances = nil
+				app.Spec.SparkConf = map[string]string{"spark.executor.instances": "15"}
+				return app
+			}(),
+			pods: []client.Object{executorPod("e1", corev1.PodRunning, false)},
+			want: 15,
+		},
+		// A disagreement between the two surfaces can only ever over-reserve.
+		"dynamic allocation disabled takes the larger of the two surfaces": {
+			app: func() *sparkv1beta2.SparkApplication {
+				app := sparkapplicationtesting.MakeSparkApplication("app", "ns").
+					ExecutorInstances(3).Obj()
+				app.Spec.SparkConf = map[string]string{"spark.executor.instances": "15"}
+				return app
+			}(),
+			want: 15,
+		},
+		"dynamic allocation disabled honours the structured field when it is the larger": {
+			app: func() *sparkv1beta2.SparkApplication {
+				app := sparkapplicationtesting.MakeSparkApplication("app", "ns").
+					ExecutorInstances(9).Obj()
+				app.Spec.SparkConf = map[string]string{"spark.executor.instances": "2"}
+				return app
+			}(),
+			want: 9,
+		},
+		// Reserving zero would charge nothing while the driver went on to create Spark's
+		// own default of two executors.
+		"no executor count declared anywhere falls back to Spark's default": {
+			app: func() *sparkv1beta2.SparkApplication {
+				app := sparkapplicationtesting.MakeSparkApplication("app", "ns").Obj()
+				app.Spec.Executor.Instances = nil
+				return app
+			}(),
+			want: defaultExecutorInstances,
+		},
+		"malformed spark.executor.instances is an error, never a silent zero": {
+			app: func() *sparkv1beta2.SparkApplication {
+				app := sparkapplicationtesting.MakeSparkApplication("app", "ns").Obj()
+				app.Spec.Executor.Instances = nil
+				app.Spec.SparkConf = map[string]string{"spark.executor.instances": "fifteen"}
+				return app
+			}(),
+			wantErr: true,
+		},
+		// The Dynamic Allocation path had the same blind spot: the structured field
+		// contributed nothing to the max when the count lived only in sparkConf.
+		"dynamic allocation folds sparkConf instances into the max": {
+			app: func() *sparkv1beta2.SparkApplication {
+				app := sparkapplicationtesting.MakeSparkApplication("app", "ns").Obj()
+				app.Spec.Executor.Instances = nil
+				app.Spec.SparkConf = map[string]string{
+					"spark.dynamicAllocation.enabled":      "true",
+					"spark.executor.instances":             "15",
+					"spark.dynamicAllocation.minExecutors": "3",
+				}
+				return app
+			}(),
+			want: 15,
 		},
 		"dynamic allocation enabled via structured spec, no pods yet falls back to minExecutors": {
 			app: func() *sparkv1beta2.SparkApplication {
@@ -391,6 +461,12 @@ func TestLiveExecutorCount(t *testing.T) {
 			}
 
 			got, err := app.liveExecutorCount(t.Context(), c)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("liveExecutorCount() = %d, want an error", got)
+				}
+				return
+			}
 			if err != nil {
 				t.Fatalf("liveExecutorCount() returned an unexpected error: %v", err)
 			}
