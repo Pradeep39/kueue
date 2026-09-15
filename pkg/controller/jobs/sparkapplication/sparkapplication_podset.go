@@ -710,6 +710,158 @@ func addCPULimit(pod *corev1.Pod, app *sparkv1beta2.SparkApplication) error {
 	return nil
 }
 
+// Spark memory arithmetic, mirrored from the operator and Spark itself so Kueue charges what
+// the pod will actually request.
+//
+// spec.{driver,executor}.memory is the JVM heap size, not the pod request: the operator maps
+// it onto spark.{driver,executor}.memory, and Spark's BasicDriverFeatureStep and
+// BasicExecutorFeatureStep then add overhead on top before setting the container's request.
+// Charging the heap size alone is what makes Kueue under-charge Spark - a 512m executor with
+// the default factor actually requests 896Mi.
+const defaultMemoryMiB int64 = 1024 // Spark's default for spark.{driver,executor}.memory (1g)
+
+// parseSparkMemoryMiB converts a Spark memory string to whole MiB, truncating, which is what
+// Spark's byteStringAsMib does. A value with no unit suffix is MiB - both Spark's convention
+// and what the CRD documents for memoryOverhead.
+func parseSparkMemoryMiB(raw string) (int64, error) {
+	converted := sparkutil.ConvertJavaMemoryStringToK8sMemoryString(raw)
+	if _, err := strconv.ParseInt(strings.TrimSpace(converted), 10, 64); err == nil {
+		converted += "Mi"
+	}
+	q, err := resource.ParseQuantity(converted)
+	if err != nil {
+		return 0, fmt.Errorf("parsing %q as a Spark memory value: %w", raw, err)
+	}
+	return q.Value() / mib, nil
+}
+
+// sparkRoleName is the token used in spark.{driver,executor}.* configuration keys.
+func sparkRoleName(pod *corev1.Pod) (string, bool) {
+	switch {
+	case sparkutil.IsDriverPod(pod):
+		return "driver", true
+	case sparkutil.IsExecutorPod(pod):
+		return "executor", true
+	default:
+		return "", false
+	}
+}
+
+// roleMemoryField returns the structured memory or memoryOverhead field for the role.
+func roleMemoryField(app *sparkv1beta2.SparkApplication, role string, overhead bool) *string {
+	spec := &app.Spec.Executor.SparkPodSpec
+	if role == "driver" {
+		spec = &app.Spec.Driver.SparkPodSpec
+	}
+	if overhead {
+		return spec.MemoryOverhead
+	}
+	return spec.Memory
+}
+
+// memoryConf resolves a Spark memory property, preferring the structured field over the
+// equivalent sparkConf key - the same precedence every other property in this package uses.
+func (j *SparkApplication) memoryConf(role string, overhead bool) (int64, bool, error) {
+	key := fmt.Sprintf("spark.%s.memory", role)
+	if overhead {
+		key += "Overhead"
+	}
+	if v := roleMemoryField(j.SparkApplication, role, overhead); v != nil {
+		n, err := parseSparkMemoryMiB(*v)
+		if err != nil {
+			return 0, false, err
+		}
+		return n, true, nil
+	}
+	if raw, ok := j.Spec.SparkConf[key]; ok {
+		n, err := parseSparkMemoryMiB(raw)
+		if err != nil {
+			return 0, false, fmt.Errorf("%s: %w", key, err)
+		}
+		return n, true, nil
+	}
+	return 0, false, nil
+}
+
+// memoryOverheadFactor returns the factor applied when no explicit overhead is configured.
+//
+// Spark uses NON_JVM_MEMORY_OVERHEAD_FACTOR for Python and R applications and
+// MEMORY_OVERHEAD_FACTOR otherwise, unless the factor is set explicitly - in which case the
+// explicit value applies regardless of application type. The operator maps
+// spec.memoryOverheadFactor onto spark.kubernetes.memoryOverheadFactor, so both surfaces are
+// consulted, structured first.
+func (j *SparkApplication) memoryOverheadFactor() float64 {
+	raw := ""
+	if f := j.Spec.MemoryOverheadFactor; f != nil && *f != "" {
+		raw = *f
+	} else if v, ok := j.Spec.SparkConf[sparkcommon.SparkKubernetesMemoryOverheadFactor]; ok {
+		raw = v
+	}
+	if raw != "" {
+		if f, err := strconv.ParseFloat(raw, 64); err == nil && f >= 0 {
+			return f
+		}
+	}
+	switch j.Spec.Type {
+	case sparkv1beta2.SparkApplicationTypePython, sparkv1beta2.SparkApplicationTypeR:
+		return sparkcommon.DefaultNonJVMMemoryOverheadFactor
+	default:
+		return sparkcommon.DefaultJVMMemoryOverheadFactor
+	}
+}
+
+// totalMemoryBytes reproduces the request Spark sets on a pod of the given role: base memory,
+// plus overhead (explicit, or factor-derived with Spark's 384MiB floor), plus PySpark and
+// off-heap allocations where configured.
+func (j *SparkApplication) totalMemoryBytes(role string) (int64, error) {
+	baseMiB := defaultMemoryMiB
+	if n, ok, err := j.memoryConf(role, false); err != nil {
+		return 0, err
+	} else if ok {
+		baseMiB = n
+	}
+
+	var overheadMiB int64
+	if n, ok, err := j.memoryConf(role, true); err != nil {
+		return 0, err
+	} else if ok {
+		overheadMiB = n
+	} else {
+		// Spark truncates rather than rounds: (factor * memoryMiB).toInt, floored at
+		// MEMORY_OVERHEAD_MIN_MIB.
+		factored := int64(j.memoryOverheadFactor() * float64(baseMiB))
+		overheadMiB = max(factored, sparkcommon.MinMemoryOverhead/mib)
+	}
+
+	totalMiB := baseMiB + overheadMiB
+
+	// PySpark worker memory is charged on executors only, matching BasicExecutorFeatureStep.
+	if role == "executor" {
+		if raw, ok := j.Spec.SparkConf["spark.executor.pyspark.memory"]; ok {
+			n, err := parseSparkMemoryMiB(raw)
+			if err != nil {
+				return 0, fmt.Errorf("spark.executor.pyspark.memory: %w", err)
+			}
+			totalMiB += n
+		}
+	}
+
+	// Off-heap memory counts only when the allocator is actually enabled.
+	if enabled, _ := strconv.ParseBool(j.Spec.SparkConf["spark.memory.offHeap.enabled"]); enabled {
+		if raw, ok := j.Spec.SparkConf["spark.memory.offHeap.size"]; ok {
+			n, err := parseSparkMemoryMiB(raw)
+			if err != nil {
+				return 0, fmt.Errorf("spark.memory.offHeap.size: %w", err)
+			}
+			totalMiB += n
+		}
+	}
+
+	return totalMiB * mib, nil
+}
+
+const mib int64 = 1 << 20
+
 // templateContainer returns the Spark container of a pod template, matching by name and
 // falling back to the first entry the way Spark overlays its own container.
 func templateContainer(tmpl *corev1.PodTemplateSpec, name string) *corev1.Container {
@@ -773,29 +925,28 @@ func addMemoryRequests(pod *corev1.Pod, app *sparkv1beta2.SparkApplication) erro
 		return nil
 	}
 
-	var memoryRequests *string
-	if sparkutil.IsDriverPod(pod) {
-		memoryRequests = app.Spec.Driver.Memory
-	} else if sparkutil.IsExecutorPod(pod) {
-		memoryRequests = app.Spec.Executor.Memory
-	}
-
-	if memoryRequests == nil {
+	role, ok := sparkRoleName(pod)
+	if !ok {
 		return nil
 	}
 
-	// Convert memory requests to a Kubernetes-style unit
-	requestsQuantity, err := resource.ParseQuantity(sparkutil.ConvertJavaMemoryStringToK8sMemoryString(*memoryRequests))
+	// No memory configured through any Spark surface: leave the request unset rather than
+	// inventing Spark's 1g default for an application that never asked for memory.
+	if _, declared, err := fromObject(app).memoryConf(role, false); err != nil {
+		return err
+	} else if !declared {
+		return nil
+	}
+
+	total, err := fromObject(app).totalMemoryBytes(role)
 	if err != nil {
-		return fmt.Errorf("failed to parse memory requests %s: %v", *memoryRequests, err)
+		return err
 	}
 
 	if pod.Spec.Containers[i].Resources.Requests == nil {
 		pod.Spec.Containers[i].Resources.Requests = corev1.ResourceList{}
 	}
-
-	// Apply the memory requests to the container's resources
-	pod.Spec.Containers[i].Resources.Requests[corev1.ResourceMemory] = requestsQuantity
+	pod.Spec.Containers[i].Resources.Requests[corev1.ResourceMemory] = *resource.NewQuantity(total, resource.BinarySI)
 	return nil
 }
 
@@ -828,6 +979,19 @@ func addMemoryLimit(pod *corev1.Pod, app *sparkv1beta2.SparkApplication) error {
 	limitQuantity, err := resource.ParseQuantity(sparkutil.ConvertJavaMemoryStringToK8sMemoryString(*memoryLimit))
 	if err != nil {
 		return fmt.Errorf("failed to parse memory limit %s: %v", *memoryLimit, err)
+	}
+
+	// The request now includes Spark's overhead, so a memoryLimit written against the heap
+	// size alone would sit below it and produce an invalid PodSet. Spark itself sets the
+	// limit equal to the request, so raise it rather than emitting request > limit.
+	if role, ok := sparkRoleName(pod); ok {
+		if _, declared, cErr := fromObject(app).memoryConf(role, false); cErr == nil && declared {
+			if total, tErr := fromObject(app).totalMemoryBytes(role); tErr == nil {
+				if limitQuantity.Value() < total {
+					limitQuantity = *resource.NewQuantity(total, resource.BinarySI)
+				}
+			}
+		}
 	}
 
 	if pod.Spec.Containers[i].Resources.Limits == nil {
