@@ -279,6 +279,57 @@ func TestAddMemoryPrefersThePodTemplate(t *testing.T) {
 	}
 }
 
+// TestDynamicAllocationEnabled pins the OR semantics. Every other property in this package
+// prefers its structured field over the sparkConf equivalent; this one cannot, because
+// DynamicAllocation.Enabled is a non-pointer bool and an explicit false is indistinguishable
+// from an omitted one. See the doc comment for why under-reserving would be the worse outcome.
+func TestDynamicAllocationEnabled(t *testing.T) {
+	cases := map[string]struct {
+		app  *sparkv1beta2.SparkApplication
+		want bool
+	}{
+		"neither surface configured": {
+			app:  &sparkv1beta2.SparkApplication{},
+			want: false,
+		},
+		"structured field enables it": {
+			app: &sparkv1beta2.SparkApplication{Spec: sparkv1beta2.SparkApplicationSpec{
+				DynamicAllocation: &sparkv1beta2.DynamicAllocation{Enabled: true},
+			}},
+			want: true,
+		},
+		"sparkConf enables it": {
+			app: &sparkv1beta2.SparkApplication{Spec: sparkv1beta2.SparkApplicationSpec{
+				SparkConf: map[string]string{"spark.dynamicAllocation.enabled": "true"},
+			}},
+			want: true,
+		},
+		// The load-bearing case: bounds declared structurally, enablement through sparkConf.
+		// Letting the structured block win would read this as a static application.
+		"bounds structured, enablement via sparkConf": {
+			app: &sparkv1beta2.SparkApplication{Spec: sparkv1beta2.SparkApplicationSpec{
+				DynamicAllocation: &sparkv1beta2.DynamicAllocation{MinExecutors: ptr.To[int32](3)},
+				SparkConf:         map[string]string{"spark.dynamicAllocation.enabled": "true"},
+			}},
+			want: true,
+		},
+		"an unparseable sparkConf value is not an enablement": {
+			app: &sparkv1beta2.SparkApplication{Spec: sparkv1beta2.SparkApplicationSpec{
+				SparkConf: map[string]string{"spark.dynamicAllocation.enabled": "yes please"},
+			}},
+			want: false,
+		},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			if got := fromObject(tc.app).dynamicAllocationEnabled(); got != tc.want {
+				t.Errorf("dynamicAllocationEnabled() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestIsVerifiedLiveExecutor(t *testing.T) {
 	tests := map[string]struct {
 		phase    corev1.PodPhase

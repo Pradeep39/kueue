@@ -109,10 +109,31 @@ func (j *SparkApplication) numInitialExecutors() (int32, error) {
 	return defaultExecutorInstances, nil
 }
 
-// dynamicAllocationEnabled reports whether Dynamic Allocation is enabled, checking
-// both the structured spec.dynamicAllocation.enabled field and the equivalent raw
+// dynamicAllocationEnabled reports whether Dynamic Allocation is enabled, checking both the
+// structured spec.dynamicAllocation.enabled field and the equivalent raw
 // spark.dynamicAllocation.enabled key in spec.sparkConf, since Spark Operator supports
 // configuring Dynamic Allocation through either.
+//
+// This is deliberately an OR rather than the structured-field-before-sparkConf precedence
+// every other property in this package uses, and the CRD leaves no alternative:
+// DynamicAllocation.Enabled is a non-pointer bool with omitempty, so an explicit
+// "enabled: false" is indistinguishable from omitting the field entirely. Letting the
+// structured surface win would therefore turn a perfectly ordinary manifest -
+//
+//	spec:
+//	  dynamicAllocation:
+//	    minExecutors: 3          # enabled omitted, set through sparkConf instead
+//	  sparkConf:
+//	    spark.dynamicAllocation.enabled: "true"
+//
+// - into a static application, sizing the executor PodSet from spec.executor.instances while
+// Dynamic Allocation actually scales the pods. Under-reserving because a bool could not be
+// distinguished from its zero value is a worse failure than honouring either surface.
+//
+// The OR is also the safer direction on its own terms: treating an application as elastic
+// when either surface says so routes accounting through the live-Pod derivation, which
+// tracks reality, rather than through a static count that Dynamic Allocation would leave
+// stale.
 func (j *SparkApplication) dynamicAllocationEnabled() bool {
 	if da := j.Spec.DynamicAllocation; da != nil && da.Enabled {
 		return true
