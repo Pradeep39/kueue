@@ -71,32 +71,19 @@ class of startup churn, and also the churn from an executor dying and being repl
 `maxExecutors` is applied last, so a configuration with `minExecutors > maxExecutors` can never
 inflate the count above the declared maximum.
 
-## 2. Defect B — `initialExecutorCount` used first-match instead of max
+## 2. Defect B — `initialExecutorCount` ignored the Dynamic Allocation bounds
 
 `initialExecutorCount()` returned `spec.executor.instances` outright when set, reaching
-`initialExecutors`/`minExecutors` only if it was nil. Spark's semantics are a **max**. The
-Spark Operator's own API doc for `dynamicAllocation.initialExecutors` says so:
-
-> If `.spec.executor.instances` is also set, the initial number of executors is set to the
-> bigger of that and this option.
-
-and `minExecutors` is a floor DA never starts below. So `instances: 1` with `minExecutors: 5`
+`initialExecutors`/`minExecutors` only if it was nil. So `instances: 1` with `minExecutors: 5`
 reserved one executor while Spark immediately asked for five — the driver admitted without its
 initial executors, remainder via a scale-up slice. Same visible symptom as defect A, different
 cause, and it fires even when defect A does not.
 
-Now:
-
-```go
-count := ptr.Deref(j.Spec.Executor.Instances, 0)
-if n, ok := j.dynamicAllocationExecutorCount("initialExecutors"); ok {
-	count = max(count, n)
-}
-if n, ok := j.dynamicAllocationExecutorCount("minExecutors"); ok {
-	count = max(count, n)
-}
-return j.clampToDynamicAllocationBounds(count)
-```
+The count is now resolved by `declaredInitialExecutors()` and then passed through
+`clampToDynamicAllocationBounds`, so `minExecutors` acts as a floor on the initial estimate
+regardless of which surface supplied it. The resolution order itself is documented in
+[`sparkapplication-sparkconf-executor-instances-design.md`](./sparkapplication-sparkconf-executor-instances-design.md)
+§3, which supersedes the max-based scheme this document originally described.
 
 ## 3. Relationship to the gated-Pod feedback loop
 

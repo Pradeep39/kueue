@@ -71,41 +71,60 @@ Spark's default of 2.
 
 ## 3. Fix
 
-`numInitialExecutors()` now consults both surfaces and takes the larger:
+`numInitialExecutors()` now consults both surfaces, in precedence order:
 
 ```go
-count := ptr.Deref(j.Spec.Executor.Instances, 0)
+if j.Spec.Executor.Instances != nil {
+	return *j.Spec.Executor.Instances, nil
+}
 n, ok, err := j.sparkConfExecutorInstances()
 if err != nil {
 	return 0, err
 }
 if ok {
-	count = max(count, n)
+	return n, nil
 }
-if !ok && j.Spec.Executor.Instances == nil {
-	return defaultExecutorInstances, nil
-}
-return count, nil
+return defaultExecutorInstances, nil
 ```
 
 Three deliberate choices:
 
-- **Max, not precedence.** Which surface Spark ends up honouring when both are set depends on
-  the order in which the operator assembles `--conf` arguments. Taking the larger makes a
-  disagreement between them over-reserve rather than leave executors uncounted — the safe
-  direction for a quota system.
+- **Precedence, not a maximum.** The structured `spec.executor.instances` field is the
+  application's declared intent; the raw `spark.executor.instances` key in `sparkConf` is the
+  fallback for applications that configure Spark directly. This mirrors how
+  `dynamicAllocationEnabled()` and `dynamicAllocationExecutorCount()` already resolve their
+  own properties, so the package is internally consistent about which surface wins.
 - **Default to Spark's 2, not 0.** An application declaring no count anywhere still gets two
   executors from Spark. Reserving zero for them is the same hole in miniature.
 - **A malformed value is an error.** `dynamicAllocationExecutorCount` deliberately ignores
   parse failures, treating the field as absent; doing that here would resurrect a zero-sized
-  PodSet from a typo. `sparkConfExecutorInstances` returns an error, and
-  `validateCreate` rejects it at admission with a message naming the field, so the failure is
-  immediate and legible rather than a silently unaccounted run.
+  PodSet from a typo. `sparkConfExecutorInstances` returns an error, and `validateCreate`
+  rejects it at admission with a message naming the field, so the failure is immediate and
+  legible rather than a silently unaccounted run.
 
-`initialExecutorCount()` — the Dynamic Allocation pre-startup estimate — had the same blind
-spot, since `ptr.Deref(instances, 0)` contributed nothing to its max when the count lived only
-in `sparkConf`. It now folds `sparkConfExecutorInstances()` in alongside
-`initialExecutors`/`minExecutors`.
+On the Dynamic Allocation path, `declaredInitialExecutors()` applies the same principle as a
+precedence ladder, structured field before `sparkConf` for each property:
+
+1. `spec.executor.instances` — with Dynamic Allocation on this is treated as the **initial**
+   executor count, since that is the role it plays for Spark
+2. `spark.executor.instances` from `sparkConf`, the fallback for the above
+3. `initialExecutors`, structured then `sparkConf`
+4. `minExecutors`, structured then `sparkConf`
+5. zero, which the caller's clamp raises to `minExecutors` when one is configured
+
+### Divergence from Spark, and what it costs
+
+Spark's own `Utils.getDynamicAllocationInitialExecutors` takes the **largest** of
+`minExecutors`, `initialExecutors` and `spark.executor.instances`. Precedence therefore
+under-reserves for one configuration: `spec.executor.instances: 2` alongside
+`initialExecutors: 7` reserves 2 while Spark starts 7.
+
+`minExecutors` still acts as a floor through `clampToDynamicAllocationBounds`, so the common
+shape — a small `instances` with a larger `minExecutors` — is covered. A deliberate
+`instances < initialExecutors` configuration is not. This was accepted knowingly: predictable
+precedence between a structured field and its `sparkConf` fallback was preferred over matching
+Spark's arithmetic exactly, and the two values disagreeing is a configuration to correct rather
+than a shape to support.
 
 ## 4. What is unchanged
 
@@ -128,17 +147,16 @@ cause silent mis-accounting.
 
 ## 6. Testing
 
-`TestLiveExecutorCount` gains: sparkConf-only count, both surfaces set with each in turn being
-the larger, no count declared anywhere, a malformed conf value, and the Dynamic Allocation
-path folding the conf value into its max.
+`TestLiveExecutorCount` covers: sparkConf-only count, the structured field taking precedence
+in both directions (smaller and larger than the `sparkConf` value), no count declared anywhere,
+a malformed conf value, the Dynamic Allocation path falling back to the `sparkConf` count, and
+`instances` outranking an explicit `initialExecutors`.
 
-Negative-controlled both halves:
-
-- Restoring `numInitialExecutors` to the structured field alone fails four cases, including
-  `dynamic_allocation_disabled_reads_spark.executor.instances_from_sparkConf` returning 0 —
-  the cluster-observed signature.
-- Removing the conf value from `initialExecutorCount`'s max fails exactly
-  `dynamic_allocation_folds_sparkConf_instances_into_the_max`.
+Negative-controlled: restoring max-based resolution on both paths fails exactly
+`structured_field_takes_precedence_over_sparkConf_when_smaller` and
+`instances_is_treated_as_initialExecutors_and_outranks_initialExecutors`. Restoring the
+original structured-field-only read fails the sparkConf-fallback cases, including the
+cluster-observed signature of a sparkConf-declared count resolving to 0.
 
 `gofmt -l` clean, `go vet`, `go test`, `go test -race -count=1` on the package, and
 `go build ./...` across the tree.

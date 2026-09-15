@@ -258,17 +258,18 @@ func TestLiveExecutorCount(t *testing.T) {
 			pods: []client.Object{executorPod("e1", corev1.PodRunning, false)},
 			want: 15,
 		},
-		// A disagreement between the two surfaces can only ever over-reserve.
-		"dynamic allocation disabled takes the larger of the two surfaces": {
+		// sparkConf is the fallback, so the structured field wins whenever it is set --
+		// in either direction, not just when it is larger.
+		"structured field takes precedence over sparkConf when smaller": {
 			app: func() *sparkv1beta2.SparkApplication {
 				app := sparkapplicationtesting.MakeSparkApplication("app", "ns").
 					ExecutorInstances(3).Obj()
 				app.Spec.SparkConf = map[string]string{"spark.executor.instances": "15"}
 				return app
 			}(),
-			want: 15,
+			want: 3,
 		},
-		"dynamic allocation disabled honours the structured field when it is the larger": {
+		"structured field takes precedence over sparkConf when larger": {
 			app: func() *sparkv1beta2.SparkApplication {
 				app := sparkapplicationtesting.MakeSparkApplication("app", "ns").
 					ExecutorInstances(9).Obj()
@@ -298,7 +299,7 @@ func TestLiveExecutorCount(t *testing.T) {
 		},
 		// The Dynamic Allocation path had the same blind spot: the structured field
 		// contributed nothing to the max when the count lived only in sparkConf.
-		"dynamic allocation folds sparkConf instances into the max": {
+		"dynamic allocation falls back to sparkConf instances when the field is unset": {
 			app: func() *sparkv1beta2.SparkApplication {
 				app := sparkapplicationtesting.MakeSparkApplication("app", "ns").Obj()
 				app.Spec.Executor.Instances = nil
@@ -429,7 +430,7 @@ func TestLiveExecutorCount(t *testing.T) {
 			}(),
 			want: 3,
 		},
-		"instances above minExecutors wins, matching Spark's max semantics": {
+		"instances above minExecutors is used as the initial count": {
 			app: sparkapplicationtesting.MakeSparkApplication("app", "ns").
 				ExecutorInstances(5).
 				DynamicAllocation(&sparkv1beta2.DynamicAllocation{
@@ -438,6 +439,19 @@ func TestLiveExecutorCount(t *testing.T) {
 				}).
 				Obj(),
 			want: 5,
+		},
+		// With Dynamic Allocation on, spec.executor.instances is treated as the initial
+		// executor count and takes precedence over an explicitly configured
+		// initialExecutors. This diverges from Spark, which would take the larger.
+		"instances is treated as initialExecutors and outranks initialExecutors": {
+			app: sparkapplicationtesting.MakeSparkApplication("app", "ns").
+				ExecutorInstances(2).
+				DynamicAllocation(&sparkv1beta2.DynamicAllocation{
+					Enabled:          true,
+					InitialExecutors: ptr.To[int32](7),
+				}).
+				Obj(),
+			want: 2,
 		},
 		"no Dynamic Allocation bounds set leaves the observed count untouched": {
 			app: sparkapplicationtesting.MakeSparkApplication("app", "ns").
