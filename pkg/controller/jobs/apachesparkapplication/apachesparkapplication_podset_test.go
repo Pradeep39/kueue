@@ -285,20 +285,22 @@ func TestStaticExecutorCount(t *testing.T) {
 			spec: sparkv1.ApplicationSpec{SparkConf: map[string]string{"spark.executor.instances": "5"}},
 			want: 5,
 		},
-		"instanceConfig is used only when instances is unset": {
+		"instanceConfig is used when set": {
 			spec: sparkv1.ApplicationSpec{ApplicationTolerations: &sparkv1.ApplicationTolerations{
 				InstanceConfig: &sparkv1.ExecutorInstanceConfig{InitExecutors: 3},
 			}},
 			want: 3,
 		},
-		"spark.executor.instances beats instanceConfig": {
+		// sparkConf is the fallback, so the structured field wins when both are set --
+		// see the note on staticExecutorCount for what this costs on this CRD.
+		"instanceConfig takes precedence over spark.executor.instances": {
 			spec: sparkv1.ApplicationSpec{
 				SparkConf: map[string]string{"spark.executor.instances": "10"},
 				ApplicationTolerations: &sparkv1.ApplicationTolerations{
 					InstanceConfig: &sparkv1.ExecutorInstanceConfig{InitExecutors: 3},
 				},
 			},
-			want: 10,
+			want: 3,
 		},
 		"zero initExecutors does not shadow the default": {
 			spec: sparkv1.ApplicationSpec{ApplicationTolerations: &sparkv1.ApplicationTolerations{

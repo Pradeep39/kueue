@@ -261,29 +261,51 @@ func (j *SparkApplication) dynamicAllocationEnabled() bool {
 	return enabled
 }
 
-// staticExecutorCount returns the executor count declared in the spec.
+// staticExecutorCount returns the executor count declared in the spec, preferring the
+// structured spec.applicationTolerations.instanceConfig.initExecutors field over the raw
+// spark.executor.instances key in sparkConf, and falling back to Spark's own default.
 //
-// The operator does not create executors itself - the driver does, from
-// spark.executor.instances - so sparkConf, not instanceConfig, is what decides how many
-// pods actually appear. instanceConfig only drives the operator's own health thresholds,
-// and is consulted here purely as a fallback for an application that leaves
-// spark.executor.instances unset.
+// Note what this precedence costs on this CRD specifically. The operator does not create
+// executors itself - the driver does, from spark.executor.instances - so sparkConf is what
+// actually decides how many pods appear, while instanceConfig feeds the operator's own
+// health thresholds. Preferring instanceConfig therefore means an application declaring
+// initExecutors: 2 alongside spark.executor.instances: 15 reserves quota for 2 while 15
+// pods run. The precedence is deliberate, for consistency with how every other property in
+// this integration resolves a structured field before its sparkConf equivalent, but the two
+// should be kept in agreement.
 func (j *SparkApplication) staticExecutorCount() (int32, error) {
-	if raw, ok := j.conf("spark.executor.instances"); ok {
-		n, err := strconv.ParseInt(raw, 10, 32)
-		if err != nil {
-			return 0, fmt.Errorf("spark.executor.instances: %w", err)
-		}
-		return int32(n), nil
-	}
 	if ic := instanceConfig(j.SparkApplication); ic != nil && ic.InitExecutors > 0 {
 		return ic.InitExecutors, nil
+	}
+	n, ok, err := j.explicitExecutorInstances()
+	if err != nil {
+		return 0, err
+	}
+	if ok {
+		return n, nil
 	}
 	return defaultExecutorInstances, nil
 }
 
-// dynamicAllocationCount reads one of the spark.dynamicAllocation.* executor counts.
+// dynamicAllocationCount resolves one of the executor counts, preferring the structured
+// spec.applicationTolerations.instanceConfig field over its spark.dynamicAllocation.*
+// sparkConf equivalent. The instanceConfig fields are plain int32, so a zero is treated as
+// unset - which matches the CRD, where a zero bound would be meaningless.
 func (j *SparkApplication) dynamicAllocationCount(field string) (int32, bool, error) {
+	if ic := instanceConfig(j.SparkApplication); ic != nil {
+		var v int32
+		switch field {
+		case "initialExecutors":
+			v = ic.InitExecutors
+		case "minExecutors":
+			v = ic.MinExecutors
+		case "maxExecutors":
+			v = ic.MaxExecutors
+		}
+		if v > 0 {
+			return v, true, nil
+		}
+	}
 	raw, ok := j.conf("spark.dynamicAllocation." + field)
 	if !ok {
 		return 0, false, nil
@@ -296,9 +318,9 @@ func (j *SparkApplication) dynamicAllocationCount(field string) (int32, bool, er
 }
 
 // explicitExecutorInstances reports spark.executor.instances only when the application
-// actually declares it. The Dynamic Allocation path folds it into a max, and must not drag
-// in staticExecutorCount's fallbacks (instanceConfig, or Spark's static default of 2) while
-// doing so - those describe a non-DA application.
+// actually declares it, so callers can place it precisely in their precedence ladder without
+// dragging in staticExecutorCount's fallbacks - instanceConfig, or Spark's static default of
+// 2 - which belong at different rungs.
 func (j *SparkApplication) explicitExecutorInstances() (int32, bool, error) {
 	raw, ok := j.conf("spark.executor.instances")
 	if !ok {
@@ -350,30 +372,47 @@ func (j *SparkApplication) clampToDynamicAllocationBounds(count int32) (int32, e
 }
 
 // initialExecutorCount returns the count to assume for a Dynamic-Allocation-enabled
-// application before any executor pods have been observed.
+// application before any executor pods have been observed, bounded by Dynamic Allocation's
+// own limits.
 //
-// This is a max over spark.executor.instances and Dynamic Allocation's own
-// initialExecutors/minExecutors, which is what Spark itself computes - minExecutors is a
-// floor DA never starts below, and an explicitly declared instances count raises the initial
-// request rather than being ignored. Taking the first field that happens to be set
-// under-reserves whenever another one is larger, admitting the driver without the executors
-// Spark immediately asks for and forcing the remainder through a scale-up slice.
+// Each surface is consulted in precedence order, structured field before its sparkConf
+// equivalent:
 //
-// Falls back to staticExecutorCount() only when the application declares none of the three;
-// sizing the very first reservation at zero would let the driver create its initial executors
-// before Kueue had reserved anything for them.
+//  1. instanceConfig.initExecutors - with Dynamic Allocation on this is the initial executor
+//     count, which is the role it plays for Spark
+//  2. spark.executor.instances from sparkConf, the fallback for the above
+//  3. initialExecutors, structured then sparkConf
+//  4. minExecutors, structured then sparkConf
+//  5. zero, which the clamp raises to minExecutors when one is configured
+//
+// This is precedence rather than a maximum, a deliberate divergence from Spark's
+// Utils.getDynamicAllocationInitialExecutors, which takes the largest of minExecutors,
+// initialExecutors and spark.executor.instances. minExecutors still acts as a floor through
+// the clamp, so the common shape is covered; a deliberate instances < initialExecutors
+// configuration is not.
+//
+// Falling back to zero rather than staticExecutorCount() keeps the static default of 2 out
+// of the Dynamic Allocation path, where it would describe nothing the application asked for.
 func (j *SparkApplication) initialExecutorCount() (int32, error) {
-	var (
-		count    int32
-		declared bool
-	)
+	count, err := j.declaredInitialExecutors()
+	if err != nil {
+		return 0, err
+	}
+	return j.clampToDynamicAllocationBounds(count)
+}
+
+// declaredInitialExecutors walks the precedence ladder documented on initialExecutorCount.
+func (j *SparkApplication) declaredInitialExecutors() (int32, error) {
+	if ic := instanceConfig(j.SparkApplication); ic != nil && ic.InitExecutors > 0 {
+		return ic.InitExecutors, nil
+	}
 
 	n, ok, err := j.explicitExecutorInstances()
 	if err != nil {
 		return 0, err
 	}
 	if ok {
-		count, declared = max(count, n), true
+		return n, nil
 	}
 
 	for _, field := range []string{"initialExecutors", "minExecutors"} {
@@ -382,14 +421,10 @@ func (j *SparkApplication) initialExecutorCount() (int32, error) {
 			return 0, err
 		}
 		if ok {
-			count, declared = max(count, n), true
+			return n, nil
 		}
 	}
-
-	if !declared {
-		return j.staticExecutorCount()
-	}
-	return j.clampToDynamicAllocationBounds(count)
+	return 0, nil
 }
 
 // isVerifiedLiveExecutor reports whether pod should currently count against the executor

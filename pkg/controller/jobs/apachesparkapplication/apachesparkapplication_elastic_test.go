@@ -203,6 +203,62 @@ func TestLiveExecutorCount(t *testing.T) {
 			}),
 			want: 3,
 		},
+		// The structured instanceConfig outranks the sparkConf count on the Dynamic
+		// Allocation path too, and its bounds drive the clamp.
+		"instanceConfig initExecutors outranks the sparkConf instances count": {
+			spec: func() sparkv1.ApplicationSpec {
+				spec := daSpec(map[string]string{"spark.executor.instances": "9"})
+				spec.ApplicationTolerations = &sparkv1.ApplicationTolerations{
+					InstanceConfig: &sparkv1.ExecutorInstanceConfig{InitExecutors: 4},
+				}
+				return spec
+			}(),
+			want: 4,
+		},
+		"instanceConfig minExecutors raises a live count below the floor": {
+			spec: func() sparkv1.ApplicationSpec {
+				spec := daSpec(nil)
+				spec.ApplicationTolerations = &sparkv1.ApplicationTolerations{
+					InstanceConfig: &sparkv1.ExecutorInstanceConfig{MinExecutors: 3},
+				}
+				return spec
+			}(),
+			pods: []client.Object{executorPod("e0", corev1.PodRunning, false)},
+			want: 3,
+		},
+		"instanceConfig maxExecutors caps a live count above the ceiling": {
+			spec: func() sparkv1.ApplicationSpec {
+				spec := daSpec(nil)
+				spec.ApplicationTolerations = &sparkv1.ApplicationTolerations{
+					InstanceConfig: &sparkv1.ExecutorInstanceConfig{MaxExecutors: 2},
+				}
+				return spec
+			}(),
+			pods: []client.Object{
+				executorPod("e0", corev1.PodRunning, false),
+				executorPod("e1", corev1.PodRunning, false),
+				executorPod("e2", corev1.PodRunning, false),
+			},
+			want: 2,
+		},
+		"instanceConfig bounds take precedence over the sparkConf equivalents": {
+			spec: func() sparkv1.ApplicationSpec {
+				spec := daSpec(map[string]string{
+					"spark.dynamicAllocation.minExecutors": "8",
+					"spark.dynamicAllocation.maxExecutors": "9",
+				})
+				spec.ApplicationTolerations = &sparkv1.ApplicationTolerations{
+					InstanceConfig: &sparkv1.ExecutorInstanceConfig{MinExecutors: 1, MaxExecutors: 2},
+				}
+				return spec
+			}(),
+			pods: []client.Object{
+				executorPod("e0", corev1.PodRunning, false),
+				executorPod("e1", corev1.PodRunning, false),
+				executorPod("e2", corev1.PodRunning, false),
+			},
+			want: 2,
+		},
 		"declared instances above the dynamic allocation counts wins": {
 			spec: daSpec(map[string]string{
 				"spark.executor.instances":                 "6",
