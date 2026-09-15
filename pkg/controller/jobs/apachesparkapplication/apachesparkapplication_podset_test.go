@@ -333,6 +333,60 @@ func TestStaticExecutorCount(t *testing.T) {
 	}
 }
 
+// A memory request written on the pod template is the total the submitter intends, so
+// Spark's base+overhead arithmetic must not be applied on top of it.
+func TestBuildPodTemplateSpecHonoursTemplateMemory(t *testing.T) {
+	spec := sparkv1.ApplicationSpec{
+		SparkConf: map[string]string{"spark.executor.memory": "1g"},
+		ExecutorSpec: &sparkv1.BaseApplicationTemplateSpec{
+			PodTemplateSpec: &corev1.PodTemplateSpec{
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{{
+						Name: "spark-kubernetes-executor",
+						Resources: corev1.ResourceRequirements{
+							Requests: corev1.ResourceList{
+								corev1.ResourceMemory: resource.MustParse("2Gi"),
+							},
+						},
+					}},
+				},
+			},
+		},
+	}
+
+	tmpl, err := wrap(spec).buildPodTemplateSpec(roleExecutor)
+	if err != nil {
+		t.Fatalf("buildPodTemplateSpec() returned an unexpected error: %v", err)
+	}
+
+	got := tmpl.Spec.Containers[0].Resources.Requests[corev1.ResourceMemory]
+	if want := resource.MustParse("2Gi"); got.Cmp(want) != 0 {
+		// Without the template check this would be 1g + max(0.1*1g, 384Mi) = 1408Mi.
+		t.Errorf("memory request = %s, want %s (template value verbatim)", got.String(), want.String())
+	}
+	gotLimit := tmpl.Spec.Containers[0].Resources.Limits[corev1.ResourceMemory]
+	if want := resource.MustParse("2Gi"); gotLimit.Cmp(want) != 0 {
+		t.Errorf("memory limit = %s, want %s (defaulted from the request)", gotLimit.String(), want.String())
+	}
+}
+
+// With no template request, Spark's arithmetic still applies.
+func TestBuildPodTemplateSpecDerivesMemoryWithoutTemplateRequest(t *testing.T) {
+	spec := sparkv1.ApplicationSpec{
+		SparkConf: map[string]string{"spark.executor.memory": "1g"},
+	}
+
+	tmpl, err := wrap(spec).buildPodTemplateSpec(roleExecutor)
+	if err != nil {
+		t.Fatalf("buildPodTemplateSpec() returned an unexpected error: %v", err)
+	}
+
+	got := tmpl.Spec.Containers[0].Resources.Requests[corev1.ResourceMemory]
+	if want := resource.MustParse("1408Mi"); got.Cmp(want) != 0 {
+		t.Errorf("memory request = %s, want %s (base + overhead)", got.String(), want.String())
+	}
+}
+
 func TestBuildPodTemplateSpec(t *testing.T) {
 	cases := map[string]struct {
 		spec          sparkv1.ApplicationSpec

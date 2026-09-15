@@ -373,26 +373,7 @@ func (j *SparkApplication) clampToDynamicAllocationBounds(count int32) (int32, e
 
 // initialExecutorCount returns the count to assume for a Dynamic-Allocation-enabled
 // application before any executor pods have been observed, bounded by Dynamic Allocation's
-// own limits.
-//
-// Each surface is consulted in precedence order, structured field before its sparkConf
-// equivalent:
-//
-//  1. instanceConfig.initExecutors - with Dynamic Allocation on this is the initial executor
-//     count, which is the role it plays for Spark
-//  2. spark.executor.instances from sparkConf, the fallback for the above
-//  3. initialExecutors, structured then sparkConf
-//  4. minExecutors, structured then sparkConf
-//  5. zero, which the clamp raises to minExecutors when one is configured
-//
-// This is precedence rather than a maximum, a deliberate divergence from Spark's
-// Utils.getDynamicAllocationInitialExecutors, which takes the largest of minExecutors,
-// initialExecutors and spark.executor.instances. minExecutors still acts as a floor through
-// the clamp, so the common shape is covered; a deliberate instances < initialExecutors
-// configuration is not.
-//
-// Falling back to zero rather than staticExecutorCount() keeps the static default of 2 out
-// of the Dynamic Allocation path, where it would describe nothing the application asked for.
+// own limits. See declaredInitialExecutors for how the count is resolved.
 func (j *SparkApplication) initialExecutorCount() (int32, error) {
 	count, err := j.declaredInitialExecutors()
 	if err != nil {
@@ -401,30 +382,30 @@ func (j *SparkApplication) initialExecutorCount() (int32, error) {
 	return j.clampToDynamicAllocationBounds(count)
 }
 
-// declaredInitialExecutors walks the precedence ladder documented on initialExecutorCount.
+// declaredInitialExecutors resolves the initial executor count as Spark's
+// Utils.getDynamicAllocationInitialExecutors does: the largest of minExecutors,
+// initialExecutors and the resolved executor-instances count.
+//
+// Each individual term still prefers its structured field over the sparkConf equivalent -
+// the instances term through staticExecutorCount, the bounds through
+// dynamicAllocationCount - so only the three-way combination is a maximum. Spark starts the
+// largest of the three regardless of which the author considered authoritative, so resolving
+// the combination by precedence would under-reserve.
 func (j *SparkApplication) declaredInitialExecutors() (int32, error) {
-	if ic := instanceConfig(j.SparkApplication); ic != nil && ic.InitExecutors > 0 {
-		return ic.InitExecutors, nil
-	}
-
-	n, ok, err := j.explicitExecutorInstances()
+	count, err := j.staticExecutorCount()
 	if err != nil {
 		return 0, err
 	}
-	if ok {
-		return n, nil
-	}
-
 	for _, field := range []string{"initialExecutors", "minExecutors"} {
 		n, ok, err := j.dynamicAllocationCount(field)
 		if err != nil {
 			return 0, err
 		}
 		if ok {
-			return n, nil
+			count = max(count, n)
 		}
 	}
-	return 0, nil
+	return count, nil
 }
 
 // isVerifiedLiveExecutor reports whether pod should currently count against the executor
@@ -611,14 +592,18 @@ func (j *SparkApplication) buildPodTemplateSpec(role sparkRole) (*corev1.PodTemp
 	if err != nil {
 		return nil, err
 	}
-	memoryBytes, err := j.totalMemoryBytes(role)
-	if err != nil {
-		return nil, err
-	}
 	limitCPU, err := j.cpuLimit(role)
 	if err != nil {
 		return nil, err
 	}
+
+	// A memory request declared on the pod template is taken verbatim. Spark's overhead
+	// arithmetic exists to recover the total the operator would have computed from
+	// spark.{driver,executor}.memory; when the submitter has written a request directly
+	// they have already done that arithmetic, and adding overhead on top would charge for
+	// it twice. Note this also means a malformed spark.{driver,executor}.memory is not
+	// reported when the template supplies the value - the value is never needed.
+	declaredMemory, memoryDeclared := container.Resources.Requests[corev1.ResourceMemory]
 
 	if container.Resources.Requests == nil {
 		container.Resources.Requests = corev1.ResourceList{}
@@ -627,10 +612,22 @@ func (j *SparkApplication) buildPodTemplateSpec(role sparkRole) (*corev1.PodTemp
 		container.Resources.Limits = corev1.ResourceList{}
 	}
 	container.Resources.Requests[corev1.ResourceCPU] = cpu
-	container.Resources.Requests[corev1.ResourceMemory] = *resource.NewQuantity(memoryBytes, resource.BinarySI)
-	// Spark sets the memory limit equal to the request, since the JVM heap plus overhead
-	// is the whole allocation it intends to use.
-	container.Resources.Limits[corev1.ResourceMemory] = *resource.NewQuantity(memoryBytes, resource.BinarySI)
+
+	if memoryDeclared {
+		if _, ok := container.Resources.Limits[corev1.ResourceMemory]; !ok {
+			container.Resources.Limits[corev1.ResourceMemory] = declaredMemory
+		}
+	} else {
+		memoryBytes, err := j.totalMemoryBytes(role)
+		if err != nil {
+			return nil, err
+		}
+		container.Resources.Requests[corev1.ResourceMemory] = *resource.NewQuantity(memoryBytes, resource.BinarySI)
+		// Spark sets the memory limit equal to the request, since the JVM heap plus
+		// overhead is the whole allocation it intends to use.
+		container.Resources.Limits[corev1.ResourceMemory] = *resource.NewQuantity(memoryBytes, resource.BinarySI)
+	}
+
 	if limitCPU != nil {
 		container.Resources.Limits[corev1.ResourceCPU] = *limitCPU
 	}
