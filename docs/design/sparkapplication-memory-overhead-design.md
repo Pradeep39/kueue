@@ -11,6 +11,11 @@ Stacked on [`sparkapplication-sparkconf-executor-instances-design.md`](./sparkap
 document covers the other branch of that decision: what to charge when the value comes from
 Spark's own memory configuration.
 
+> **Amended (2026-09-16)** by
+> [`spark-podset-align-with-spark-design.md`](./spark-podset-align-with-spark-design.md):
+> the pod-template branch is gone, so this arithmetic is no longer gated behind it — it now
+> applies to every application. §3's first bullet and the floor in §2 are updated below.
+
 ## 1. The under-charge
 
 The operator maps `spec.{driver,executor}.memory` onto `spark.{driver,executor}.memory`, and
@@ -29,7 +34,7 @@ Measured on the cluster: executor pods requesting 896Mi against a ClusterQueue c
 ```
 base      = spec.{role}.memory  ->  spark.{role}.memory  ->  Spark's 1g default
 overhead  = spec.{role}.memoryOverhead  ->  spark.{role}.memoryOverhead
-            ->  max(trunc(factor x base), 384MiB)
+            ->  max(trunc(factor x base), spark.{role}.minMemoryOverhead or 384MiB)
 factor    = spec.memoryOverheadFactor  ->  spark.kubernetes.memoryOverheadFactor
             ->  0.4 for Python/R, else 0.1
 total     = base + overhead
@@ -59,9 +64,9 @@ they cannot drift from the operator Kueue is integrating with.
 
 ## 3. When the math does *not* apply
 
-- **A pod-template memory request** is used verbatim. It is already the total the submitter
-  intends; adding overhead would charge for it twice. This is the check added in the previous
-  design doc, and it is the gate this arithmetic sits behind.
+- ~~**A pod-template memory request** is used verbatim.~~ Removed 2026-09-16: Spark overwrites
+  the template's container resources when it builds the pod, so the arithmetic applies there
+  too. See [`spark-podset-align-with-spark-design.md`](./spark-podset-align-with-spark-design.md) §1.
 - **No memory configured through any Spark surface.** The request is left unset rather than
   inventing Spark's 1g default for an application that never asked for memory. `defaultMemoryMiB`
   is only reached once *some* Spark memory property is present.

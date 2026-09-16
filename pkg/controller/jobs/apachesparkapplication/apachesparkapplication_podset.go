@@ -19,7 +19,6 @@ package apachesparkapplication
 import (
 	"context"
 	"fmt"
-	"math"
 	"slices"
 	"strconv"
 	"strings"
@@ -42,8 +41,9 @@ const (
 
 	// defaultMemoryMiB is the Spark default for spark.{driver,executor}.memory (1g).
 	defaultMemoryMiB int64 = 1024
-	// minMemoryOverheadMiB is Spark's MEMORY_OVERHEAD_MIN_MIB floor.
-	minMemoryOverheadMiB int64 = 384
+	// defaultMinMemoryOverheadMiB is the default of spark.{driver,executor}.minMemoryOverhead,
+	// the floor Spark applies to a factor-derived overhead.
+	defaultMinMemoryOverheadMiB int64 = 384
 	// jvmMemoryOverheadFactor is MEMORY_OVERHEAD_FACTOR, applied to JVM applications.
 	jvmMemoryOverheadFactor = 0.1
 	// nonJVMMemoryOverheadFactor is NON_JVM_MEMORY_OVERHEAD_FACTOR, applied to
@@ -105,9 +105,24 @@ func (j *SparkApplication) memoryOverheadFactor(role sparkRole) float64 {
 	return jvmMemoryOverheadFactor
 }
 
+// minMemoryOverheadMiB resolves the floor Spark applies to a factor-derived overhead.
+// spark.{driver,executor}.minMemoryOverhead is ignored when an explicit overhead is set,
+// so callers only consult this on the factored path.
+func (j *SparkApplication) minMemoryOverheadMiB(role sparkRole) (int64, error) {
+	raw, ok := j.conf(fmt.Sprintf("spark.%s.minMemoryOverhead", role))
+	if !ok {
+		return defaultMinMemoryOverheadMiB, nil
+	}
+	parsed, err := parseSparkMemoryMiB(raw)
+	if err != nil {
+		return 0, fmt.Errorf("spark.%s.minMemoryOverhead: %w", role, err)
+	}
+	return parsed, nil
+}
+
 // totalMemoryBytes reproduces Spark's memory arithmetic for a pod of the given role:
-// base memory, plus overhead (explicit or factor-derived with a 384MiB floor), plus
-// PySpark and off-heap allocations where configured.
+// base memory, plus overhead (explicit or factor-derived with a floor), plus PySpark and
+// off-heap allocations where configured.
 //
 // Getting this from spark.{driver,executor}.memory alone is what causes Kueue to
 // under-charge Spark: the operator hands the pod a request of base+overhead, which for
@@ -130,8 +145,13 @@ func (j *SparkApplication) totalMemoryBytes(role sparkRole) (int64, error) {
 		}
 		overheadMiB = parsed
 	} else {
-		factored := int64(math.Round(j.memoryOverheadFactor(role) * float64(baseMiB)))
-		overheadMiB = max(factored, minMemoryOverheadMiB)
+		minOverheadMiB, err := j.minMemoryOverheadMiB(role)
+		if err != nil {
+			return 0, err
+		}
+		// Spark truncates rather than rounds: (factor * memoryMiB).toInt.
+		factored := int64(j.memoryOverheadFactor(role) * float64(baseMiB))
+		overheadMiB = max(factored, minOverheadMiB)
 	}
 
 	totalMiB := baseMiB + overheadMiB
@@ -261,22 +281,20 @@ func (j *SparkApplication) dynamicAllocationEnabled() bool {
 	return enabled
 }
 
-// staticExecutorCount returns the executor count declared in the spec, preferring the
-// structured spec.applicationTolerations.instanceConfig.initExecutors field over the raw
-// spark.executor.instances key in sparkConf, and falling back to Spark's own default.
+// staticExecutorCount returns the executor count declared in the spec, preferring the raw
+// spark.executor.instances key in sparkConf over the structured
+// spec.applicationTolerations.instanceConfig.initExecutors field, and falling back to Spark's
+// own default.
 //
-// Note what this precedence costs on this CRD specifically. The operator does not create
-// executors itself - the driver does, from spark.executor.instances - so sparkConf is what
-// actually decides how many pods appear, while instanceConfig feeds the operator's own
-// health thresholds. Preferring instanceConfig therefore means an application declaring
-// initExecutors: 2 alongside spark.executor.instances: 15 reserves quota for 2 while 15
-// pods run. The precedence is deliberate, for consistency with how every other property in
-// this integration resolves a structured field before its sparkConf equivalent, but the two
-// should be kept in agreement.
+// This is the one property where sparkConf outranks the structured field, because on this CRD
+// the structured field never reaches Spark. The operator does not create executors itself -
+// the driver does, from spark.executor.instances - and instanceConfig is consumed only by the
+// operator's own readiness thresholds (AppRunningStep), never translated into a --conf at
+// submission. Preferring instanceConfig would therefore reserve quota for an application
+// declaring initExecutors: 2 while 15 pods from spark.executor.instances: 15 actually run.
+// The operator's own Kueue integration (KueueWorkloadFactory) reads spark.executor.instances
+// alone for the same reason.
 func (j *SparkApplication) staticExecutorCount() (int32, error) {
-	if ic := instanceConfig(j.SparkApplication); ic != nil && ic.InitExecutors > 0 {
-		return ic.InitExecutors, nil
-	}
 	n, ok, err := j.explicitExecutorInstances()
 	if err != nil {
 		return 0, err
@@ -284,14 +302,26 @@ func (j *SparkApplication) staticExecutorCount() (int32, error) {
 	if ok {
 		return n, nil
 	}
+	if ic := instanceConfig(j.SparkApplication); ic != nil && ic.InitExecutors > 0 {
+		return ic.InitExecutors, nil
+	}
 	return defaultExecutorInstances, nil
 }
 
-// dynamicAllocationCount resolves one of the executor counts, preferring the structured
-// spec.applicationTolerations.instanceConfig field over its spark.dynamicAllocation.*
-// sparkConf equivalent. The instanceConfig fields are plain int32, so a zero is treated as
+// dynamicAllocationCount resolves one of the executor counts, preferring the
+// spark.dynamicAllocation.* sparkConf key over its structured
+// spec.applicationTolerations.instanceConfig equivalent - Dynamic Allocation runs inside the
+// driver and obeys the sparkConf keys, while instanceConfig only feeds the operator's
+// readiness thresholds. The instanceConfig fields are plain int32, so a zero is treated as
 // unset - which matches the CRD, where a zero bound would be meaningless.
 func (j *SparkApplication) dynamicAllocationCount(field string) (int32, bool, error) {
+	if raw, ok := j.conf("spark.dynamicAllocation." + field); ok {
+		n, err := strconv.ParseInt(raw, 10, 32)
+		if err != nil {
+			return 0, false, fmt.Errorf("spark.dynamicAllocation.%s: %w", field, err)
+		}
+		return int32(n), true, nil
+	}
 	if ic := instanceConfig(j.SparkApplication); ic != nil {
 		var v int32
 		switch field {
@@ -306,15 +336,7 @@ func (j *SparkApplication) dynamicAllocationCount(field string) (int32, bool, er
 			return v, true, nil
 		}
 	}
-	raw, ok := j.conf("spark.dynamicAllocation." + field)
-	if !ok {
-		return 0, false, nil
-	}
-	n, err := strconv.ParseInt(raw, 10, 32)
-	if err != nil {
-		return 0, false, fmt.Errorf("spark.dynamicAllocation.%s: %w", field, err)
-	}
-	return int32(n), true, nil
+	return 0, false, nil
 }
 
 // explicitExecutorInstances reports spark.executor.instances only when the application
@@ -386,11 +408,11 @@ func (j *SparkApplication) initialExecutorCount() (int32, error) {
 // Utils.getDynamicAllocationInitialExecutors does: the largest of minExecutors,
 // initialExecutors and the resolved executor-instances count.
 //
-// Each individual term still prefers its structured field over the sparkConf equivalent -
-// the instances term through staticExecutorCount, the bounds through
-// dynamicAllocationCount - so only the three-way combination is a maximum. Spark starts the
-// largest of the three regardless of which the author considered authoritative, so resolving
-// the combination by precedence would under-reserve.
+// Each individual term still resolves through its own precedence - the instances term
+// through staticExecutorCount, the bounds through dynamicAllocationCount - so only the
+// three-way combination is a maximum. Spark starts the largest of the three regardless of
+// which the author considered authoritative, so resolving the combination by precedence
+// would under-reserve.
 func (j *SparkApplication) declaredInitialExecutors() (int32, error) {
 	count, err := j.staticExecutorCount()
 	if err != nil {
@@ -597,14 +619,13 @@ func (j *SparkApplication) buildPodTemplateSpec(role sparkRole) (*corev1.PodTemp
 		return nil, err
 	}
 
-	// A memory request declared on the pod template is taken verbatim. Spark's overhead
-	// arithmetic exists to recover the total the operator would have computed from
-	// spark.{driver,executor}.memory; when the submitter has written a request directly
-	// they have already done that arithmetic, and adding overhead on top would charge for
-	// it twice. Note this also means a malformed spark.{driver,executor}.memory is not
-	// reported when the template supplies the value - the value is never needed.
-	declaredMemory, memoryDeclared := container.Resources.Requests[corev1.ResourceMemory]
-
+	// Spark's derived cpu and memory overwrite whatever the pod template declares, because
+	// that is what happens to the pod itself: the operator writes the template to a file and
+	// passes it as spark.kubernetes.{driver,executor}.podTemplateFile, and Spark's
+	// Basic{Driver,Executor}FeatureStep then replaces the Spark container's cpu and memory
+	// with base+overhead before creating the pod. Honouring a template request verbatim would
+	// charge a number the kubelet never sees. The operator's own Kueue integration
+	// (KueueWorkloadFactory.decorateContainerResources) overwrites them for the same reason.
 	if container.Resources.Requests == nil {
 		container.Resources.Requests = corev1.ResourceList{}
 	}
@@ -613,20 +634,14 @@ func (j *SparkApplication) buildPodTemplateSpec(role sparkRole) (*corev1.PodTemp
 	}
 	container.Resources.Requests[corev1.ResourceCPU] = cpu
 
-	if memoryDeclared {
-		if _, ok := container.Resources.Limits[corev1.ResourceMemory]; !ok {
-			container.Resources.Limits[corev1.ResourceMemory] = declaredMemory
-		}
-	} else {
-		memoryBytes, err := j.totalMemoryBytes(role)
-		if err != nil {
-			return nil, err
-		}
-		container.Resources.Requests[corev1.ResourceMemory] = *resource.NewQuantity(memoryBytes, resource.BinarySI)
-		// Spark sets the memory limit equal to the request, since the JVM heap plus
-		// overhead is the whole allocation it intends to use.
-		container.Resources.Limits[corev1.ResourceMemory] = *resource.NewQuantity(memoryBytes, resource.BinarySI)
+	memoryBytes, err := j.totalMemoryBytes(role)
+	if err != nil {
+		return nil, err
 	}
+	container.Resources.Requests[corev1.ResourceMemory] = *resource.NewQuantity(memoryBytes, resource.BinarySI)
+	// Spark sets the memory limit equal to the request, since the JVM heap plus overhead is
+	// the whole allocation it intends to use.
+	container.Resources.Limits[corev1.ResourceMemory] = *resource.NewQuantity(memoryBytes, resource.BinarySI)
 
 	if limitCPU != nil {
 		container.Resources.Limits[corev1.ResourceCPU] = *limitCPU
