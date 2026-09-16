@@ -8,9 +8,11 @@ operator needs to be deployed alongside Kueue.
 This document previously recorded a fork
 ([`Pradeep39/spark-operator#1`](https://github.com/Pradeep39/spark-operator/pull/1), commit
 `2f914dd`) that added an optional `Spec.Parallelism *int32` to `SparkApplicationSpec`. That
-addition is being reverted. The rationale is kept here because a reviewer will reasonably
-ask whether a declared executor-count field is needed, and the answer is load-bearing for
-this design.
+addition is merged on the fork but **unused**: nothing in this integration reads it, and the
+integration compiles and runs against the released upstream module. It is therefore dead API
+surface on the fork rather than a dependency — reverting it would be tidy, but nothing here
+waits on that. The rationale is kept below because a reviewer will reasonably ask whether a
+declared executor-count field is needed, and the answer is load-bearing for this design.
 
 ## 1. Why a declared count was considered
 

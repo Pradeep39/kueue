@@ -189,8 +189,9 @@ unmodified `v1beta2` CRD, with Dynamic Allocation enabled and no Kueue-specific 
 on the CR. A `Spec.Parallelism *int32` addition was prototyped in a fork as a stable,
 operator-agnostic place for an external system to record a desired executor count; §2.3's
 live-Pod-count derivation supersedes the need for it, since Kueue never needs to *write* a
-desired count anywhere — it only *reads* live state. That fork addition is being reverted, and
-the linked document records the rationale plus how to confirm the dependency is zero.
+desired count anywhere — it only *reads* live state. That fork addition remains merged on the
+fork but unread by this integration, and the linked document records the rationale plus how to
+confirm the dependency is zero.
 
 ## 6. Alternatives considered
 
