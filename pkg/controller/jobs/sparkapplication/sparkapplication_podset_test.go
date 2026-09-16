@@ -234,23 +234,21 @@ func executorAppWithTemplateMemory(request, limit *string, memoryField *string) 
 	}
 }
 
-// A memory value written on the pod template is the total the submitter intends, so
-// spec.executor.memory must not override it. spec.executor.memory is the JVM heap size, from
-// which Spark derives the pod request by adding overhead.
-func TestAddMemoryPrefersThePodTemplate(t *testing.T) {
+// Spark overwrites the Spark container's memory with base+overhead when it builds the pod
+// from spec.{driver,executor}.template, so a value declared there must not be charged.
+func TestAddMemoryIgnoresThePodTemplate(t *testing.T) {
 	tests := map[string]struct {
 		app       *sparkv1beta2.SparkApplication
 		wantReq   string
 		wantLimit string
 	}{
-		"template request and limit are used verbatim": {
-			app:       executorAppWithTemplateMemory(ptr.To("896Mi"), ptr.To("1Gi"), ptr.To("512m")),
+		// 512Mi of heap plus the 384MiB floor, regardless of the template's 2Gi.
+		"template values are overwritten by Spark's arithmetic": {
+			app:       executorAppWithTemplateMemory(ptr.To("2Gi"), ptr.To("2Gi"), ptr.To("512m")),
 			wantReq:   "896Mi",
-			wantLimit: "1Gi",
+			wantLimit: "896Mi",
 		},
-		// Falling back to spec.executor.memory now applies Spark's overhead: 512Mi of heap
-		// plus the 384MiB floor, because 0.1 x 512Mi is smaller.
-		"no template values falls back to spec.executor.memory plus overhead": {
+		"no template values behaves the same": {
 			app:       executorAppWithTemplateMemory(nil, nil, ptr.To("512m")),
 			wantReq:   "896Mi",
 			wantLimit: "896Mi",
@@ -356,6 +354,29 @@ func TestTotalMemoryBytes(t *testing.T) {
 			},
 			role: "executor",
 			want: mi(896),
+		},
+		// Spark 4 lets the floor itself be configured; the CRD has no field for it, so
+		// sparkConf is the only surface.
+		"spark.executor.minMemoryOverhead raises the floor": {
+			spec: sparkv1beta2.SparkApplicationSpec{
+				SparkConf: map[string]string{"spark.executor.minMemoryOverhead": "1g"},
+				Executor: sparkv1beta2.ExecutorSpec{
+					SparkPodSpec: sparkv1beta2.SparkPodSpec{Memory: ptr.To("512m")}},
+			},
+			role: "executor",
+			want: mi(512 + 1024),
+		},
+		"minMemoryOverhead is ignored when the overhead is explicit": {
+			spec: sparkv1beta2.SparkApplicationSpec{
+				SparkConf: map[string]string{"spark.executor.minMemoryOverhead": "1g"},
+				Executor: sparkv1beta2.ExecutorSpec{
+					SparkPodSpec: sparkv1beta2.SparkPodSpec{
+						Memory:         ptr.To("512m"),
+						MemoryOverhead: ptr.To("128m"),
+					}},
+			},
+			role: "executor",
+			want: mi(512 + 128),
 		},
 		"pyspark memory is added on executors": {
 			spec: sparkv1beta2.SparkApplicationSpec{

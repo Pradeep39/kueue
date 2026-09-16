@@ -203,9 +203,9 @@ func TestLiveExecutorCount(t *testing.T) {
 			}),
 			want: 3,
 		},
-		// The structured instanceConfig outranks the sparkConf count on the Dynamic
-		// Allocation path too, and its bounds drive the clamp.
-		"instanceConfig initExecutors outranks the sparkConf instances count": {
+		// The conf keys Spark itself acts on outrank instanceConfig on the Dynamic
+		// Allocation path too, and drive the clamp. instanceConfig remains the fallback.
+		"sparkConf instances outranks instanceConfig initExecutors": {
 			spec: func() sparkv1.ApplicationSpec {
 				spec := daSpec(map[string]string{"spark.executor.instances": "9"})
 				spec.ApplicationTolerations = &sparkv1.ApplicationTolerations{
@@ -213,7 +213,7 @@ func TestLiveExecutorCount(t *testing.T) {
 				}
 				return spec
 			}(),
-			want: 4,
+			want: 9,
 		},
 		"instanceConfig minExecutors raises a live count below the floor": {
 			spec: func() sparkv1.ApplicationSpec {
@@ -241,7 +241,9 @@ func TestLiveExecutorCount(t *testing.T) {
 			},
 			want: 2,
 		},
-		"instanceConfig bounds take precedence over the sparkConf equivalents": {
+		// Dynamic Allocation obeys the sparkConf bounds, so a live count of 3 is raised to
+		// the sparkConf floor of 8 rather than capped at instanceConfig's 2.
+		"sparkConf bounds take precedence over the instanceConfig equivalents": {
 			spec: func() sparkv1.ApplicationSpec {
 				spec := daSpec(map[string]string{
 					"spark.dynamicAllocation.minExecutors": "8",
@@ -257,7 +259,7 @@ func TestLiveExecutorCount(t *testing.T) {
 				executorPod("e1", corev1.PodRunning, false),
 				executorPod("e2", corev1.PodRunning, false),
 			},
-			want: 2,
+			want: 8,
 		},
 		"declared instances above the dynamic allocation counts wins": {
 			spec: daSpec(map[string]string{

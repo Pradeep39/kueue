@@ -127,6 +127,14 @@ alongside `initialExecutors: 7` would reserve two executors while Spark started 
 
 ## 3a. Memory: a pod-template request is authoritative
 
+> **Superseded (2026-09-16)** by
+> [`spark-podset-align-with-spark-design.md`](./spark-podset-align-with-spark-design.md) §1.
+> The premise below is wrong: both operators pass the template to Spark as
+> `spark.kubernetes.{role}.podTemplateFile`, and `Basic{Driver,Executor}FeatureStep` then
+> overwrites the Spark container's memory with base+overhead. A template request is never what
+> the pod asks for, so charging it verbatim under-charges. Both integrations now always apply
+> Spark's arithmetic. The rest of this section is kept as a record of the original reasoning.
+
 `spec.{driver,executor}.memory` is the **JVM heap size**, not the pod's request. Spark derives
 the request by adding overhead — explicit `memoryOverhead`, or a factor-derived value with a
 384MiB floor — so reading the field verbatim under-charges, which is the defect recorded in
@@ -173,7 +181,9 @@ a malformed conf value, the Dynamic Allocation path falling back to the `sparkCo
 `instances` outranking an explicit `initialExecutors`.
 
 `TestAddMemoryPrefersThePodTemplate` covers a template request and limit used verbatim, and
-the fallback to `spec.executor.memory` when the template declares neither.
+the fallback to `spec.executor.memory` when the template declares neither. (Superseded: that
+test is now `TestAddMemoryIgnoresThePodTemplate`, asserting the opposite — see
+[`spark-podset-align-with-spark-design.md`](./spark-podset-align-with-spark-design.md) §1.)
 
 Negative-controlled: replacing the three-way maximum with a precedence ladder fails
 `initial_count_is_the_largest_of_instances,_initialExecutors_and_minExecutors`; ignoring the

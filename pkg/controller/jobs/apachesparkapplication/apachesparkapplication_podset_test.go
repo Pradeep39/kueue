@@ -88,11 +88,11 @@ func TestTotalMemoryBytes(t *testing.T) {
 		"defaults apply the overhead floor": {
 			role: roleExecutor, wantMiB: 1024 + 384,
 		},
-		// 0.1*4096=410 clears the floor, so the factor decides.
+		// 0.1*4096=409.6, and Spark truncates rather than rounds, so the factor gives 409.
 		"factor beats the floor above 3840MiB": {
 			spec:    sparkv1.ApplicationSpec{SparkConf: map[string]string{"spark.executor.memory": "4g"}},
 			role:    roleExecutor,
-			wantMiB: 4096 + 410,
+			wantMiB: 4096 + 409,
 		},
 		"explicit overhead wins over the factor": {
 			spec: sparkv1.ApplicationSpec{SparkConf: map[string]string{
@@ -127,7 +127,7 @@ func TestTotalMemoryBytes(t *testing.T) {
 				},
 			},
 			role:    roleExecutor,
-			wantMiB: 4096 + 410,
+			wantMiB: 4096 + 409,
 		},
 		"pyspark memory is added on executors": {
 			spec: sparkv1.ApplicationSpec{SparkConf: map[string]string{
@@ -163,6 +163,31 @@ func TestTotalMemoryBytes(t *testing.T) {
 			spec:    sparkv1.ApplicationSpec{SparkConf: map[string]string{"spark.driver.memory": "2g"}},
 			role:    roleDriver,
 			wantMiB: 2048 + 384,
+		},
+		"minMemoryOverhead raises the floor": {
+			spec: sparkv1.ApplicationSpec{SparkConf: map[string]string{
+				"spark.executor.memory":            "512m",
+				"spark.executor.minMemoryOverhead": "1g",
+			}},
+			role:    roleExecutor,
+			wantMiB: 512 + 1024,
+		},
+		// An explicit overhead makes the floor irrelevant, as it does in Spark.
+		"minMemoryOverhead is ignored when the overhead is explicit": {
+			spec: sparkv1.ApplicationSpec{SparkConf: map[string]string{
+				"spark.executor.memory":            "512m",
+				"spark.executor.memoryOverhead":    "128m",
+				"spark.executor.minMemoryOverhead": "1g",
+			}},
+			role:    roleExecutor,
+			wantMiB: 512 + 128,
+		},
+		"unparseable minMemoryOverhead is an error": {
+			spec: sparkv1.ApplicationSpec{SparkConf: map[string]string{
+				"spark.executor.minMemoryOverhead": "plenty",
+			}},
+			role:    roleExecutor,
+			wantErr: true,
 		},
 		"unparseable memory is an error": {
 			spec:    sparkv1.ApplicationSpec{SparkConf: map[string]string{"spark.executor.memory": "lots"}},
@@ -291,16 +316,16 @@ func TestStaticExecutorCount(t *testing.T) {
 			}},
 			want: 3,
 		},
-		// sparkConf is the fallback, so the structured field wins when both are set --
-		// see the note on staticExecutorCount for what this costs on this CRD.
-		"instanceConfig takes precedence over spark.executor.instances": {
+		// instanceConfig never reaches Spark, so the conf key the driver acts on wins --
+		// see the note on staticExecutorCount.
+		"spark.executor.instances takes precedence over instanceConfig": {
 			spec: sparkv1.ApplicationSpec{
 				SparkConf: map[string]string{"spark.executor.instances": "10"},
 				ApplicationTolerations: &sparkv1.ApplicationTolerations{
 					InstanceConfig: &sparkv1.ExecutorInstanceConfig{InitExecutors: 3},
 				},
 			},
-			want: 3,
+			want: 10,
 		},
 		"zero initExecutors does not shadow the default": {
 			spec: sparkv1.ApplicationSpec{ApplicationTolerations: &sparkv1.ApplicationTolerations{
@@ -333,9 +358,9 @@ func TestStaticExecutorCount(t *testing.T) {
 	}
 }
 
-// A memory request written on the pod template is the total the submitter intends, so
-// Spark's base+overhead arithmetic must not be applied on top of it.
-func TestBuildPodTemplateSpecHonoursTemplateMemory(t *testing.T) {
+// Spark replaces the Spark container's memory with base+overhead when it builds the pod from
+// the template file, so a request declared on the template must not be charged instead.
+func TestBuildPodTemplateSpecOverwritesTemplateMemory(t *testing.T) {
 	spec := sparkv1.ApplicationSpec{
 		SparkConf: map[string]string{"spark.executor.memory": "1g"},
 		ExecutorSpec: &sparkv1.BaseApplicationTemplateSpec{
@@ -359,14 +384,16 @@ func TestBuildPodTemplateSpecHonoursTemplateMemory(t *testing.T) {
 		t.Fatalf("buildPodTemplateSpec() returned an unexpected error: %v", err)
 	}
 
+	// 1g + max(0.1*1g, 384Mi) = 1408Mi, which is what the pod will request.
+	want := resource.MustParse("1408Mi")
 	got := tmpl.Spec.Containers[0].Resources.Requests[corev1.ResourceMemory]
-	if want := resource.MustParse("2Gi"); got.Cmp(want) != 0 {
-		// Without the template check this would be 1g + max(0.1*1g, 384Mi) = 1408Mi.
-		t.Errorf("memory request = %s, want %s (template value verbatim)", got.String(), want.String())
+	if got.Cmp(want) != 0 {
+		t.Errorf("memory request = %s, want %s (base + overhead, not the template's 2Gi)",
+			got.String(), want.String())
 	}
 	gotLimit := tmpl.Spec.Containers[0].Resources.Limits[corev1.ResourceMemory]
-	if want := resource.MustParse("2Gi"); gotLimit.Cmp(want) != 0 {
-		t.Errorf("memory limit = %s, want %s (defaulted from the request)", gotLimit.String(), want.String())
+	if gotLimit.Cmp(want) != 0 {
+		t.Errorf("memory limit = %s, want %s", gotLimit.String(), want.String())
 	}
 }
 

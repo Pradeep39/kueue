@@ -810,9 +810,25 @@ func (j *SparkApplication) memoryOverheadFactor() float64 {
 	}
 }
 
+// minMemoryOverheadMiB resolves the floor Spark applies to a factor-derived overhead.
+// spark.{driver,executor}.minMemoryOverhead is ignored when an explicit overhead is set, so
+// callers only consult this on the factored path. The CRD has no structured equivalent, so
+// sparkConf is the only surface.
+func (j *SparkApplication) minMemoryOverheadMiB(role string) (int64, error) {
+	raw, ok := j.Spec.SparkConf[fmt.Sprintf("spark.%s.minMemoryOverhead", role)]
+	if !ok || raw == "" {
+		return sparkcommon.MinMemoryOverhead / mib, nil
+	}
+	n, err := parseSparkMemoryMiB(raw)
+	if err != nil {
+		return 0, fmt.Errorf("spark.%s.minMemoryOverhead: %w", role, err)
+	}
+	return n, nil
+}
+
 // totalMemoryBytes reproduces the request Spark sets on a pod of the given role: base memory,
-// plus overhead (explicit, or factor-derived with Spark's 384MiB floor), plus PySpark and
-// off-heap allocations where configured.
+// plus overhead (explicit, or factor-derived with Spark's floor), plus PySpark and off-heap
+// allocations where configured.
 func (j *SparkApplication) totalMemoryBytes(role string) (int64, error) {
 	baseMiB := defaultMemoryMiB
 	if n, ok, err := j.memoryConf(role, false); err != nil {
@@ -827,10 +843,14 @@ func (j *SparkApplication) totalMemoryBytes(role string) (int64, error) {
 	} else if ok {
 		overheadMiB = n
 	} else {
+		minOverheadMiB, err := j.minMemoryOverheadMiB(role)
+		if err != nil {
+			return 0, err
+		}
 		// Spark truncates rather than rounds: (factor * memoryMiB).toInt, floored at
-		// MEMORY_OVERHEAD_MIN_MIB.
+		// spark.{driver,executor}.minMemoryOverhead.
 		factored := int64(j.memoryOverheadFactor() * float64(baseMiB))
-		overheadMiB = max(factored, sparkcommon.MinMemoryOverhead/mib)
+		overheadMiB = max(factored, minOverheadMiB)
 	}
 
 	totalMiB := baseMiB + overheadMiB
@@ -862,67 +882,18 @@ func (j *SparkApplication) totalMemoryBytes(role string) (int64, error) {
 
 const mib int64 = 1 << 20
 
-// templateContainer returns the Spark container of a pod template, matching by name and
-// falling back to the first entry the way Spark overlays its own container.
-func templateContainer(tmpl *corev1.PodTemplateSpec, name string) *corev1.Container {
-	if tmpl == nil {
-		return nil
-	}
-	if i := slices.IndexFunc(tmpl.Spec.Containers, func(c corev1.Container) bool {
-		return c.Name == name
-	}); i >= 0 {
-		return &tmpl.Spec.Containers[i]
-	}
-	if len(tmpl.Spec.Containers) > 0 {
-		return &tmpl.Spec.Containers[0]
-	}
-	return nil
-}
-
-// templateMemory reports a memory request or limit declared on the Spark container of the
-// role's pod template.
+// addMemoryRequests sets the memory request Spark will put on the pod.
 //
-// A value declared there is authoritative and used verbatim: spec.{driver,executor}.memory is
-// the JVM heap size, from which Spark derives the pod's actual request by adding overhead,
-// whereas a request written directly on the template is already that total. Deriving anything
-// from it would either double-count the overhead or contradict what the pod will ask for.
-func templateMemory(app *sparkv1beta2.SparkApplication, pod *corev1.Pod, limit bool) (resource.Quantity, bool) {
-	var (
-		tmpl *corev1.PodTemplateSpec
-		name string
-	)
-	switch {
-	case sparkutil.IsDriverPod(pod):
-		tmpl, name = app.Spec.Driver.Template, sparkcommon.SparkDriverContainerName
-	case sparkutil.IsExecutorPod(pod):
-		tmpl, name = app.Spec.Executor.Template, sparkcommon.SparkExecutorContainerName
-	default:
-		return resource.Quantity{}, false
-	}
-	c := templateContainer(tmpl, name)
-	if c == nil {
-		return resource.Quantity{}, false
-	}
-	list := c.Resources.Requests
-	if limit {
-		list = c.Resources.Limits
-	}
-	q, ok := list[corev1.ResourceMemory]
-	return q, ok
-}
-
+// A memory request declared on the Spark container of spec.{driver,executor}.template is
+// deliberately not consulted. The operator writes that template to a file and passes it as
+// spark.kubernetes.{driver,executor}.podTemplateFile, and Spark's Basic{Driver,Executor}FeatureStep
+// then replaces the Spark container's memory request and limit with base+overhead before the
+// pod is created. Charging a template value would therefore charge a number the kubelet never
+// sees, and always in the under-charging direction.
 func addMemoryRequests(pod *corev1.Pod, app *sparkv1beta2.SparkApplication) error {
 	i := findContainer(pod)
 	if i < 0 {
 		return fmt.Errorf("failed to add memory requests as Spark container was not found in pod %s", pod.Name)
-	}
-
-	if q, ok := templateMemory(app, pod, false); ok {
-		if pod.Spec.Containers[i].Resources.Requests == nil {
-			pod.Spec.Containers[i].Resources.Requests = corev1.ResourceList{}
-		}
-		pod.Spec.Containers[i].Resources.Requests[corev1.ResourceMemory] = q
-		return nil
 	}
 
 	role, ok := sparkRoleName(pod)
@@ -950,18 +921,13 @@ func addMemoryRequests(pod *corev1.Pod, app *sparkv1beta2.SparkApplication) erro
 	return nil
 }
 
+// addMemoryLimit sets the memory limit from spec.{driver,executor}.memoryLimit. As in
+// addMemoryRequests, a limit declared on the pod template is not consulted: Spark overwrites
+// it with base+overhead when it builds the pod.
 func addMemoryLimit(pod *corev1.Pod, app *sparkv1beta2.SparkApplication) error {
 	i := findContainer(pod)
 	if i < 0 {
 		return fmt.Errorf("failed to add memory limit as Spark container was not found in pod %s", pod.Name)
-	}
-
-	if q, ok := templateMemory(app, pod, true); ok {
-		if pod.Spec.Containers[i].Resources.Limits == nil {
-			pod.Spec.Containers[i].Resources.Limits = corev1.ResourceList{}
-		}
-		pod.Spec.Containers[i].Resources.Limits[corev1.ResourceMemory] = q
-		return nil
 	}
 
 	var memoryLimit *string
