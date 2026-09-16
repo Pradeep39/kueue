@@ -1,0 +1,108 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="2212" height="1380" viewBox="0 0 2212 1380" font-family="Helvetica Neue, Helvetica, Arial, sans-serif">
+<defs><marker id="ac" viewBox="0 0 10 8" refX="9" refY="4" markerWidth="9" markerHeight="7" orient="auto"><path d="M0 0 L10 4 L0 8 z" fill="#25506e"/></marker><marker id="ae" viewBox="0 0 10 8" refX="9" refY="4" markerWidth="9" markerHeight="7" orient="auto"><path d="M0 0 L10 4 L0 8 z" fill="#9c5a1c"/></marker><marker id="as" viewBox="0 0 10 8" refX="9" refY="4" markerWidth="8" markerHeight="6" orient="auto"><path d="M0 0 L10 4 L0 8 z" fill="#3f6d52"/></marker></defs>
+<rect width="2212" height="1380" fill="#ffffff"/>
+<text x="34" y="38" font-size="21" font-weight="600" fill="#1f2933">Kueue: how a Spark Dynamic Allocation scale-DOWN is inferred</text>
+<text x="34" y="60" font-size="12.5" fill="#6b7785">Elastic SparkApplication + ElasticJobsViaWorkloadSlices — Pradeep39/kueue</text>
+<g font-size="10.5" fill="#6b7785">
+<line x1="1822" y1="30" x2="1848" y2="30" stroke="#25506e" stroke-width="1.6" marker-end="url(#ac)"/><text x="1855" y="33.5">call / API write</text>
+<line x1="1822" y1="45" x2="1848" y2="45" stroke="#9c5a1c" stroke-width="1.6" marker-end="url(#ae)" stroke-dasharray="5 3"/><text x="1855" y="48.5">watch event</text>
+<line x1="1822" y1="60" x2="1848" y2="60" stroke="#3f6d52" stroke-width="1.6" marker-end="url(#as)"/><text x="1855" y="63.5">internal computation</text>
+</g>
+<rect x="42" y="96" width="252" height="68" rx="5" fill="#eef2f6" stroke="#b9c3cf"/>
+<text x="168" y="118" font-size="12.5" font-weight="600" text-anchor="middle" fill="#1f2933">Spark driver (DA)</text>
+<text x="168" y="134" font-size="9.5" font-family="Menlo, monospace" text-anchor="middle" fill="#6b7785">ExecutorAllocationManager</text>
+<line x1="168" y1="164" x2="168" y2="1356" stroke="#c3cbd5" stroke-width="1.2" stroke-dasharray="4 5"/>
+<rect x="310" y="96" width="252" height="68" rx="5" fill="#eef2f6" stroke="#b9c3cf"/>
+<text x="436" y="118" font-size="12.5" font-weight="600" text-anchor="middle" fill="#1f2933">kube-apiserver</text>
+<text x="436" y="134" font-size="9.5" font-family="Menlo, monospace" text-anchor="middle" fill="#6b7785">—</text>
+<line x1="436" y1="164" x2="436" y2="1356" stroke="#c3cbd5" stroke-width="1.2" stroke-dasharray="4 5"/>
+<rect x="578" y="96" width="252" height="68" rx="5" fill="#eef2f6" stroke="#b9c3cf"/>
+<text x="704" y="118" font-size="12.5" font-weight="600" text-anchor="middle" fill="#1f2933">executorPodHandler</text>
+<text x="704" y="134" font-size="9.5" font-family="Menlo, monospace" text-anchor="middle" fill="#6b7785">sparkapplication_executor_pod_ha</text>
+<text x="704" y="145" font-size="9.5" font-family="Menlo, monospace" text-anchor="middle" fill="#6b7785">ndler.go</text>
+<line x1="704" y1="164" x2="704" y2="1356" stroke="#c3cbd5" stroke-width="1.2" stroke-dasharray="4 5"/>
+<rect x="846" y="96" width="252" height="68" rx="5" fill="#eef2f6" stroke="#b9c3cf"/>
+<text x="972" y="118" font-size="12.5" font-weight="600" text-anchor="middle" fill="#1f2933">JobReconciler</text>
+<text x="972" y="134" font-size="9.5" font-family="Menlo, monospace" text-anchor="middle" fill="#6b7785">jobframework/reconciler.go:962</text>
+<line x1="972" y1="164" x2="972" y2="1356" stroke="#c3cbd5" stroke-width="1.2" stroke-dasharray="4 5"/>
+<rect x="1114" y="96" width="252" height="68" rx="5" fill="#eef2f6" stroke="#b9c3cf"/>
+<text x="1240" y="118" font-size="12.5" font-weight="600" text-anchor="middle" fill="#1f2933">PodSets / count</text>
+<text x="1240" y="134" font-size="9.5" font-family="Menlo, monospace" text-anchor="middle" fill="#6b7785">sparkapplication_podset.go</text>
+<line x1="1240" y1="164" x2="1240" y2="1356" stroke="#c3cbd5" stroke-width="1.2" stroke-dasharray="4 5"/>
+<rect x="1382" y="96" width="252" height="68" rx="5" fill="#eef2f6" stroke="#b9c3cf"/>
+<text x="1508" y="118" font-size="12.5" font-weight="600" text-anchor="middle" fill="#1f2933">workloadslicing</text>
+<text x="1508" y="134" font-size="9.5" font-family="Menlo, monospace" text-anchor="middle" fill="#6b7785">workloadslicing/workloadslicing.</text>
+<text x="1508" y="145" font-size="9.5" font-family="Menlo, monospace" text-anchor="middle" fill="#6b7785">go</text>
+<line x1="1508" y1="164" x2="1508" y2="1356" stroke="#c3cbd5" stroke-width="1.2" stroke-dasharray="4 5"/>
+<rect x="1650" y="96" width="252" height="68" rx="5" fill="#eef2f6" stroke="#b9c3cf"/>
+<text x="1776" y="118" font-size="12.5" font-weight="600" text-anchor="middle" fill="#1f2933">Workload webhook</text>
+<text x="1776" y="134" font-size="9.5" font-family="Menlo, monospace" text-anchor="middle" fill="#6b7785">webhooks/workload_webhook.go</text>
+<line x1="1776" y1="164" x2="1776" y2="1356" stroke="#c3cbd5" stroke-width="1.2" stroke-dasharray="4 5"/>
+<rect x="1918" y="96" width="252" height="68" rx="5" fill="#eef2f6" stroke="#b9c3cf"/>
+<text x="2044" y="118" font-size="12.5" font-weight="600" text-anchor="middle" fill="#1f2933">scheduler cache</text>
+<text x="2044" y="134" font-size="9.5" font-family="Menlo, monospace" text-anchor="middle" fill="#6b7785">cache/scheduler +</text>
+<text x="2044" y="145" font-size="9.5" font-family="Menlo, monospace" text-anchor="middle" fill="#6b7785">workload/workload.go</text>
+<line x1="2044" y1="164" x2="2044" y2="1356" stroke="#c3cbd5" stroke-width="1.2" stroke-dasharray="4 5"/>
+<line x1="171" y1="216" x2="432" y2="216" stroke="#25506e" stroke-width="1.7" marker-end="url(#ac)"/>
+<text x="302" y="192" font-size="11" text-anchor="middle" fill="#1f2933">delete executor Pods (executorIdleTimeout</text>
+<text x="302" y="207" font-size="11" text-anchor="middle" fill="#1f2933">elapsed)</text>
+<circle cx="181" cy="205" r="8.5" fill="#ffffff" stroke="#25506e" stroke-width="1.1"/><text x="181" y="208.5" font-size="9.5" font-weight="600" text-anchor="middle" fill="#25506e">1</text>
+<line x1="439" y1="281" x2="700" y2="281" stroke="#9c5a1c" stroke-width="1.7" marker-end="url(#ae)" stroke-dasharray="6 4"/>
+<text x="570" y="272" font-size="11" text-anchor="middle" fill="#1f2933">Pod DELETE / UPDATE event</text>
+<circle cx="449" cy="270" r="8.5" fill="#ffffff" stroke="#9c5a1c" stroke-width="1.1"/><text x="449" y="273.5" font-size="9.5" font-weight="600" text-anchor="middle" fill="#9c5a1c">2</text>
+<line x1="707" y1="331" x2="968" y2="331" stroke="#25506e" stroke-width="1.7" marker-end="url(#ac)"/>
+<text x="838" y="307" font-size="11" text-anchor="middle" fill="#1f2933">debounced enqueue — same handler as</text>
+<text x="838" y="322" font-size="11" text-anchor="middle" fill="#1f2933">scale-up</text>
+<circle cx="717" cy="320" r="8.5" fill="#ffffff" stroke="#25506e" stroke-width="1.1"/><text x="717" y="323.5" font-size="9.5" font-weight="600" text-anchor="middle" fill="#25506e">3</text>
+<line x1="975" y1="396" x2="1236" y2="396" stroke="#25506e" stroke-width="1.7" marker-end="url(#ac)"/>
+<text x="1106" y="387" font-size="11" text-anchor="middle" fill="#1f2933">PodSets(ctx, client)</text>
+<circle cx="985" cy="385" r="8.5" fill="#ffffff" stroke="#25506e" stroke-width="1.1"/><text x="985" y="388.5" font-size="9.5" font-weight="600" text-anchor="middle" fill="#25506e">4</text>
+<path d="M1240 446 L1306 446 L1306 468 L1245 468" fill="none" stroke="#3f6d52" stroke-width="1.5" marker-end="url(#as)"/>
+<text x="1324" y="440" font-size="11" text-anchor="start" fill="#1f2933"><tspan fill="#6b7785" font-weight="600">5. </tspan>isVerifiedLiveExecutor — a Pod with</text>
+<text x="1324" y="454" font-size="11" text-anchor="start" fill="#1f2933">DeletionTimestamp still counts until</text>
+<text x="1324" y="468" font-size="11" text-anchor="start" fill="#1f2933">Succeeded/Failed</text>
+<text x="1324" y="482" font-size="9.5" font-family="Menlo, monospace" text-anchor="start" fill="#3f6d52">podset.go:119</text>
+<line x1="1237" y1="556" x2="976" y2="556" stroke="#25506e" stroke-width="1.7" marker-end="url(#ac)"/>
+<text x="1106" y="547" font-size="11" text-anchor="middle" fill="#1f2933">executor PodSet Count = N_live (lower)</text>
+<circle cx="1227" cy="545" r="8.5" fill="#ffffff" stroke="#25506e" stroke-width="1.1"/><text x="1227" y="548.5" font-size="9.5" font-weight="600" text-anchor="middle" fill="#25506e">6</text>
+<line x1="975" y1="606" x2="1504" y2="606" stroke="#25506e" stroke-width="1.7" marker-end="url(#ac)"/>
+<text x="1240" y="585" font-size="11" text-anchor="middle" fill="#1f2933">EnsureWorkloadSlices(podSets, ...)</text>
+<text x="1240" y="600" font-size="9.5" font-family="Menlo, monospace" text-anchor="middle" fill="#25506e">workloadslicing.go:173</text>
+<circle cx="985" cy="595" r="8.5" fill="#ffffff" stroke="#25506e" stroke-width="1.1"/><text x="985" y="598.5" font-size="9.5" font-weight="600" text-anchor="middle" fill="#25506e">7</text>
+<path d="M1508 656 L1574 656 L1574 678 L1513 678" fill="none" stroke="#3f6d52" stroke-width="1.5" marker-end="url(#as)"/>
+<text x="1592" y="657" font-size="11" text-anchor="start" fill="#1f2933"><tspan fill="#6b7785" font-weight="600">8. </tspan>ScaledDown() -&gt; in-place patch. No new slice,</text>
+<text x="1592" y="671" font-size="11" text-anchor="start" fill="#1f2933">and the scheduler is never involved</text>
+<text x="1592" y="685" font-size="9.5" font-family="Menlo, monospace" text-anchor="start" fill="#3f6d52">workloadslicing.go:156</text>
+<line x1="1505" y1="752" x2="440" y2="752" stroke="#25506e" stroke-width="1.7" marker-end="url(#ac)"/>
+<text x="972" y="716" font-size="11" text-anchor="middle" fill="#1f2933">updatePodSetCountsWithRetry — lower</text>
+<text x="972" y="731" font-size="11" text-anchor="middle" fill="#1f2933">spec.podSets[].count</text>
+<text x="972" y="746" font-size="9.5" font-family="Menlo, monospace" text-anchor="middle" fill="#25506e">workloadslicing.go:325</text>
+<circle cx="1495" cy="741" r="8.5" fill="#ffffff" stroke="#25506e" stroke-width="1.1"/><text x="1495" y="744.5" font-size="9.5" font-weight="600" text-anchor="middle" fill="#25506e">9</text>
+<line x1="1505" y1="817" x2="440" y2="817" stroke="#25506e" stroke-width="1.7" marker-end="url(#ac)"/>
+<text x="972" y="766" font-size="11" text-anchor="middle" fill="#1f2933">scaleDownAdmission — lower the granted</text>
+<text x="972" y="781" font-size="11" text-anchor="middle" fill="#1f2933">count, rescale ResourceUsage, truncate</text>
+<text x="972" y="796" font-size="11" text-anchor="middle" fill="#1f2933">TopologyAssignment</text>
+<text x="972" y="811" font-size="9.5" font-family="Menlo, monospace" text-anchor="middle" fill="#25506e">workloadslicing.go:282</text>
+<circle cx="1495" cy="806" r="8.5" fill="#ffffff" stroke="#25506e" stroke-width="1.1"/><text x="1495" y="809.5" font-size="9.5" font-weight="600" text-anchor="middle" fill="#25506e">10</text>
+<line x1="439" y1="897" x2="1772" y2="897" stroke="#25506e" stroke-width="1.7" marker-end="url(#ac)"/>
+<text x="1106" y="888" font-size="11" text-anchor="middle" fill="#1f2933">admission mutation must pass validation</text>
+<circle cx="449" cy="886" r="8.5" fill="#ffffff" stroke="#25506e" stroke-width="1.1"/><text x="449" y="889.5" font-size="9.5" font-weight="600" text-anchor="middle" fill="#25506e">11</text>
+<path d="M1776 947 L1842 947 L1842 969 L1781 969" fill="none" stroke="#3f6d52" stroke-width="1.5" marker-end="url(#as)"/>
+<text x="1860" y="941" font-size="11" text-anchor="start" fill="#1f2933"><tspan fill="#6b7785" font-weight="600">12. </tspan>validateAdmissionUpdate — decrease-only,</text>
+<text x="1860" y="955" font-size="11" text-anchor="start" fill="#1f2933">elastic-only exception; batch/v1 Job admission</text>
+<text x="1860" y="969" font-size="11" text-anchor="start" fill="#1f2933">stays immutable</text>
+<text x="1860" y="983" font-size="9.5" font-family="Menlo, monospace" text-anchor="start" fill="#3f6d52">workload_webhook.go:376</text>
+<line x1="439" y1="1057" x2="2040" y2="1057" stroke="#9c5a1c" stroke-width="1.7" marker-end="url(#ae)" stroke-dasharray="6 4"/>
+<text x="1240" y="1048" font-size="11" text-anchor="middle" fill="#1f2933">Workload update</text>
+<circle cx="449" cy="1046" r="8.5" fill="#ffffff" stroke="#9c5a1c" stroke-width="1.1"/><text x="449" y="1049.5" font-size="9.5" font-weight="600" text-anchor="middle" fill="#9c5a1c">13</text>
+<path d="M2044 1107 L1978 1107 L1978 1129 L2039 1129" fill="none" stroke="#3f6d52" stroke-width="1.5" marker-end="url(#as)"/>
+<text x="1960" y="1108" font-size="11" text-anchor="end" fill="#1f2933"><tspan fill="#6b7785" font-weight="600">14. </tspan>totalRequestsFromAdmission — charges</text>
+<text x="1960" y="1122" font-size="11" text-anchor="end" fill="#1f2933">min(spec.count, granted)</text>
+<text x="1960" y="1136" font-size="9.5" font-family="Menlo, monospace" text-anchor="end" fill="#3f6d52">workload.go:674</text>
+<line x1="2041" y1="1203" x2="440" y2="1203" stroke="#25506e" stroke-width="1.7" marker-end="url(#ac)"/>
+<text x="1240" y="1194" font-size="11" text-anchor="middle" fill="#1f2933">flavorsUsage drops</text>
+<circle cx="2031" cy="1192" r="8.5" fill="#ffffff" stroke="#25506e" stroke-width="1.1"/><text x="2031" y="1195.5" font-size="9.5" font-weight="600" text-anchor="middle" fill="#25506e">15</text>
+<rect x="44" y="1239" width="2124" height="50" rx="4" fill="#fdf6e3" stroke="#d9bc7a"/>
+<text x="56" y="1256" font-size="11" fill="#7a5a12">Asymmetry worth remembering: scale-up creates a Workload and traverses the full scheduler + preemption path;</text>
+<text x="56" y="1271" font-size="11" fill="#7a5a12">scale-down is two in-place patches and never reaches the scheduler. Both are driven by the same debounced Pod watch.</text>
+</svg>
