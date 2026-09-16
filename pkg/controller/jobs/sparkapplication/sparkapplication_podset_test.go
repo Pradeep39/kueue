@@ -248,10 +248,12 @@ func TestAddMemoryPrefersThePodTemplate(t *testing.T) {
 			wantReq:   "896Mi",
 			wantLimit: "1Gi",
 		},
-		"no template values falls back to spec.executor.memory": {
+		// Falling back to spec.executor.memory now applies Spark's overhead: 512Mi of heap
+		// plus the 384MiB floor, because 0.1 x 512Mi is smaller.
+		"no template values falls back to spec.executor.memory plus overhead": {
 			app:       executorAppWithTemplateMemory(nil, nil, ptr.To("512m")),
-			wantReq:   "512Mi",
-			wantLimit: "512Mi",
+			wantReq:   "896Mi",
+			wantLimit: "896Mi",
 		},
 	}
 
@@ -318,6 +320,124 @@ func TestDynamicAllocationEnabled(t *testing.T) {
 				SparkConf: map[string]string{"spark.dynamicAllocation.enabled": "yes please"},
 			}},
 			want: false,
+func TestTotalMemoryBytes(t *testing.T) {
+	mi := func(n int64) int64 { return n * 1024 * 1024 }
+
+	cases := map[string]struct {
+		spec sparkv1beta2.SparkApplicationSpec
+		role string
+		want int64
+	}{
+		// 0.1 x 512Mi is 51Mi, below Spark's floor, so the floor applies.
+		"executor heap plus the 384MiB floor": {
+			spec: sparkv1beta2.SparkApplicationSpec{Executor: sparkv1beta2.ExecutorSpec{
+				SparkPodSpec: sparkv1beta2.SparkPodSpec{Memory: ptr.To("512m")}}},
+			role: "executor",
+			want: mi(896),
+		},
+		// 0.1 x 8192Mi is 819Mi, above the floor, so the factor applies.
+		"executor heap plus the factored overhead": {
+			spec: sparkv1beta2.SparkApplicationSpec{Executor: sparkv1beta2.ExecutorSpec{
+				SparkPodSpec: sparkv1beta2.SparkPodSpec{Memory: ptr.To("8g")}}},
+			role: "executor",
+			want: mi(8192 + 819),
+		},
+		"an explicit memoryOverhead replaces the factor": {
+			spec: sparkv1beta2.SparkApplicationSpec{Executor: sparkv1beta2.ExecutorSpec{
+				SparkPodSpec: sparkv1beta2.SparkPodSpec{
+					Memory:         ptr.To("512m"),
+					MemoryOverhead: ptr.To("1g"),
+				}}},
+			role: "executor",
+			want: mi(512 + 1024),
+		},
+		"a bare memoryOverhead is read as MiB": {
+			spec: sparkv1beta2.SparkApplicationSpec{Executor: sparkv1beta2.ExecutorSpec{
+				SparkPodSpec: sparkv1beta2.SparkPodSpec{
+					Memory:         ptr.To("512m"),
+					MemoryOverhead: ptr.To("512"),
+				}}},
+			role: "executor",
+			want: mi(1024),
+		},
+		"memoryOverheadFactor overrides the default": {
+			spec: sparkv1beta2.SparkApplicationSpec{
+				MemoryOverheadFactor: ptr.To("0.5"),
+				Executor: sparkv1beta2.ExecutorSpec{
+					SparkPodSpec: sparkv1beta2.SparkPodSpec{Memory: ptr.To("8g")}},
+			},
+			role: "executor",
+			want: mi(8192 + 4096),
+		},
+		// Python and R use Spark's non-JVM factor of 0.4 when none is set explicitly.
+		// 0.4 x 8192 truncates to 3276, matching Spark's (factor * memoryMiB).toInt.
+		"a Python application uses the non-JVM factor": {
+			spec: sparkv1beta2.SparkApplicationSpec{
+				Type: sparkv1beta2.SparkApplicationTypePython,
+				Executor: sparkv1beta2.ExecutorSpec{
+					SparkPodSpec: sparkv1beta2.SparkPodSpec{Memory: ptr.To("8g")}},
+			},
+			role: "executor",
+			want: mi(8192 + 3276),
+		},
+		"sparkConf supplies the heap when the field is unset": {
+			spec: sparkv1beta2.SparkApplicationSpec{
+				SparkConf: map[string]string{"spark.executor.memory": "512m"},
+			},
+			role: "executor",
+			want: mi(896),
+		},
+		"the structured field wins over sparkConf": {
+			spec: sparkv1beta2.SparkApplicationSpec{
+				SparkConf: map[string]string{"spark.executor.memory": "8g"},
+				Executor: sparkv1beta2.ExecutorSpec{
+					SparkPodSpec: sparkv1beta2.SparkPodSpec{Memory: ptr.To("512m")}},
+			},
+			role: "executor",
+			want: mi(896),
+		},
+		"pyspark memory is added on executors": {
+			spec: sparkv1beta2.SparkApplicationSpec{
+				SparkConf: map[string]string{"spark.executor.pyspark.memory": "256m"},
+				Executor: sparkv1beta2.ExecutorSpec{
+					SparkPodSpec: sparkv1beta2.SparkPodSpec{Memory: ptr.To("512m")}},
+			},
+			role: "executor",
+			want: mi(896 + 256),
+		},
+		"pyspark memory is not added on the driver": {
+			spec: sparkv1beta2.SparkApplicationSpec{
+				SparkConf: map[string]string{"spark.executor.pyspark.memory": "256m"},
+				Driver: sparkv1beta2.DriverSpec{
+					SparkPodSpec: sparkv1beta2.SparkPodSpec{Memory: ptr.To("512m")}},
+			},
+			role: "driver",
+			want: mi(896),
+		},
+		"off-heap counts only when the allocator is enabled": {
+			spec: sparkv1beta2.SparkApplicationSpec{
+				SparkConf: map[string]string{
+					"spark.memory.offHeap.enabled": "true",
+					"spark.memory.offHeap.size":    "1g",
+				},
+				Executor: sparkv1beta2.ExecutorSpec{
+					SparkPodSpec: sparkv1beta2.SparkPodSpec{Memory: ptr.To("512m")}},
+			},
+			role: "executor",
+			want: mi(896 + 1024),
+		},
+		"off-heap size is ignored while disabled": {
+			spec: sparkv1beta2.SparkApplicationSpec{
+				SparkConf: map[string]string{"spark.memory.offHeap.size": "1g"},
+				Executor: sparkv1beta2.ExecutorSpec{
+					SparkPodSpec: sparkv1beta2.SparkPodSpec{Memory: ptr.To("512m")}},
+			},
+			role: "executor",
+			want: mi(896),
+		},
+		"nothing configured falls back to Spark's 1g default": {
+			role: "executor",
+			want: mi(1024 + 384),
 		},
 	}
 
@@ -325,6 +445,14 @@ func TestDynamicAllocationEnabled(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			if got := fromObject(tc.app).dynamicAllocationEnabled(); got != tc.want {
 				t.Errorf("dynamicAllocationEnabled() = %v, want %v", got, tc.want)
+			app := fromObject(&sparkv1beta2.SparkApplication{Spec: tc.spec})
+			got, err := app.totalMemoryBytes(tc.role)
+			if err != nil {
+				t.Fatalf("totalMemoryBytes() returned an unexpected error: %v", err)
+			}
+			if got != tc.want {
+				t.Errorf("totalMemoryBytes() = %d (%dMi), want %d (%dMi)",
+					got, got/1024/1024, tc.want, tc.want/1024/1024)
 			}
 		})
 	}
