@@ -65,6 +65,9 @@ var (
 	}
 )
 
+// The expected memory is 896Mi, not the 512m the fixture declares: spec.{driver,executor}.memory
+// is the JVM heap size, and Spark adds overhead - here the 384MiB floor, since 0.1 x 512Mi is
+// smaller - before setting the container request. See totalMemoryBytes.
 func TestPodSets(t *testing.T) {
 	toleration := corev1.Toleration{
 		Key:      "t1k",
@@ -98,7 +101,7 @@ func TestPodSets(t *testing.T) {
 							Resources: corev1.ResourceRequirements{
 								Requests: corev1.ResourceList{
 									corev1.ResourceCPU:    resource.MustParse("100m"),
-									corev1.ResourceMemory: resource.MustParse("512Mi"),
+									corev1.ResourceMemory: resource.MustParse("896Mi"),
 								},
 							},
 						},
@@ -114,7 +117,7 @@ func TestPodSets(t *testing.T) {
 							Resources: corev1.ResourceRequirements{
 								Requests: corev1.ResourceList{
 									corev1.ResourceCPU:    resource.MustParse("100m"),
-									corev1.ResourceMemory: resource.MustParse("512Mi"),
+									corev1.ResourceMemory: resource.MustParse("896Mi"),
 								},
 							},
 						},
@@ -147,7 +150,7 @@ func TestPodSets(t *testing.T) {
 								Resources: corev1.ResourceRequirements{
 									Requests: corev1.ResourceList{
 										corev1.ResourceCPU:    resource.MustParse("100m"),
-										corev1.ResourceMemory: resource.MustParse("512Mi"),
+										corev1.ResourceMemory: resource.MustParse("896Mi"),
 									},
 								},
 							},
@@ -169,7 +172,7 @@ func TestPodSets(t *testing.T) {
 								Resources: corev1.ResourceRequirements{
 									Requests: corev1.ResourceList{
 										corev1.ResourceCPU:    resource.MustParse("100m"),
-										corev1.ResourceMemory: resource.MustParse("512Mi"),
+										corev1.ResourceMemory: resource.MustParse("896Mi"),
 									},
 								},
 							},
@@ -201,7 +204,7 @@ func TestPodSets(t *testing.T) {
 								Resources: corev1.ResourceRequirements{
 									Requests: corev1.ResourceList{
 										corev1.ResourceCPU:    resource.MustParse("100m"),
-										corev1.ResourceMemory: resource.MustParse("512Mi"),
+										corev1.ResourceMemory: resource.MustParse("896Mi"),
 									},
 								},
 							},
@@ -222,7 +225,7 @@ func TestPodSets(t *testing.T) {
 								Resources: corev1.ResourceRequirements{
 									Requests: corev1.ResourceList{
 										corev1.ResourceCPU:    resource.MustParse("100m"),
-										corev1.ResourceMemory: resource.MustParse("512Mi"),
+										corev1.ResourceMemory: resource.MustParse("896Mi"),
 									},
 								},
 							},
