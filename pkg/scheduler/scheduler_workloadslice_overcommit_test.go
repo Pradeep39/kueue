@@ -26,6 +26,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
@@ -126,7 +127,17 @@ func TestScheduleWorkloadSliceScaleUpDoesNotOvercommit(t *testing.T) {
 				if wl, ok := obj.(*kueue.Workload); ok && wl.Name == oldSliceName && subResourceName == "status" {
 					return errFinishFailed
 				}
-				return utiltesting.TreatSSAAsStrategicMerge(ctx, c, subResourceName, obj, patch, opts...)
+				return c.SubResource(subResourceName).Patch(ctx, obj, patch, opts...)
+			},
+			// Status writes moved to Server-Side Apply upstream, so the failure has to be
+			// injected on both paths for this test to keep exercising the one Finish uses.
+			SubResourceApply: func(ctx context.Context, c client.Client, subResourceName string, applyConf runtime.ApplyConfiguration, opts ...client.SubResourceApplyOption) error {
+				if subResourceName == "status" {
+					if obj, _, err := utiltesting.ConvertApplyConfigToObject(applyConf); err == nil && obj.GetName() == oldSliceName {
+						return errFinishFailed
+					}
+				}
+				return utiltesting.TreatSSAAsStrategicMergeForApplyConfiguration(ctx, c, subResourceName, applyConf, opts...)
 			},
 		}).
 		Build()

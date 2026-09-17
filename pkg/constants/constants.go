@@ -95,4 +95,12 @@ const (
 	// quota twice and cannot import pkg/workloadslicing (which imports the cache).
 	// pkg/workloadslicing re-exports it as WorkloadSliceReplacementFor.
 	WorkloadSliceReplacementForAnnotation = "kueue.x-k8s.io/workload-slice-replacement-for"
+	// ElasticJobScaleUpAnnotationKey refers to the annotation key present on Jobs that support
+	// partial scale up.
+	// This annotation is alpha-level.
+	// The default value is "atomic".
+	ElasticJobScaleUpStrategyAnnotationKey = "kueue.x-k8s.io/elastic-job-scale-up-strategy"
+
+	ElasticJobScaleUpStrategyAtomic  = "atomic"
+	ElasticJobScaleUpStrategyPartial = "partial"
 )

@@ -26,7 +26,6 @@ import (
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	config "sigs.k8s.io/kueue/apis/config/v1beta2"
@@ -257,6 +256,75 @@ var _ = ginkgo.Describe("DRA Integration", ginkgo.Ordered, ginkgo.ContinueOnFail
 				g.Expect(updatedWl.Status.Admission).NotTo(gomega.BeNil())
 				g.Expect(updatedWl.Status.Admission.PodSetAssignments).To(gomega.HaveLen(1))
 
+				assignment := updatedWl.Status.Admission.PodSetAssignments[0]
+				g.Expect(assignment.ResourceUsage).To(gomega.HaveKey(corev1.ResourceName("foo")))
+				g.Expect(assignment.ResourceUsage["foo"]).To(gomega.Equal(resource.MustParse("2")))
+			}, util.Timeout, util.Interval).Should(gomega.Succeed())
+		})
+
+		ginkgo.It("Should re-admit ResourceClaimTemplate workload with DRA resources after PodsReady backoff", framework.SlowSpec, func() {
+			ginkgo.By("Restarting the controller with WaitForPodsReady enabled")
+			fwk.StopManager(ctx)
+			fwk.StartManager(ctx, cfg, managerSetup(func(c *config.Configuration) {
+				c.WaitForPodsReady = &config.WaitForPodsReady{
+					BlockAdmission: new(true),
+					Timeout:        metav1.Duration{Duration: util.TinyTimeout},
+					RequeuingStrategy: &config.RequeuingStrategy{
+						Timestamp:          new(config.EvictionTimestamp),
+						BackoffBaseSeconds: new(int32(1)),
+						BackoffMaxSeconds:  new(int32(config.DefaultRequeuingBackoffMaxSeconds)),
+					},
+				}
+			}))
+			defer func() {
+				ginkgo.By("Restarting the controller with the default config")
+				fwk.StopManager(ctx)
+				fwk.StartManager(ctx, cfg, managerSetup(nil))
+			}()
+
+			ginkgo.By("Creating a ResourceClaimTemplate")
+			rct := utiltesting.MakeResourceClaimTemplate("backoff-template", ns.Name).
+				DeviceRequest("device-request", "foo.example.com", 2).
+				Obj()
+			gomega.Expect(k8sClient.Create(ctx, rct)).To(gomega.Succeed())
+
+			ginkgo.By("Creating a workload that references the ResourceClaimTemplate")
+			wl := utiltestingapi.MakeWorkload("test-wl-backoff", ns.Name).
+				Queue("test-lq").
+				Obj()
+			wl.Spec.PodSets[0].Template.Spec.ResourceClaims = []corev1.PodResourceClaim{
+				{
+					Name:                      "device-template",
+					ResourceClaimTemplateName: new("backoff-template"),
+				},
+			}
+			wl.Spec.PodSets[0].Template.Spec.Containers[0].Resources.Claims = []corev1.ResourceClaim{
+				{Name: "device-template"},
+			}
+			gomega.Expect(k8sClient.Create(ctx, wl)).To(gomega.Succeed())
+
+			ginkgo.By("Verifying workload is admitted with DRA resources")
+			util.ExpectWorkloadsToHaveQuotaReservation(ctx, k8sClient, clusterQueue.Name, wl)
+			gomega.Eventually(func(g gomega.Gomega) {
+				var updatedWl kueue.Workload
+				g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(wl), &updatedWl)).To(gomega.Succeed())
+				g.Expect(updatedWl.Status.Admission).NotTo(gomega.BeNil())
+				assignment := updatedWl.Status.Admission.PodSetAssignments[0]
+				g.Expect(assignment.ResourceUsage).To(gomega.HaveKey(corev1.ResourceName("foo")))
+				g.Expect(assignment.ResourceUsage["foo"]).To(gomega.Equal(resource.MustParse("2")))
+			}, util.Timeout, util.Interval).Should(gomega.Succeed())
+
+			ginkgo.By("Waiting for PodsReady timeout eviction and finishing backoff")
+			util.AwaitWorkloadEvictionByPodsReadyTimeout(ctx, k8sClient, client.ObjectKeyFromObject(wl), util.TinyTimeout)
+			util.SetRequeuedConditionWithPodsReadyTimeout(ctx, k8sClient, client.ObjectKeyFromObject(wl))
+			util.FinishEvictionForWorkloads(ctx, k8sClient, wl)
+
+			ginkgo.By("Verifying workload is re-admitted with DRA resources after backoff")
+			util.ExpectWorkloadsToHaveQuotaReservation(ctx, k8sClient, clusterQueue.Name, wl)
+			gomega.Eventually(func(g gomega.Gomega) {
+				var updatedWl kueue.Workload
+				g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(wl), &updatedWl)).To(gomega.Succeed())
+				g.Expect(updatedWl.Status.Admission).NotTo(gomega.BeNil())
 				assignment := updatedWl.Status.Admission.PodSetAssignments[0]
 				g.Expect(assignment.ResourceUsage).To(gomega.HaveKey(corev1.ResourceName("foo")))
 				g.Expect(assignment.ResourceUsage["foo"]).To(gomega.Equal(resource.MustParse("2")))
@@ -1378,7 +1446,7 @@ var _ = ginkgo.Describe("DRA Integration", ginkgo.Ordered, ginkgo.ContinueOnFail
 			gomega.Eventually(func(g gomega.Gomega) {
 				var dc resourcev1.DeviceClass
 				g.Expect(k8sClient.Get(ctx, client.ObjectKey{Name: deviceClassName}, &dc)).To(gomega.Succeed())
-				dc.Spec.ExtendedResourceName = ptr.To(newExtendedResourceName)
+				dc.Spec.ExtendedResourceName = new(newExtendedResourceName)
 				g.Expect(k8sClient.Update(ctx, &dc)).To(gomega.Succeed())
 			}, util.Timeout, util.Interval).Should(gomega.Succeed())
 
@@ -1431,7 +1499,7 @@ var _ = ginkgo.Describe("DRA Integration", ginkgo.Ordered, ginkgo.ContinueOnFail
 			gomega.Eventually(func(g gomega.Gomega) {
 				var dc resourcev1.DeviceClass
 				g.Expect(k8sClient.Get(ctx, client.ObjectKey{Name: deviceClassName}, &dc)).To(gomega.Succeed())
-				dc.Spec.ExtendedResourceName = ptr.To(newExtendedResourceName)
+				dc.Spec.ExtendedResourceName = new(newExtendedResourceName)
 				g.Expect(k8sClient.Update(ctx, &dc)).To(gomega.Succeed())
 			}, util.Timeout, util.Interval).Should(gomega.Succeed())
 
@@ -1468,7 +1536,7 @@ var _ = ginkgo.Describe("DRA Integration", ginkgo.Ordered, ginkgo.ContinueOnFail
 			gomega.Eventually(func(g gomega.Gomega) {
 				var dc resourcev1.DeviceClass
 				g.Expect(k8sClient.Get(ctx, client.ObjectKey{Name: deviceClassName}, &dc)).To(gomega.Succeed())
-				dc.Spec.ExtendedResourceName = ptr.To(extendedResourceName)
+				dc.Spec.ExtendedResourceName = new(extendedResourceName)
 				g.Expect(k8sClient.Update(ctx, &dc)).To(gomega.Succeed())
 			}, util.Timeout, util.Interval).Should(gomega.Succeed())
 

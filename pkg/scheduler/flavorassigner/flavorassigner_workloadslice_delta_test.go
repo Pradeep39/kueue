@@ -101,14 +101,15 @@ func TestWorkloadSliceAssignmentUsageIsDeltaButAPICountIsFull(t *testing.T) {
 
 	// The scale-up path: replaceWorkloadSlice is the old slice being superseded.
 	assigner := New(
-		workload.NewInfo(newSlice),
+		workload.NewInfo(log, newSlice),
 		cqSnapshot,
 		resourceFlavors,
 		false,
 		&testOracle{},
-		workload.NewInfo(oldSlice),
+		workload.NewInfo(log, oldSlice),
 		configapi.QuotaCheckBlockUndeclared,
 		resources.NewResourceFormatter(),
+		0,
 	)
 	assignment := assigner.Assign(ctx, nil)
 
