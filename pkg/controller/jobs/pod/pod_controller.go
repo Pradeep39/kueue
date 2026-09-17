@@ -50,6 +50,7 @@ import (
 	"sigs.k8s.io/kueue/pkg/controller/jobframework"
 	podconstants "sigs.k8s.io/kueue/pkg/controller/jobs/pod/constants"
 	"sigs.k8s.io/kueue/pkg/features"
+	"sigs.k8s.io/kueue/pkg/metrics"
 	"sigs.k8s.io/kueue/pkg/podset"
 	"sigs.k8s.io/kueue/pkg/util/api"
 	clientutil "sigs.k8s.io/kueue/pkg/util/client"
@@ -125,7 +126,13 @@ type Reconciler struct {
 const controllerName = "v1_pod"
 
 func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	return r.ReconcileGenericJob(ctx, req, NewPod(WithExcessPodExpectations(r.expectationsStore), WithClock(r.clock), WithIntegrationManager(r.integrationManager)))
+	return r.ReconcileGenericJob(ctx, req, NewPod(
+		WithExcessPodExpectations(r.expectationsStore),
+		WithClock(r.clock),
+		WithIntegrationManager(r.integrationManager),
+		WithRoleTracker(r.RoleTracker()),
+		WithCustomLabels(r.CustomLabels()),
+	))
 }
 
 func (r *Reconciler) SetupWithManager(mgr ctrl.Manager) error {
@@ -168,6 +175,8 @@ type Pod struct {
 	excessPodExpectations *expectations.Store
 	satisfiedExcessPods   bool
 	clock                 clock.Clock
+	roleTracker           *roletracker.RoleTracker
+	customLabels          *metrics.CustomLabels
 }
 
 var (
@@ -203,6 +212,21 @@ func WithClock(clock clock.Clock) PodOption {
 func WithIntegrationManager(manager *jobframework.IntegrationManager) PodOption {
 	return func(pod *Pod) {
 		pod.integrationManager = manager
+	}
+}
+
+// WithRoleTracker sets the roleTracker field of the Pod, used to label
+// metrics with the replica role of the reporting instance.
+func WithRoleTracker(tracker *roletracker.RoleTracker) PodOption {
+	return func(pod *Pod) {
+		pod.roleTracker = tracker
+	}
+}
+
+// WithCustomLabels sets the labels the Pod's scheduling-gate-removal metric is recorded with.
+func WithCustomLabels(cl *metrics.CustomLabels) PodOption {
+	return func(pod *Pod) {
+		pod.customLabels = cl
 	}
 }
 
@@ -297,7 +321,7 @@ func (p *Pod) Run(ctx context.Context, c client.Client, wl *kueue.Workload, podS
 			recorder.Eventf(&p.pod, nil, corev1.EventTypeNormal, jobframework.ReasonStarted, "Started", msg)
 		}
 
-		utilpod.RecordPodSchedulingGateRemovalSeconds(p.clock, podconstants.SchedulingGateName, wl, p.isGroup)
+		utilpod.RecordPodSchedulingGateRemovalSeconds(p.clock, podconstants.SchedulingGateName, wl, p.isGroup, p.customLabels, p.roleTracker)
 	}
 
 	return parallelize.Until(ctx, len(p.list.Items), func(i int) error {
@@ -336,7 +360,7 @@ func (p *Pod) Run(ctx context.Context, c client.Client, wl *kueue.Workload, podS
 			recorder.Eventf(pod, nil, corev1.EventTypeNormal, jobframework.ReasonStarted, "Started", msg)
 		}
 
-		utilpod.RecordPodSchedulingGateRemovalSeconds(p.clock, podconstants.SchedulingGateName, wl, p.isGroup)
+		utilpod.RecordPodSchedulingGateRemovalSeconds(p.clock, podconstants.SchedulingGateName, wl, p.isGroup, p.customLabels, p.roleTracker)
 
 		return nil
 	})
@@ -520,8 +544,17 @@ func (p *Pod) Stop(ctx context.Context, c client.Client, _ []podset.PodSetInfo, 
 
 	stoppedNow := make([]client.Object, 0)
 	for i := range podsInGroup {
+		if !podsInGroup[i].DeletionTimestamp.IsZero() {
+			// Already deleting from an earlier Stop() call; finalize now if it has since terminated.
+			if p.shouldFinalizeNow(&podsInGroup[i], stopReason) {
+				if _, err := removePodFinalizers(ctx, c, &podsInGroup[i]); client.IgnoreNotFound(err) != nil {
+					return stoppedNow, err
+				}
+			}
+			continue
+		}
 		// If the workload is being deleted, delete even finished Pods.
-		if !podsInGroup[i].DeletionTimestamp.IsZero() || (stopReason != jobframework.StopReasonWorkloadDeleted && podSuspended(&podsInGroup[i])) {
+		if stopReason != jobframework.StopReasonWorkloadDeleted && podSuspended(&podsInGroup[i]) {
 			continue
 		}
 		podInGroup := FromObject(&podsInGroup[i])
@@ -548,19 +581,14 @@ func (p *Pod) Stop(ctx context.Context, c client.Client, _ []podset.PodSetInfo, 
 			if err := c.Delete(ctx, podInGroup.Object()); client.IgnoreNotFound(err) != nil {
 				return stoppedNow, err
 			}
+			if p.shouldFinalizeNow(&podInGroup.pod, stopReason) {
+				if _, err := removePodFinalizers(ctx, c, &podInGroup.pod); client.IgnoreNotFound(err) != nil {
+					return stoppedNow, err
+				}
+			}
 		}
 
 		stoppedNow = append(stoppedNow, podInGroup.Object())
-	}
-
-	// If related workload is deleted, the generic reconciler will stop the pod group and finalize the workload.
-	// However, it won't finalize the pods. Since the Stop method for the pod group deletes all the pods in the
-	// group, the pods will be finalized here.
-	if p.isGroup && stopReason == jobframework.StopReasonWorkloadDeleted {
-		err := p.Finalize(ctx, c)
-		if err != nil {
-			return stoppedNow, err
-		}
 	}
 
 	return stoppedNow, nil
@@ -677,25 +705,25 @@ func getRoleHash(p corev1.Pod) (string, error) {
 }
 
 // Load loads all pods in the group
-func (p *Pod) Load(ctx context.Context, c client.Client, key *types.NamespacedName) (removeFinalizers bool, err error) {
+func (p *Pod) Load(ctx context.Context, c client.Client, key *types.NamespacedName) (*jobframework.LoadResult, error) {
 	nsKey := strings.Split(key.Namespace, "/")
 
 	if len(nsKey) == 1 {
 		if err := c.Get(ctx, *key, &p.pod); err != nil {
 			if client.IgnoreNotFound(err) != nil {
-				return false, err
+				return nil, err
 			}
-			return true, nil
+			return jobframework.NewLoadResult(true, false), nil
 		}
 		p.isFound = true
 
 		// If the key.Namespace doesn't contain a "group/" prefix, even though
 		// the pod has a group name, there's something wrong with the event handler.
 		if groupName := utilpod.GetPodGroupName(&p.pod); groupName != "" {
-			return false, errIncorrectReconcileRequest
+			return nil, errIncorrectReconcileRequest
 		}
 
-		return !p.pod.DeletionTimestamp.IsZero(), nil
+		return jobframework.NewLoadResult(!p.pod.DeletionTimestamp.IsZero(), true), nil
 	}
 
 	p.isGroup = true
@@ -710,18 +738,39 @@ func (p *Pod) Load(ctx context.Context, c client.Client, key *types.NamespacedNa
 	if err := c.List(ctx, &p.list, client.MatchingFields{
 		PodGroupNameCacheKey: key.Name,
 	}, client.InNamespace(key.Namespace)); err != nil {
-		return false, err
+		return nil, err
 	}
 
 	if len(p.list.Items) > 0 {
 		p.isFound = true
 		p.pod = p.list.Items[0]
-		key.Name = p.pod.Name
 	}
 
 	// If none of the pods in group are found,
 	// the respective workload should be finalized
-	return !p.isFound, nil
+	if !p.isFound {
+		return jobframework.NewLoadResult(true, false), nil
+	}
+
+	if features.Enabled(features.FinalizeTerminatingPodGroups) {
+		// All group pods are terminating: once no Workload remains, finalize directly - re-creating one would re-adopt the group from admission-mutated specs and wedge finalizer removal (issue #15148).
+		for i := range p.list.Items {
+			if p.list.Items[i].DeletionTimestamp.IsZero() {
+				return jobframework.NewLoadResult(false, p.isFound), nil
+			}
+		}
+		// Any Workload still existing under the group name (even foreign-owned) blocks finalizing the group.
+		wl := &kueue.Workload{}
+		if err := c.Get(ctx, client.ObjectKey{Namespace: p.key.Namespace, Name: p.key.Name}, wl); err == nil {
+			return jobframework.NewLoadResult(false, p.isFound), nil
+		} else if !apierrors.IsNotFound(err) {
+			return nil, err
+		}
+		ctrl.LoggerFrom(ctx).V(2).Info("All pod group members are terminating and no Workload remains; treating the pod group as terminating")
+		return jobframework.NewLoadResult(true, p.isFound), nil
+	}
+
+	return jobframework.NewLoadResult(false, p.isFound), nil
 }
 
 // fastAdmission determines if the pod is configured for fast admission based on specific annotations.
@@ -761,7 +810,7 @@ func constructPodSet(p *corev1.Pod) (kueue.PodSet, error) {
 	if features.Enabled(features.TopologyAwareScheduling) {
 		topologyRequest, err := jobframework.NewPodSetTopologyRequest(
 			&p.ObjectMeta).PodIndexLabel(
-			ptr.To(kueue.PodGroupPodIndexLabel)).Build()
+			new(kueue.PodGroupPodIndexLabel)).Build()
 		if err != nil {
 			return kueue.PodSet{}, err
 		}
@@ -893,11 +942,28 @@ func (p *Pod) partitionPods() (active, inactive []corev1.Pod) {
 	return active, inactive
 }
 
+// shouldFinalizeNow reports whether a group pod's finalizer can be removed as part of this
+// Stop() call rather than waiting for FindMatchingWorkloads. Deletion always qualifies. An
+// eviction only qualifies for serving groups (issue #13830): a batch pod that succeeds
+// mid-eviction must stay listed for the group's "all succeeded" accounting, whereas a serving
+// group has no such accounting and would otherwise deadlock same-name (StatefulSet) replacements.
+// stopJob() rewrites StopReasonWorkloadEvicted into a compound reason, hence the prefix check.
+func (p *Pod) shouldFinalizeNow(pod *corev1.Pod, stopReason jobframework.StopReason) bool {
+	isDeletion := stopReason == jobframework.StopReasonWorkloadDeleted
+	isServingEviction := p.isServing() && strings.HasPrefix(string(stopReason), string(jobframework.StopReasonWorkloadEvicted))
+	return p.isGroup && (isDeletion || (isServingEviction && utilpod.IsTerminated(pod)))
+}
+
 // isPodRunnableOrSucceeded returns whether the Pod can eventually run, is Running or Succeeded.
 // A Pod cannot run if it's gated or has no node assignment while having a deletionTimestamp.
+// For serving groups, a terminated pod that's being deleted also can't run, even if it kept
+// its NodeName - see shouldFinalizeNow for why this is scoped to serving groups.
 func isPodRunnableOrSucceeded(p *corev1.Pod) bool {
-	if !p.DeletionTimestamp.IsZero() && len(p.Spec.NodeName) == 0 {
-		return false
+	if !p.DeletionTimestamp.IsZero() {
+		serving := p.Annotations[podconstants.GroupServingAnnotationKey] == podconstants.GroupServingAnnotationValue
+		if len(p.Spec.NodeName) == 0 || (serving && utilpod.IsTerminated(p)) {
+			return false
+		}
 	}
 	return p.Status.Phase != corev1.PodFailed
 }
@@ -932,8 +998,8 @@ func sortInactivePods(clock clock.Clock, inactivePods []corev1.Pod) {
 		return cmputil.LazyOr(
 			func() int {
 				return cmputil.CompareBool(
-					slices.Contains(pi.Finalizers, podconstants.PodFinalizer),
 					slices.Contains(pj.Finalizers, podconstants.PodFinalizer),
+					slices.Contains(pi.Finalizers, podconstants.PodFinalizer),
 				)
 			},
 			func() int {
@@ -957,15 +1023,15 @@ func sortActivePods(activePods []corev1.Pod) {
 			func() int {
 				// Prefer to keep pods that have a finalizer.
 				return cmputil.CompareBool(
-					slices.Contains(pi.Finalizers, podconstants.PodFinalizer),
 					slices.Contains(pj.Finalizers, podconstants.PodFinalizer),
+					slices.Contains(pi.Finalizers, podconstants.PodFinalizer),
 				)
 			},
 			func() int {
 				// Prefer to keep pods that aren't gated.
 				return cmputil.CompareBool(
-					isGated(&pj),
 					isGated(&pi),
+					isGated(&pj),
 				)
 			},
 			func() int {
@@ -1217,6 +1283,19 @@ func (p *Pod) ListChildWorkloads(ctx context.Context, c client.Client, key types
 			return nil, err
 		}
 
+		// A Workload that merely shares the pod group name may belong to another job.
+		// Treating it as this group's child would strip its finalizer and release its
+		// quota. Workloads built by NewGroupWorkload carry the is-group-workload marker,
+		// and a pod group only ever adds non-controller owner references, so a controller
+		// reference means the Workload is owned by someone else.
+		if features.Enabled(features.PodIntegrationValidateGroupOwner) &&
+			workload.Annotations[podconstants.IsGroupWorkloadAnnotationKey] != podconstants.IsGroupWorkloadAnnotationValue &&
+			metav1.GetControllerOfNoCopy(workload) != nil {
+			log.V(2).Info("Existing workload with the pod group name is owned by another controller; not finalizing",
+				"workload", klog.KObj(workload))
+			return workloads, nil
+		}
+
 		workloads.Items = []kueue.Workload{*workload}
 		return workloads, nil
 	}
@@ -1257,6 +1336,13 @@ func (p *Pod) FindMatchingWorkloads(ctx context.Context, c client.Client, r even
 			"workload", klog.KObj(workload))
 		r.Eventf(&p.pod, nil, corev1.EventTypeWarning, ReasonWorkloadNameConflict, "Admission",
 			"A Workload named %q already exists but is not a pod group workload; this pod group cannot be admitted", groupName)
+		// A refused group is never ungated, so its pods stay gated and unschedulable. Without
+		// stripping the finalizer here, deleting them leaves them Terminating forever.
+		if _, inactivePods := p.partitionPods(); len(inactivePods) > 0 {
+			if err := p.finalizePods(ctx, c, inactivePods); err != nil {
+				return nil, nil, err
+			}
+		}
 		return nil, nil, errNotPodGroupWorkload
 	}
 

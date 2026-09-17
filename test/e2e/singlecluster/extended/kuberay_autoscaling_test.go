@@ -161,14 +161,14 @@ var _ = ginkgo.Describe("KubeRay multi-PodSet autoscaling", ginkgo.Label("area:s
 			RequestAndLimit(rayv1.WorkerNode, corev1.ResourceCPU, "400m").
 			Image(rayv1.HeadNode, kuberayTestImage, []string{}).
 			Image(rayv1.WorkerNode, kuberayTestImage, []string{}).
-			WithAutoscalerOptions(&rayv1.AutoscalerOptions{IdleTimeoutSeconds: ptr.To[int32](1)}).
+			WithAutoscalerOptions(&rayv1.AutoscalerOptions{IdleTimeoutSeconds: new(int32(1))}).
 			Obj()
 
 		workerA := rayCluster.Spec.WorkerGroupSpecs[0].DeepCopy()
 		workerA.GroupName = workerGroupA
-		workerA.Replicas = ptr.To[int32](0)
-		workerA.MinReplicas = ptr.To[int32](0)
-		workerA.MaxReplicas = ptr.To[int32](1)
+		workerA.Replicas = new(int32(0))
+		workerA.MinReplicas = new(int32(0))
+		workerA.MaxReplicas = new(int32(1))
 		workerA.RayStartParams = map[string]string{
 			"num-cpus":            "0",
 			"object-store-memory": objectStoreMemory,
@@ -183,7 +183,6 @@ var _ = ginkgo.Describe("KubeRay multi-PodSet autoscaling", ginkgo.Label("area:s
 			gomega.Expect(k8sClient.Create(ctx, rayCluster)).To(gomega.Succeed())
 		})
 
-		var headPod *corev1.Pod
 		ginkgo.By("Waiting for the zero-worker RayCluster to become ready", func() {
 			createdRayCluster := &rayv1.RayCluster{}
 			gomega.Eventually(func(g gomega.Gomega) {
@@ -191,21 +190,8 @@ var _ = ginkgo.Describe("KubeRay multi-PodSet autoscaling", ginkgo.Label("area:s
 				g.Expect(ptr.Deref(createdRayCluster.Spec.Suspend, true)).To(gomega.BeFalse())
 				g.Expect(meta.IsStatusConditionTrue(createdRayCluster.Status.Conditions, string(rayv1.HeadPodReady))).To(gomega.BeTrue())
 				g.Expect(createdRayCluster.Status.DesiredWorkerReplicas).To(gomega.Equal(int32(0)))
-
-				var err error
-				headPod, err = util.GetRayClusterHeadPod(ctx, k8sClient, client.ObjectKeyFromObject(rayCluster))
-				g.Expect(err).NotTo(gomega.HaveOccurred())
-				g.Expect(headPod.Status.Phase).To(gomega.Equal(corev1.PodRunning))
 			}, util.VeryLongTimeout, util.Interval).Should(gomega.Succeed(), util.AssertMsg("RayCluster did not become ready", createdRayCluster))
 		})
-
-		runOnHead := func(script string) {
-			gomega.Expect(headPod.Spec.Containers).NotTo(gomega.BeEmpty())
-			gomega.Eventually(func(g gomega.Gomega) {
-				_, stderr, err := util.KExecute(ctx, cfg, restClient, ns.Name, headPod.Name, headPod.Spec.Containers[0].Name, []string{"python", "-c", script})
-				g.Expect(err).NotTo(gomega.HaveOccurred(), "stderr: %s", string(stderr))
-			}, util.LongTimeout, util.Interval).Should(gomega.Succeed())
-		}
 
 		expectWorkerGroups := func(expected map[string]int32) {
 			createdRayCluster := &rayv1.RayCluster{}
@@ -235,28 +221,32 @@ var _ = ginkgo.Describe("KubeRay multi-PodSet autoscaling", ginkgo.Label("area:s
 		}
 
 		ginkgo.By("Requesting only the first worker group's custom resource", func() {
-			runOnHead(createDetachedActorScript(actorA, rayResourceA))
+			util.ExecuteCommandInRayClusterHead(ctx, k8sClient, cfg, restClient, client.ObjectKeyFromObject(rayCluster),
+				[]string{"python", "-c", createDetachedActorScript(actorA, rayResourceA)})
 			expected := map[string]int32{workerGroupA: 1, workerGroupB: 0}
 			expectWorkerGroups(expected)
 			expectKueueAccounting(expected)
 		})
 
 		ginkgo.By("Requesting the second worker group's custom resource without changing the first group", func() {
-			runOnHead(createDetachedActorScript(actorB, rayResourceB))
+			util.ExecuteCommandInRayClusterHead(ctx, k8sClient, cfg, restClient, client.ObjectKeyFromObject(rayCluster),
+				[]string{"python", "-c", createDetachedActorScript(actorB, rayResourceB)})
 			expected := map[string]int32{workerGroupA: 1, workerGroupB: 1}
 			expectWorkerGroups(expected)
 			expectKueueAccounting(expected)
 		})
 
 		ginkgo.By("Terminating the first actor without scaling down the second worker group", func() {
-			runOnHead(terminateDetachedActorScript(actorA))
+			util.ExecuteCommandInRayClusterHead(ctx, k8sClient, cfg, restClient, client.ObjectKeyFromObject(rayCluster),
+				[]string{"python", "-c", terminateDetachedActorScript(actorA)})
 			expected := map[string]int32{workerGroupA: 0, workerGroupB: 1}
 			expectWorkerGroups(expected)
 			expectKueueAccounting(expected)
 		})
 
 		ginkgo.By("Terminating the second actor and returning both worker groups to zero", func() {
-			runOnHead(terminateDetachedActorScript(actorB))
+			util.ExecuteCommandInRayClusterHead(ctx, k8sClient, cfg, restClient, client.ObjectKeyFromObject(rayCluster),
+				[]string{"python", "-c", terminateDetachedActorScript(actorB)})
 			expected := map[string]int32{workerGroupA: 0, workerGroupB: 0}
 			expectWorkerGroups(expected)
 			expectKueueAccounting(expected)

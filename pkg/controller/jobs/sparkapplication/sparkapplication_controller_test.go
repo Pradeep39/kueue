@@ -763,6 +763,14 @@ func TestReconciler(t *testing.T) {
 	// SparkApp variants used by the PodsReady cases.
 	sparkAppDriverRunningOnly := withDriverRunningOnly(withUID(testSparkApp.DeepCopy()), 2)
 	sparkAppAllExecutorsReady := withExecutorsRunning(withUID(testSparkApp.DeepCopy()), 2)
+	// Dynamic allocation variant: Instances=10, MinExecutors=5, 5 executors Running.
+	// PodsReady should use MinExecutors (5) as the expected count, not Instances (10).
+	sparkAppDynamicAllocation := withExecutorsRunning(withUID(testSparkApp.DeepCopy()), 5)
+	sparkAppDynamicAllocation.Spec.Executor.Instances = new(int32(10))
+	sparkAppDynamicAllocation.Spec.DynamicAllocation = &sparkappv1beta2.DynamicAllocation{
+		Enabled:      true,
+		MinExecutors: new(int32(5)),
+	}
 
 	// sparkAppDALiveExecutors has Dynamic Allocation enabled and a stale
 	// spec.executor.instances (5) left over from before Dynamic Allocation
@@ -905,7 +913,9 @@ func TestReconciler(t *testing.T) {
 			ctx, _ := utiltesting.ContextWithLog(t)
 
 			clientBuilder := utiltesting.NewClientBuilder(sparkappv1beta2.AddToScheme).
-				WithInterceptorFuncs(interceptor.Funcs{SubResourcePatch: utiltesting.TreatSSAAsStrategicMerge})
+				WithInterceptorFuncs(interceptor.Funcs{
+					SubResourceApply: utiltesting.TreatSSAAsStrategicMergeForApplyConfiguration,
+				})
 			objs := []client.Object{tc.sparkApp, testNamespace}
 			for _, pod := range tc.executorPods {
 				objs = append(objs, pod)
@@ -1013,7 +1023,9 @@ func TestReconcilerElasticScaleUpAvoidsStaleSliceNameCollision(t *testing.T) {
 		Obj()
 
 	clientBuilder := utiltesting.NewClientBuilder(sparkappv1beta2.AddToScheme).
-		WithInterceptorFuncs(interceptor.Funcs{SubResourcePatch: utiltesting.TreatSSAAsStrategicMerge})
+		WithInterceptorFuncs(interceptor.Funcs{
+			SubResourceApply: utiltesting.TreatSSAAsStrategicMergeForApplyConfiguration,
+		})
 	objs := []client.Object{sparkApp, testNamespace}
 	for _, pod := range executorPods {
 		objs = append(objs, pod)
