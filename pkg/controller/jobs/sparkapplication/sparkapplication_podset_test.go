@@ -279,6 +279,59 @@ func TestAddMemoryIgnoresThePodTemplate(t *testing.T) {
 	}
 }
 
+// TestDynamicAllocationEnabled pins the OR semantics. The other Kubeflow properties here
+// prefer their structured field over the sparkConf equivalent; this one cannot, because
+// DynamicAllocation.Enabled is a non-pointer bool and an explicit false is indistinguishable
+// from an omitted one. Honouring either surface over-reads enablement on purpose: see
+// sparkapplication-sparkconf-executor-instances-design.md section 5 for why the alternative
+// under-reserves.
+func TestDynamicAllocationEnabled(t *testing.T) {
+	cases := map[string]struct {
+		app  *sparkv1beta2.SparkApplication
+		want bool
+	}{
+		"neither surface configured": {
+			app:  &sparkv1beta2.SparkApplication{},
+			want: false,
+		},
+		"structured field enables it": {
+			app: &sparkv1beta2.SparkApplication{Spec: sparkv1beta2.SparkApplicationSpec{
+				DynamicAllocation: &sparkv1beta2.DynamicAllocation{Enabled: true},
+			}},
+			want: true,
+		},
+		"sparkConf enables it": {
+			app: &sparkv1beta2.SparkApplication{Spec: sparkv1beta2.SparkApplicationSpec{
+				SparkConf: map[string]string{"spark.dynamicAllocation.enabled": "true"},
+			}},
+			want: true,
+		},
+		// The load-bearing case: bounds declared structurally, enablement through sparkConf.
+		// Letting the structured block win would read this as a static application.
+		"bounds structured, enablement via sparkConf": {
+			app: &sparkv1beta2.SparkApplication{Spec: sparkv1beta2.SparkApplicationSpec{
+				DynamicAllocation: &sparkv1beta2.DynamicAllocation{MinExecutors: ptr.To[int32](3)},
+				SparkConf:         map[string]string{"spark.dynamicAllocation.enabled": "true"},
+			}},
+			want: true,
+		},
+		"an unparseable sparkConf value is not an enablement": {
+			app: &sparkv1beta2.SparkApplication{Spec: sparkv1beta2.SparkApplicationSpec{
+				SparkConf: map[string]string{"spark.dynamicAllocation.enabled": "yes please"},
+			}},
+			want: false,
+		},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			if got := fromObject(tc.app).dynamicAllocationEnabled(); got != tc.want {
+				t.Errorf("dynamicAllocationEnabled() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestTotalMemoryBytes(t *testing.T) {
 	mi := func(n int64) int64 { return n * 1024 * 1024 }
 
