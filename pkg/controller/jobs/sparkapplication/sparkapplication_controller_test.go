@@ -103,6 +103,9 @@ func TestPodSets(t *testing.T) {
 									corev1.ResourceCPU:    resource.MustParse("100m"),
 									corev1.ResourceMemory: resource.MustParse("896Mi"),
 								},
+								Limits: corev1.ResourceList{
+									corev1.ResourceMemory: resource.MustParse("896Mi"),
+								},
 							},
 						},
 					},
@@ -117,6 +120,54 @@ func TestPodSets(t *testing.T) {
 							Resources: corev1.ResourceRequirements{
 								Requests: corev1.ResourceList{
 									corev1.ResourceCPU:    resource.MustParse("100m"),
+									corev1.ResourceMemory: resource.MustParse("896Mi"),
+								},
+								Limits: corev1.ResourceList{
+									corev1.ResourceMemory: resource.MustParse("896Mi"),
+								},
+							},
+						},
+					},
+				}).Obj(),
+			},
+		},
+		"with SparkApplication-level node selector": {
+			sparkApp: testSparkApp.Clone().
+				NodeSelector(maps.Clone(nodeSelector)).
+				ExecutorInstances(3).Obj(),
+			want: []kueue.PodSet{
+				*utiltestingapi.MakePodSet("driver", 1).PodSpec(corev1.PodSpec{
+					NodeSelector:   maps.Clone(nodeSelector),
+					Tolerations:    []corev1.Toleration{},
+					InitContainers: []corev1.Container{},
+					Containers: []corev1.Container{
+						{
+							Name: sparkcommon.SparkDriverContainerName,
+							Resources: corev1.ResourceRequirements{
+								Requests: corev1.ResourceList{
+									corev1.ResourceCPU:    resource.MustParse("100m"),
+									corev1.ResourceMemory: resource.MustParse("896Mi"),
+								},
+								Limits: corev1.ResourceList{
+									corev1.ResourceMemory: resource.MustParse("896Mi"),
+								},
+							},
+						},
+					},
+				}).Obj(),
+				*utiltestingapi.MakePodSet("executor", 3).PodSpec(corev1.PodSpec{
+					NodeSelector:   maps.Clone(nodeSelector),
+					Tolerations:    []corev1.Toleration{},
+					InitContainers: []corev1.Container{},
+					Containers: []corev1.Container{
+						{
+							Name: sparkcommon.Spark3DefaultExecutorContainerName,
+							Resources: corev1.ResourceRequirements{
+								Requests: corev1.ResourceList{
+									corev1.ResourceCPU:    resource.MustParse("100m"),
+									corev1.ResourceMemory: resource.MustParse("896Mi"),
+								},
+								Limits: corev1.ResourceList{
 									corev1.ResourceMemory: resource.MustParse("896Mi"),
 								},
 							},
@@ -152,6 +203,9 @@ func TestPodSets(t *testing.T) {
 										corev1.ResourceCPU:    resource.MustParse("100m"),
 										corev1.ResourceMemory: resource.MustParse("896Mi"),
 									},
+									Limits: corev1.ResourceList{
+										corev1.ResourceMemory: resource.MustParse("896Mi"),
+									},
 								},
 							},
 						},
@@ -172,6 +226,9 @@ func TestPodSets(t *testing.T) {
 								Resources: corev1.ResourceRequirements{
 									Requests: corev1.ResourceList{
 										corev1.ResourceCPU:    resource.MustParse("100m"),
+										corev1.ResourceMemory: resource.MustParse("896Mi"),
+									},
+									Limits: corev1.ResourceList{
 										corev1.ResourceMemory: resource.MustParse("896Mi"),
 									},
 								},
@@ -206,6 +263,9 @@ func TestPodSets(t *testing.T) {
 										corev1.ResourceCPU:    resource.MustParse("100m"),
 										corev1.ResourceMemory: resource.MustParse("896Mi"),
 									},
+									Limits: corev1.ResourceList{
+										corev1.ResourceMemory: resource.MustParse("896Mi"),
+									},
 								},
 							},
 						},
@@ -225,6 +285,9 @@ func TestPodSets(t *testing.T) {
 								Resources: corev1.ResourceRequirements{
 									Requests: corev1.ResourceList{
 										corev1.ResourceCPU:    resource.MustParse("100m"),
+										corev1.ResourceMemory: resource.MustParse("896Mi"),
+									},
+									Limits: corev1.ResourceList{
 										corev1.ResourceMemory: resource.MustParse("896Mi"),
 									},
 								},

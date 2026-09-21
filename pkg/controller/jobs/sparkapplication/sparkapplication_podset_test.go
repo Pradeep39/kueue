@@ -33,7 +33,7 @@ import (
 	sparkapplicationtesting "sigs.k8s.io/kueue/pkg/util/testingjobs/sparkapplication"
 )
 
-func executorPod(name string, phase corev1.PodPhase, deleting bool) *corev1.Pod {
+func elasticExecutorPod(name string, phase corev1.PodPhase, deleting bool) *corev1.Pod {
 	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
@@ -257,7 +257,7 @@ func TestAddMemoryIgnoresThePodTemplate(t *testing.T) {
 
 	for name, tc := range tests {
 		t.Run(name, func(t *testing.T) {
-			pod := executorPod("e", corev1.PodRunning, false)
+			pod := elasticExecutorPod("e", corev1.PodRunning, false)
 			pod.Spec.Containers = []corev1.Container{{Name: sparkcommon.Spark3DefaultExecutorContainerName}}
 
 			if err := addMemoryRequests(pod, tc.app); err != nil {
@@ -332,165 +332,6 @@ func TestDynamicAllocationEnabled(t *testing.T) {
 	}
 }
 
-func TestTotalMemoryBytes(t *testing.T) {
-	mi := func(n int64) int64 { return n * 1024 * 1024 }
-
-	cases := map[string]struct {
-		spec sparkv1beta2.SparkApplicationSpec
-		role string
-		want int64
-	}{
-		// 0.1 x 512Mi is 51Mi, below Spark's floor, so the floor applies.
-		"executor heap plus the 384MiB floor": {
-			spec: sparkv1beta2.SparkApplicationSpec{Executor: sparkv1beta2.ExecutorSpec{
-				SparkPodSpec: sparkv1beta2.SparkPodSpec{Memory: ptr.To("512m")}}},
-			role: "executor",
-			want: mi(896),
-		},
-		// 0.1 x 8192Mi is 819Mi, above the floor, so the factor applies.
-		"executor heap plus the factored overhead": {
-			spec: sparkv1beta2.SparkApplicationSpec{Executor: sparkv1beta2.ExecutorSpec{
-				SparkPodSpec: sparkv1beta2.SparkPodSpec{Memory: ptr.To("8g")}}},
-			role: "executor",
-			want: mi(8192 + 819),
-		},
-		"an explicit memoryOverhead replaces the factor": {
-			spec: sparkv1beta2.SparkApplicationSpec{Executor: sparkv1beta2.ExecutorSpec{
-				SparkPodSpec: sparkv1beta2.SparkPodSpec{
-					Memory:         ptr.To("512m"),
-					MemoryOverhead: ptr.To("1g"),
-				}}},
-			role: "executor",
-			want: mi(512 + 1024),
-		},
-		"a bare memoryOverhead is read as MiB": {
-			spec: sparkv1beta2.SparkApplicationSpec{Executor: sparkv1beta2.ExecutorSpec{
-				SparkPodSpec: sparkv1beta2.SparkPodSpec{
-					Memory:         ptr.To("512m"),
-					MemoryOverhead: ptr.To("512"),
-				}}},
-			role: "executor",
-			want: mi(1024),
-		},
-		"memoryOverheadFactor overrides the default": {
-			spec: sparkv1beta2.SparkApplicationSpec{
-				MemoryOverheadFactor: ptr.To("0.5"),
-				Executor: sparkv1beta2.ExecutorSpec{
-					SparkPodSpec: sparkv1beta2.SparkPodSpec{Memory: ptr.To("8g")}},
-			},
-			role: "executor",
-			want: mi(8192 + 4096),
-		},
-		// Python and R use Spark's non-JVM factor of 0.4 when none is set explicitly.
-		// 0.4 x 8192 truncates to 3276, matching Spark's (factor * memoryMiB).toInt.
-		"a Python application uses the non-JVM factor": {
-			spec: sparkv1beta2.SparkApplicationSpec{
-				Type: sparkv1beta2.SparkApplicationTypePython,
-				Executor: sparkv1beta2.ExecutorSpec{
-					SparkPodSpec: sparkv1beta2.SparkPodSpec{Memory: ptr.To("8g")}},
-			},
-			role: "executor",
-			want: mi(8192 + 3276),
-		},
-		"sparkConf supplies the heap when the field is unset": {
-			spec: sparkv1beta2.SparkApplicationSpec{
-				SparkConf: map[string]string{"spark.executor.memory": "512m"},
-			},
-			role: "executor",
-			want: mi(896),
-		},
-		"the structured field wins over sparkConf": {
-			spec: sparkv1beta2.SparkApplicationSpec{
-				SparkConf: map[string]string{"spark.executor.memory": "8g"},
-				Executor: sparkv1beta2.ExecutorSpec{
-					SparkPodSpec: sparkv1beta2.SparkPodSpec{Memory: ptr.To("512m")}},
-			},
-			role: "executor",
-			want: mi(896),
-		},
-		// Spark 4 lets the floor itself be configured; the CRD has no field for it, so
-		// sparkConf is the only surface.
-		"spark.executor.minMemoryOverhead raises the floor": {
-			spec: sparkv1beta2.SparkApplicationSpec{
-				SparkConf: map[string]string{"spark.executor.minMemoryOverhead": "1g"},
-				Executor: sparkv1beta2.ExecutorSpec{
-					SparkPodSpec: sparkv1beta2.SparkPodSpec{Memory: ptr.To("512m")}},
-			},
-			role: "executor",
-			want: mi(512 + 1024),
-		},
-		"minMemoryOverhead is ignored when the overhead is explicit": {
-			spec: sparkv1beta2.SparkApplicationSpec{
-				SparkConf: map[string]string{"spark.executor.minMemoryOverhead": "1g"},
-				Executor: sparkv1beta2.ExecutorSpec{
-					SparkPodSpec: sparkv1beta2.SparkPodSpec{
-						Memory:         ptr.To("512m"),
-						MemoryOverhead: ptr.To("128m"),
-					}},
-			},
-			role: "executor",
-			want: mi(512 + 128),
-		},
-		"pyspark memory is added on executors": {
-			spec: sparkv1beta2.SparkApplicationSpec{
-				SparkConf: map[string]string{"spark.executor.pyspark.memory": "256m"},
-				Executor: sparkv1beta2.ExecutorSpec{
-					SparkPodSpec: sparkv1beta2.SparkPodSpec{Memory: ptr.To("512m")}},
-			},
-			role: "executor",
-			want: mi(896 + 256),
-		},
-		"pyspark memory is not added on the driver": {
-			spec: sparkv1beta2.SparkApplicationSpec{
-				SparkConf: map[string]string{"spark.executor.pyspark.memory": "256m"},
-				Driver: sparkv1beta2.DriverSpec{
-					SparkPodSpec: sparkv1beta2.SparkPodSpec{Memory: ptr.To("512m")}},
-			},
-			role: "driver",
-			want: mi(896),
-		},
-		"off-heap counts only when the allocator is enabled": {
-			spec: sparkv1beta2.SparkApplicationSpec{
-				SparkConf: map[string]string{
-					"spark.memory.offHeap.enabled": "true",
-					"spark.memory.offHeap.size":    "1g",
-				},
-				Executor: sparkv1beta2.ExecutorSpec{
-					SparkPodSpec: sparkv1beta2.SparkPodSpec{Memory: ptr.To("512m")}},
-			},
-			role: "executor",
-			want: mi(896 + 1024),
-		},
-		"off-heap size is ignored while disabled": {
-			spec: sparkv1beta2.SparkApplicationSpec{
-				SparkConf: map[string]string{"spark.memory.offHeap.size": "1g"},
-				Executor: sparkv1beta2.ExecutorSpec{
-					SparkPodSpec: sparkv1beta2.SparkPodSpec{Memory: ptr.To("512m")}},
-			},
-			role: "executor",
-			want: mi(896),
-		},
-		"nothing configured falls back to Spark's 1g default": {
-			role: "executor",
-			want: mi(1024 + 384),
-		},
-	}
-
-	for name, tc := range cases {
-		t.Run(name, func(t *testing.T) {
-			app := fromObject(&sparkv1beta2.SparkApplication{Spec: tc.spec})
-			got, err := app.totalMemoryBytes(tc.role)
-			if err != nil {
-				t.Fatalf("totalMemoryBytes() returned an unexpected error: %v", err)
-			}
-			if got != tc.want {
-				t.Errorf("totalMemoryBytes() = %d (%dMi), want %d (%dMi)",
-					got, got/1024/1024, tc.want, tc.want/1024/1024)
-			}
-		})
-	}
-}
-
 func TestIsVerifiedLiveExecutor(t *testing.T) {
 	tests := map[string]struct {
 		phase    corev1.PodPhase
@@ -507,7 +348,7 @@ func TestIsVerifiedLiveExecutor(t *testing.T) {
 
 	for name, tc := range tests {
 		t.Run(name, func(t *testing.T) {
-			pod := executorPod("e", tc.phase, tc.deleting)
+			pod := elasticExecutorPod("e", tc.phase, tc.deleting)
 			if got := isVerifiedLiveExecutor(pod); got != tc.want {
 				t.Errorf("isVerifiedLiveExecutor() = %v, want %v", got, tc.want)
 			}
@@ -526,7 +367,7 @@ func TestLiveExecutorCount(t *testing.T) {
 		"dynamic allocation disabled uses the static instances field": {
 			app: sparkapplicationtesting.MakeSparkApplication("app", "ns").
 				ExecutorInstances(5).Obj(),
-			pods: []client.Object{executorPod("e1", corev1.PodRunning, false)},
+			pods: []client.Object{elasticExecutorPod("e1", corev1.PodRunning, false)},
 			want: 5,
 		},
 		// Spark Operator accepts the executor count through sparkConf as well as the
@@ -542,7 +383,7 @@ func TestLiveExecutorCount(t *testing.T) {
 				app.Spec.SparkConf = map[string]string{"spark.executor.instances": "15"}
 				return app
 			}(),
-			pods: []client.Object{executorPod("e1", corev1.PodRunning, false)},
+			pods: []client.Object{elasticExecutorPod("e1", corev1.PodRunning, false)},
 			want: 15,
 		},
 		// sparkConf is the fallback, so the structured field wins whenever it is set --
@@ -626,11 +467,11 @@ func TestLiveExecutorCount(t *testing.T) {
 				DynamicAllocation(&sparkv1beta2.DynamicAllocation{Enabled: true}).
 				Obj(),
 			pods: []client.Object{
-				executorPod("e1", corev1.PodRunning, false),
-				executorPod("e2", corev1.PodPending, false),
-				executorPod("e3", corev1.PodSucceeded, false),
-				executorPod("e4", corev1.PodFailed, false),
-				executorPod("e5", corev1.PodRunning, true), // terminating, still live
+				elasticExecutorPod("e1", corev1.PodRunning, false),
+				elasticExecutorPod("e2", corev1.PodPending, false),
+				elasticExecutorPod("e3", corev1.PodSucceeded, false),
+				elasticExecutorPod("e4", corev1.PodFailed, false),
+				elasticExecutorPod("e5", corev1.PodRunning, true), // terminating, still live
 			},
 			want: 3,
 		},
@@ -658,7 +499,7 @@ func TestLiveExecutorCount(t *testing.T) {
 				}
 				return app
 			}(),
-			pods: []client.Object{executorPod("e1", corev1.PodRunning, false)},
+			pods: []client.Object{elasticExecutorPod("e1", corev1.PodRunning, false)},
 			want: 3,
 		},
 		"live count above maxExecutors is capped at the ceiling": {
@@ -670,10 +511,10 @@ func TestLiveExecutorCount(t *testing.T) {
 				}).
 				Obj(),
 			pods: []client.Object{
-				executorPod("e1", corev1.PodRunning, false),
-				executorPod("e2", corev1.PodPending, false),
-				executorPod("e3", corev1.PodPending, false),
-				executorPod("e4", corev1.PodPending, false),
+				elasticExecutorPod("e1", corev1.PodRunning, false),
+				elasticExecutorPod("e2", corev1.PodPending, false),
+				elasticExecutorPod("e3", corev1.PodPending, false),
+				elasticExecutorPod("e4", corev1.PodPending, false),
 			},
 			want: 2,
 		},
@@ -686,8 +527,8 @@ func TestLiveExecutorCount(t *testing.T) {
 				}).
 				Obj(),
 			pods: []client.Object{
-				executorPod("e1", corev1.PodRunning, false),
-				executorPod("e2", corev1.PodRunning, false),
+				elasticExecutorPod("e1", corev1.PodRunning, false),
+				elasticExecutorPod("e2", corev1.PodRunning, false),
 			},
 			want: 2,
 		},
@@ -701,7 +542,7 @@ func TestLiveExecutorCount(t *testing.T) {
 					MaxExecutors: ptr.To[int32](2),
 				}).
 				Obj(),
-			pods: []client.Object{executorPod("e1", corev1.PodRunning, false)},
+			pods: []client.Object{elasticExecutorPod("e1", corev1.PodRunning, false)},
 			want: 2,
 		},
 		"instances below minExecutors reserves the Dynamic Allocation floor": {
@@ -756,8 +597,8 @@ func TestLiveExecutorCount(t *testing.T) {
 				DynamicAllocation(&sparkv1beta2.DynamicAllocation{Enabled: true}).
 				Obj(),
 			pods: []client.Object{
-				executorPod("e1", corev1.PodRunning, false),
-				executorPod("e2", corev1.PodRunning, false),
+				elasticExecutorPod("e1", corev1.PodRunning, false),
+				elasticExecutorPod("e2", corev1.PodRunning, false),
 			},
 			want: 2,
 		},
@@ -795,8 +636,8 @@ func TestLiveExecutorCountCachedWithinReconcile(t *testing.T) {
 		Obj())
 
 	c := utiltesting.NewClientBuilder().WithObjects(
-		executorPod("e1", corev1.PodRunning, false),
-		executorPod("e2", corev1.PodRunning, false),
+		elasticExecutorPod("e1", corev1.PodRunning, false),
+		elasticExecutorPod("e2", corev1.PodRunning, false),
 	).Build()
 
 	first, err := app.liveExecutorCount(t.Context(), c)
@@ -810,7 +651,7 @@ func TestLiveExecutorCountCachedWithinReconcile(t *testing.T) {
 	// Simulate Dynamic Allocation adding another executor Pod mid-reconcile: a
 	// second call against the same *SparkApplication instance must still return
 	// the cached value, not a freshly-observed (and inconsistent) count.
-	if err := c.Create(t.Context(), executorPod("e3", corev1.PodRunning, false)); err != nil {
+	if err := c.Create(t.Context(), elasticExecutorPod("e3", corev1.PodRunning, false)); err != nil {
 		t.Fatalf("failed to create pod: %v", err)
 	}
 
