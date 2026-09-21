@@ -46,23 +46,39 @@ only signal Kueue has.
 
 ## Known coupling visible in the up-flow
 
-Step 8 (`isVerifiedLiveExecutor`, `sparkapplication_podset.go:119`) counts every
-non-terminal executor Pod, **including Pods still blocked by
-`kueue.ElasticJobSchedulingGate`** — Pods that step 22 has not ungated. When a
-ClusterQueue is saturated this is self-reinforcing: blocked admission leaves Pods gated,
-gated Pods raise the derived count, a higher count is harder to admit. Any fix has to
-*bound* the derived count rather than filter gated Pods out, since gated Pods must be
-counted for scale-up to be detectable at all.
+Step 8 (`isVerifiedLiveExecutor`) counts every non-terminal executor Pod, **including Pods
+still blocked by `kueue.ElasticJobSchedulingGate`** — Pods that step 22 has not ungated. When
+a ClusterQueue is saturated this is self-reinforcing: blocked admission leaves Pods gated,
+gated Pods raise the derived count, a higher count is harder to admit.
+
+PR #26 added `clampToDynamicAllocationBounds`, which **narrows but does not close** this. It
+bounds the derived count by Dynamic Allocation's own `maxExecutors`, not by what the
+ClusterQueue can grant, so the loop is still reachable when `maxExecutors` is unset or set
+above queue capacity. A full fix has to bound the count against grantable capacity rather
+than filter gated Pods out, since gated Pods must be counted for scale-up to be detectable at
+all.
 
 ## Regenerating
 
-`gen_seq.py` emits both SVGs and shells out to `rsvg-convert` for the PNGs:
+`gen_seq.py` emits both SVGs **in place, beside itself**, and shells out to `rsvg-convert`
+for the PNGs:
 
 ```sh
 python3 docs/design/diagrams/gen_seq.py
 ```
 
-Participants and steps are plain Python lists at the bottom of the script (`UP_LANES` /
+Participants and steps are plain Python lists near the bottom of the script (`UP_LANES` /
 `UP`, `DOWN_LANES` / `DOWN`); message helpers are `call()`, `event()`, `self_()` and
 `note()`. Step numbers are assigned automatically, so inserting a step renumbers the rest.
 No network access or JS runtime is needed.
+
+**Code references are resolved from the source at generation time.** The `SYMBOLS` table maps
+a key to `(path, regex, display label)`, and `ref()` / `refs()` turn that into `file.go:NNN`
+when the script runs. They were hardcoded until 2026-09-21, by which point 14 of 17 had
+rotted — #26–#35 moved `isVerifiedLiveExecutor` from 119 to 176 and
+`totalRequestsFromAdmission` from 674 to 790, among others. A stale line number is worse than
+none, because it reads as precise.
+
+Consequence worth knowing: if a referenced symbol is renamed or removed, the script **exits
+non-zero with the key that no longer matches** rather than emitting a wrong number. Fix
+`SYMBOLS`; don't drop the reference.

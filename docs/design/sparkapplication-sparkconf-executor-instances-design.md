@@ -223,7 +223,9 @@ initial count still resolves through the same `numInitialExecutors` ladder.
 
 Scope note: this applies to the Kubeflow CRD. The Apache integration resolves
 `staticExecutorCount` conf-key-first, so "structured field first" is not a package-wide rule to
-be consistent with in the first place.
+be consistent with in the first place — see
+[`apache-sparkapplication-integration-design.md`](./apache-sparkapplication-integration-design.md)
+§5 for why that CRD inverts it.
 
 ## 6. Testing
 

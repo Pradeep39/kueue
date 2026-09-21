@@ -23,7 +23,7 @@
 <line x1="704" y1="164" x2="704" y2="1356" stroke="#c3cbd5" stroke-width="1.2" stroke-dasharray="4 5"/>
 <rect x="846" y="96" width="252" height="68" rx="5" fill="#eef2f6" stroke="#b9c3cf"/>
 <text x="972" y="118" font-size="12.5" font-weight="600" text-anchor="middle" fill="#1f2933">JobReconciler</text>
-<text x="972" y="134" font-size="9.5" font-family="Menlo, monospace" text-anchor="middle" fill="#6b7785">jobframework/reconciler.go:962</text>
+<text x="972" y="134" font-size="9.5" font-family="Menlo, monospace" text-anchor="middle" fill="#6b7785">jobframework/reconciler.go:1029</text>
 <line x1="972" y1="164" x2="972" y2="1356" stroke="#c3cbd5" stroke-width="1.2" stroke-dasharray="4 5"/>
 <rect x="1114" y="96" width="252" height="68" rx="5" fill="#eef2f6" stroke="#b9c3cf"/>
 <text x="1240" y="118" font-size="12.5" font-weight="600" text-anchor="middle" fill="#1f2933">PodSets / count</text>
@@ -61,28 +61,28 @@
 <text x="1324" y="440" font-size="11" text-anchor="start" fill="#1f2933"><tspan fill="#6b7785" font-weight="600">5. </tspan>isVerifiedLiveExecutor — a Pod with</text>
 <text x="1324" y="454" font-size="11" text-anchor="start" fill="#1f2933">DeletionTimestamp still counts until</text>
 <text x="1324" y="468" font-size="11" text-anchor="start" fill="#1f2933">Succeeded/Failed</text>
-<text x="1324" y="482" font-size="9.5" font-family="Menlo, monospace" text-anchor="start" fill="#3f6d52">podset.go:119</text>
+<text x="1324" y="482" font-size="9.5" font-family="Menlo, monospace" text-anchor="start" fill="#3f6d52">podset.go:176</text>
 <line x1="1237" y1="556" x2="976" y2="556" stroke="#25506e" stroke-width="1.7" marker-end="url(#ac)"/>
 <text x="1106" y="547" font-size="11" text-anchor="middle" fill="#1f2933">executor PodSet Count = N_live (lower)</text>
 <circle cx="1227" cy="545" r="8.5" fill="#ffffff" stroke="#25506e" stroke-width="1.1"/><text x="1227" y="548.5" font-size="9.5" font-weight="600" text-anchor="middle" fill="#25506e">6</text>
 <line x1="975" y1="606" x2="1504" y2="606" stroke="#25506e" stroke-width="1.7" marker-end="url(#ac)"/>
 <text x="1240" y="585" font-size="11" text-anchor="middle" fill="#1f2933">EnsureWorkloadSlices(podSets, ...)</text>
-<text x="1240" y="600" font-size="9.5" font-family="Menlo, monospace" text-anchor="middle" fill="#25506e">workloadslicing.go:173</text>
+<text x="1240" y="600" font-size="9.5" font-family="Menlo, monospace" text-anchor="middle" fill="#25506e">workloadslicing.go:245</text>
 <circle cx="985" cy="595" r="8.5" fill="#ffffff" stroke="#25506e" stroke-width="1.1"/><text x="985" y="598.5" font-size="9.5" font-weight="600" text-anchor="middle" fill="#25506e">7</text>
 <path d="M1508 656 L1574 656 L1574 678 L1513 678" fill="none" stroke="#3f6d52" stroke-width="1.5" marker-end="url(#as)"/>
 <text x="1592" y="657" font-size="11" text-anchor="start" fill="#1f2933"><tspan fill="#6b7785" font-weight="600">8. </tspan>ScaledDown() -&gt; in-place patch. No new slice,</text>
 <text x="1592" y="671" font-size="11" text-anchor="start" fill="#1f2933">and the scheduler is never involved</text>
-<text x="1592" y="685" font-size="9.5" font-family="Menlo, monospace" text-anchor="start" fill="#3f6d52">workloadslicing.go:156</text>
+<text x="1592" y="685" font-size="9.5" font-family="Menlo, monospace" text-anchor="start" fill="#3f6d52">workloadslicing.go:228</text>
 <line x1="1505" y1="752" x2="440" y2="752" stroke="#25506e" stroke-width="1.7" marker-end="url(#ac)"/>
 <text x="972" y="716" font-size="11" text-anchor="middle" fill="#1f2933">updatePodSetCountsWithRetry — lower</text>
 <text x="972" y="731" font-size="11" text-anchor="middle" fill="#1f2933">spec.podSets[].count</text>
-<text x="972" y="746" font-size="9.5" font-family="Menlo, monospace" text-anchor="middle" fill="#25506e">workloadslicing.go:325</text>
+<text x="972" y="746" font-size="9.5" font-family="Menlo, monospace" text-anchor="middle" fill="#25506e">workloadslicing.go:422</text>
 <circle cx="1495" cy="741" r="8.5" fill="#ffffff" stroke="#25506e" stroke-width="1.1"/><text x="1495" y="744.5" font-size="9.5" font-weight="600" text-anchor="middle" fill="#25506e">9</text>
 <line x1="1505" y1="817" x2="440" y2="817" stroke="#25506e" stroke-width="1.7" marker-end="url(#ac)"/>
 <text x="972" y="766" font-size="11" text-anchor="middle" fill="#1f2933">scaleDownAdmission — lower the granted</text>
 <text x="972" y="781" font-size="11" text-anchor="middle" fill="#1f2933">count, rescale ResourceUsage, truncate</text>
 <text x="972" y="796" font-size="11" text-anchor="middle" fill="#1f2933">TopologyAssignment</text>
-<text x="972" y="811" font-size="9.5" font-family="Menlo, monospace" text-anchor="middle" fill="#25506e">workloadslicing.go:282</text>
+<text x="972" y="811" font-size="9.5" font-family="Menlo, monospace" text-anchor="middle" fill="#25506e">workloadslicing.go:379</text>
 <circle cx="1495" cy="806" r="8.5" fill="#ffffff" stroke="#25506e" stroke-width="1.1"/><text x="1495" y="809.5" font-size="9.5" font-weight="600" text-anchor="middle" fill="#25506e">10</text>
 <line x1="439" y1="897" x2="1772" y2="897" stroke="#25506e" stroke-width="1.7" marker-end="url(#ac)"/>
 <text x="1106" y="888" font-size="11" text-anchor="middle" fill="#1f2933">admission mutation must pass validation</text>
@@ -91,14 +91,14 @@
 <text x="1860" y="941" font-size="11" text-anchor="start" fill="#1f2933"><tspan fill="#6b7785" font-weight="600">12. </tspan>validateAdmissionUpdate — decrease-only,</text>
 <text x="1860" y="955" font-size="11" text-anchor="start" fill="#1f2933">elastic-only exception; batch/v1 Job admission</text>
 <text x="1860" y="969" font-size="11" text-anchor="start" fill="#1f2933">stays immutable</text>
-<text x="1860" y="983" font-size="9.5" font-family="Menlo, monospace" text-anchor="start" fill="#3f6d52">workload_webhook.go:376</text>
+<text x="1860" y="983" font-size="9.5" font-family="Menlo, monospace" text-anchor="start" fill="#3f6d52">workload_webhook.go:404</text>
 <line x1="439" y1="1057" x2="2040" y2="1057" stroke="#9c5a1c" stroke-width="1.7" marker-end="url(#ae)" stroke-dasharray="6 4"/>
 <text x="1240" y="1048" font-size="11" text-anchor="middle" fill="#1f2933">Workload update</text>
 <circle cx="449" cy="1046" r="8.5" fill="#ffffff" stroke="#9c5a1c" stroke-width="1.1"/><text x="449" y="1049.5" font-size="9.5" font-weight="600" text-anchor="middle" fill="#9c5a1c">13</text>
 <path d="M2044 1107 L1978 1107 L1978 1129 L2039 1129" fill="none" stroke="#3f6d52" stroke-width="1.5" marker-end="url(#as)"/>
 <text x="1960" y="1108" font-size="11" text-anchor="end" fill="#1f2933"><tspan fill="#6b7785" font-weight="600">14. </tspan>totalRequestsFromAdmission — charges</text>
 <text x="1960" y="1122" font-size="11" text-anchor="end" fill="#1f2933">min(spec.count, granted)</text>
-<text x="1960" y="1136" font-size="9.5" font-family="Menlo, monospace" text-anchor="end" fill="#3f6d52">workload.go:674</text>
+<text x="1960" y="1136" font-size="9.5" font-family="Menlo, monospace" text-anchor="end" fill="#3f6d52">workload.go:790</text>
 <line x1="2041" y1="1203" x2="440" y2="1203" stroke="#25506e" stroke-width="1.7" marker-end="url(#ac)"/>
 <text x="1240" y="1194" font-size="11" text-anchor="middle" fill="#1f2933">flavorsUsage drops</text>
 <circle cx="2031" cy="1192" r="8.5" fill="#ffffff" stroke="#25506e" stroke-width="1.1"/><text x="2031" y="1195.5" font-size="9.5" font-weight="600" text-anchor="middle" fill="#25506e">15</text>

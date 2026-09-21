@@ -5,7 +5,9 @@ Date: 2026-09-16
 
 Four corrections to the two SparkApplication integrations — `pkg/controller/jobs/sparkapplication`
 (Kubeflow, `sparkoperator.k8s.io/v1beta2`) and `pkg/controller/jobs/apachesparkapplication`
-(`spark.apache.org/v1`). Each one replaces a rule that looked reasonable from the CRD with the
+(`spark.apache.org/v1`, designed in
+[`apache-sparkapplication-integration-design.md`](./apache-sparkapplication-integration-design.md)).
+Each one replaces a rule that looked reasonable from the CRD with the
 rule the pod is actually created under.
 
 The governing principle, stated once: **a PodSet must charge what the kubelet will be asked
