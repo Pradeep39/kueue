@@ -157,6 +157,53 @@ operator-side alone. This integration would be disabled, and §§3–7 would not
 Removing the `UnsupportedOperationException` is a precondition of A and a no-op for B. In
 neither case is it sufficient on its own.
 
+### 2d. What of the elastic logic is reusable under an operator-owned Workload
+
+Asked because the executor Pod watch and the slice protocol are the expensive part and it would
+be good not to reimplement them. The dividing line:
+
+**Already owner-agnostic** — keys off Workload and Pod annotations, indifferent to who created
+them: `ReplacedWorkloadSlice` / `FindReplacedSliceTarget`, `Assignment.append`'s delta charging,
+the per-chain cache netting (`sliceChainKey` = namespace + `WorkloadSliceNameAnnotation` +
+owning job UID), `elasticJobUngater` (keys off `constants.PodSetLabel` +
+`WorkloadSliceNameAnnotation` on Pods), and the decrease-only `validateAdmissionUpdate`
+exception.
+
+**Integration-bound** — requires a registered `GenericJob`: the executor Pod watch, whose
+`reconcile.Request`s only the integration's reconciler consumes; `PodSets()`,
+`computeLiveExecutorCount` and `clampToDynamicAllocationBounds`, which are `GenericJob` methods;
+and `EnsureWorkloadSlices` itself, which has **exactly one** production caller
+(`ensureOneWorkload`), reachable only via `ReconcileGenericJob` and gated on
+`workloadslicing.Enabled(jobObject)` — an annotation on the *job*, not the Workload.
+
+So the Workload-level half is already reusable; the job-level half (watch → derive → ensure
+slices) is what must live in a Kueue reconciler.
+
+**Prebuilt workloads do not bridge this — considered and rejected.** Kueue's
+`kueue.x-k8s.io/prebuilt-workload-name` looks like the supported way for an external actor to
+create the Workload while an integration still manages the job, and `ensureOneWorkload`'s
+prebuilt branch even mentions workload slicing. It does not work: the prebuilt branch is checked
+*before* the slice branch and returns, so setting the label **disables** slicing rather than
+enabling it. Its slice-aware line only skips an in-sync check. Every in-tree producer of that
+label is a MultiKueue adapter — where the manager cluster owns the real Workload and does the
+slicing, and the worker's early return is what stops it clobbering the manager's decisions — or
+a pod-owning reconciler (statefulset, leaderworkerset). It was never an
+external-Workload-creation hook.
+
+Making it one is a coherent upstream-Kueue feature request (let the prebuilt branch fall through
+to slicing, and give a prebuilt elastic job a way to supply podSets). It would serve any
+operator-side integration, not just Spark. It is a code change, not configuration.
+
+**A cheaper split, if upstream will take it.** The operator already computes the Dynamic
+Allocation condition in order to throw on it. Having `holdForKueueAdmission` *skip* when
+`spark.dynamicAllocation.enabled=true` would route static applications through upstream's
+factory and Dynamic Allocation ones to this integration, with no application served by both.
+The catch: both sides gate on the same `kueue.x-k8s.io/queue-name` label, so this integration
+would also have to decline static applications, and `IntegrationCallbacks` has no per-object
+opt-out (`CanSupportIntegration` is cluster-level). Small changes on both sides rather than one,
+but far smaller than either A or the prebuilt feature — and it reframes upstream's existing check
+as a delegation rather than asking them to support Dynamic Allocation.
+
 Upstream did implement the lifecycle, not just the field (`SuspendUtils.java`, plus handling
 in `AppInitStep`, `ClusterInitStep`, `EventUtils`, `ApplicationStatus`, and a
 `SparkOperatorConf` knob). It has **no** `AppSuspendStep` and no `StoppedByScheduler`, so the
