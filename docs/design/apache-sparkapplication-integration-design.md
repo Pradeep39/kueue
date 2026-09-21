@@ -61,7 +61,42 @@ handle. None of it is in release `1.0.0`. Two consequences recorded for whoever 
 1. **Dynamic Allocation is the differentiator.** The static gating surface in this package
    overlaps upstream; the elastic path (§6) does not.
 2. **Never enable both.** An operator built from upstream `main` *plus* this integration
-   produces two Workloads for one application.
+   produces two Workloads for one application. Upstream's factory sets
+   `ownerReference.controller = true` on the Workload it creates, and jobframework creates its
+   own under a different name (`newWorkloadName(job, extra)`), so both are charged.
+
+### 2a. Deleting upstream's DA exception would not make upstream's path work
+
+Worth stating explicitly, because the `UnsupportedOperationException` reads like the only thing
+standing in the way. It is not: it is a *correct refusal*, and removing it would turn a clean
+error into silent under-reservation. Verified against upstream `main` on 2026-09-21:
+
+- **The count is frozen at build time.** `buildExecutorPodSet` reads `spark.executor.instances`
+  once (default 2). Dynamic Allocation changes the live Pod count, not `sparkConf`, so the
+  Workload would be admitted at the static number and never track scaling.
+- **After admission the operator stops reconciling the Workload.** `requestAdmission`
+  early-returns on `isAdmitted(workload)` before comparing podSets. The only in-place update in
+  `KueueWorkloadUtils` is the priority class.
+- **Its one reaction to a changed podSet is destructive, and only while pending.** On a
+  `spark.operator/kueue-pod-sets-hash` mismatch it deletes the Workload and returns `STALE`.
+  Delete-and-recreate is the opposite of the slice-replacement protocol, which needs the
+  predecessor to remain in the snapshot so the replacement is charged only the delta.
+- **No gating and no slice awareness anywhere upstream.** No `SchedulingGate` usage and no
+  `workload-slice` references at all. So DA-created executor Pods are never gated — there is no
+  admission control over them, the driver creates them and kube-scheduler places them
+  regardless of quota — and with no `kueue.x-k8s.io/workload-slice-name` annotation
+  `sliceChainKey` returns `""`, so the per-chain netting from #21 never engages and
+  `ReplacedWorkloadSlice` never finds a predecessor.
+
+For the operator to own DA Workloads it would need, in Java: live-Pod-derived counts with a
+debounced Pod watch, slice annotations plus the replacement protocol, gate injection into the
+executor template coordinated with Kueue's ungater, removal of the admitted early-return, and
+in-place scale-down instead of delete-and-recreate — i.e. this design reimplemented. And that
+still would not be sufficient on its own, because in-place scale-down depends on #21's
+decrease-only `validateAdmissionUpdate` relaxation, which lives in Kueue rather than the
+operator.
+
+Nothing in §§3–7 depends on how that question is resolved.
 
 Upstream did implement the lifecycle, not just the field (`SuspendUtils.java`, plus handling
 in `AppInitStep`, `ClusterInitStep`, `EventUtils`, `ApplicationStatus`, and a
