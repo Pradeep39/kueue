@@ -60,10 +60,48 @@ handle. None of it is in release `1.0.0`. Two consequences recorded for whoever 
 
 1. **Dynamic Allocation is the differentiator.** The static gating surface in this package
    overlaps upstream; the elastic path (§6) does not.
-2. **Never enable both.** An operator built from upstream `main` *plus* this integration
-   produces two Workloads for one application. Upstream's factory sets
-   `ownerReference.controller = true` on the Workload it creates, and jobframework creates its
-   own under a different name (`newWorkloadName(job, extra)`), so both are charged.
+2. **The two halves are mutually exclusive, and with upstream `main` the operator's half cannot
+   be switched off.** See §2b — this is stronger than a configuration caution.
+
+### 2b. Upstream's Workload creation collides with this integration, and has no opt-out
+
+The decisive compatibility fact, and the one to settle before pairing this package with an
+operator built from upstream `main`. Established by reading both sides on 2026-09-21; **not
+yet observed on a cluster.**
+
+- **Upstream keys its Workload creation off the same label this integration needs.**
+  `Constants.LABEL_QUEUE_NAME` is `kueue.x-k8s.io/queue-name`, and `AppInitStep`'s
+  `holdForKueueAdmission` runs whenever `KueueWorkloadFactory.hasQueueName(app)` is true. So
+  labelling a SparkApplication for Kueue *is* what triggers the operator's half.
+- **There is no config toggle to disable it.** The only Kueue option in `SparkOperatorConf` is
+  `spark.kubernetes.operator.kueue.workloadInformer.enabled`, which controls whether the
+  operator *watches* Workloads for faster admission notice — not whether it creates them.
+- **jobframework will claim the operator's Workload rather than merely coexist with it.**
+  Upstream builds its Workload with an ownerReference to the SparkApplication and
+  `controller = true`. `FindMatchingWorkloads` lists by the owner index this package registers
+  (`SetupWorkloadOwnerIndex(gvk)`) and keeps any Workload whose controller matches the job's
+  Kind, APIVersion and name — which upstream's does exactly. `EquivalentToWorkload` then
+  compares podSets, and they will not match: different counts (live-derived vs
+  `spark.executor.instances`), and a template carrying the executor scheduling gate. A
+  non-equivalent Workload goes to `toDelete` and **jobframework deletes it**, while the
+  operator's `requestAdmission` recreates it through `getOrCreateSecondaryResource` on its next
+  reconcile.
+
+The expected failure mode is therefore **two controllers deleting each other's Workload in a
+loop**, not two Workloads quietly double-charging. Worse, `holdForKueueAdmission` holds the
+driver until *its* Workload is admitted, so an application in this state would hang rather than
+merely mis-account. (If `EquivalentToWorkload` ever did judge them equivalent, jobframework
+would adopt upstream's Workload instead and the two would then fight over its podSets — broken
+either way.)
+
+**What this costs, and the cheap fix.** Architecture B below needs nothing from the operator but
+`spec.suspend`, which upstream `main` now has natively (SPARK-59475) — so the fork's
+`spark-application-suspend` branch is redundant, but a *new* patch is required to suppress the
+Kueue path. Adding the missing toggle upstream (say
+`spark.kubernetes.operator.kueue.enabled`, defaulting true) is small, obviously reasonable on
+its own terms, and a prerequisite for this package coexisting with a stock operator. It is
+probably the cleanest first upstream contribution, and it is independent of the Dynamic
+Allocation question.
 
 ### 2a. Deleting upstream's DA exception would not make upstream's path work
 
@@ -97,6 +135,27 @@ decrease-only `validateAdmissionUpdate` relaxation, which lives in Kueue rather 
 operator.
 
 Nothing in §§3–7 depends on how that question is resolved.
+
+### 2c. The two architectures, stated once
+
+Pairing this package with a modified upstream operator means choosing one of these. They are
+not combinable, for the reasons in §2b.
+
+**Architecture B — Kueue owns the Workload.** What §§3–7 describe. The operator supplies
+`spec.suspend` and nothing else; Kueue derives counts from live Pods, drives slice replacement,
+and gates executor Pods. Requires suppressing upstream's Kueue path (§2b). Removing upstream's
+Dynamic Allocation exception is **irrelevant** here — the whole factory path stays off.
+
+**Architecture A — the operator owns the Workload.** Upstream's model, extended to Dynamic
+Allocation. Requires, in Java: live-Pod-derived counts with a debounced Pod watch, slice
+annotations and the replacement protocol, scheduling-gate injection coordinated with Kueue's
+ungater, removal of the admitted early-return, and in-place scale-down instead of
+delete-and-recreate. It also still depends on #21's decrease-only `validateAdmissionUpdate`
+relaxation, which lives in Kueue rather than the operator, so it cannot be delivered
+operator-side alone. This integration would be disabled, and §§3–7 would not apply.
+
+Removing the `UnsupportedOperationException` is a precondition of A and a no-op for B. In
+neither case is it sufficient on its own.
 
 Upstream did implement the lifecycle, not just the field (`SuspendUtils.java`, plus handling
 in `AppInitStep`, `ClusterInitStep`, `EventUtils`, `ApplicationStatus`, and a
