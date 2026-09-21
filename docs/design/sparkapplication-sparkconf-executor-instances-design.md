@@ -173,6 +173,58 @@ executors consumes nothing and evades nothing. The check would be near-dead code
 validation added here targets the malformed-value case instead, which is reachable and does
 cause silent mis-accounting.
 
+**Giving the structured field precedence for `dynamicAllocation.enabled`.** Every other
+Kubeflow property resolved here prefers its structured spec field over the equivalent
+`sparkConf` key, so `dynamicAllocationEnabled` reads as an inconsistency:
+
+```go
+if da := j.Spec.DynamicAllocation; da != nil && da.Enabled {
+	return true
+}
+enabled, _ := strconv.ParseBool(j.Spec.SparkConf["spark.dynamicAllocation.enabled"])
+return enabled
+```
+
+A structured `enabled: false` alongside `sparkConf` `"true"` yields **true**, which looks like
+a bug. It is not fixable, because the CRD leaves no room:
+
+```go
+// Enabled controls whether dynamic allocation is enabled or not.
+Enabled bool `json:"enabled,omitempty"`
+```
+
+`DynamicAllocation.Enabled` is a **non-pointer `bool` with `omitempty`**, so an explicit
+`enabled: false` is indistinguishable from omitting the field. Honouring "explicit false"
+would require `kubeflow/spark-operator` to make it `*bool` — an upstream API change, and one
+this integration deliberately avoids taking a dependency on (see
+[`spark-operator-parallelism-dependency.md`](./spark-operator-parallelism-dependency.md), which
+records the last such dependency being removed rather than added).
+
+Letting the structured surface win regardless would misread an ordinary manifest:
+
+```yaml
+spec:
+  dynamicAllocation:
+    minExecutors: 3          # enabled omitted, set through sparkConf instead
+  sparkConf:
+    spark.dynamicAllocation.enabled: "true"
+```
+
+Because `dynamicAllocation` is non-nil but `Enabled` reads false, this would be classified as a
+**static** application — sizing the executor PodSet from `spec.executor.instances` while
+Dynamic Allocation actually scales the pods. Under-reserving because a bool could not be told
+apart from its zero value is a worse failure than over-reading enablement from either surface.
+
+The OR is also the safer direction on its own terms: treating an application as elastic when
+either surface says so routes accounting through the live-Pod derivation, which tracks reality,
+rather than through a static count that Dynamic Allocation would leave stale. The cost of a
+false positive is bounded — an application that is genuinely static gets the elastic path, whose
+initial count still resolves through the same `numInitialExecutors` ladder.
+
+Scope note: this applies to the Kubeflow CRD. The Apache integration resolves
+`staticExecutorCount` conf-key-first, so "structured field first" is not a package-wide rule to
+be consistent with in the first place.
+
 ## 6. Testing
 
 `TestLiveExecutorCount` covers: sparkConf-only count, the structured field taking precedence
@@ -184,6 +236,13 @@ a malformed conf value, the Dynamic Allocation path falling back to the `sparkCo
 the fallback to `spec.executor.memory` when the template declares neither. (Superseded: that
 test is now `TestAddMemoryIgnoresThePodTemplate`, asserting the opposite — see
 [`spark-podset-align-with-spark-design.md`](./spark-podset-align-with-spark-design.md) §1.)
+
+`TestDynamicAllocationEnabled` pins the OR semantics from §5: neither surface, each surface
+alone, an unparseable `sparkConf` value, and the load-bearing case of bounds declared
+structurally with enablement through `sparkConf`. It is a tripwire, not coverage of new
+behaviour — a future "consistency" cleanup that gives the structured field precedence fails a
+named test with the reasoning attached, instead of silently reclassifying elastic applications
+as static.
 
 Negative-controlled: replacing the three-way maximum with a precedence ladder fails
 `initial_count_is_the_largest_of_instances,_initialExecutors_and_minExecutors`; ignoring the

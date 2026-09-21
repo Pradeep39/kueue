@@ -109,10 +109,18 @@ func (j *SparkApplication) numInitialExecutors() (int32, error) {
 	return defaultExecutorInstances, nil
 }
 
-// dynamicAllocationEnabled reports whether Dynamic Allocation is enabled, checking
-// both the structured spec.dynamicAllocation.enabled field and the equivalent raw
+// dynamicAllocationEnabled reports whether Dynamic Allocation is enabled, checking both the
+// structured spec.dynamicAllocation.enabled field and the equivalent raw
 // spark.dynamicAllocation.enabled key in spec.sparkConf, since Spark Operator supports
 // configuring Dynamic Allocation through either.
+//
+// This is deliberately an OR, not the structured-field-before-sparkConf precedence the other
+// Kubeflow properties here use: DynamicAllocation.Enabled is a non-pointer bool with
+// omitempty, so an explicit "enabled: false" cannot be told from an omitted one, and letting
+// the structured surface win would read a bounds-here-enablement-in-sparkConf manifest as
+// static and under-reserve. TestDynamicAllocationEnabled pins this; see
+// docs/design/sparkapplication-sparkconf-executor-instances-design.md section 5 for why the
+// apparent inconsistency is not fixable without an upstream CRD change.
 func (j *SparkApplication) dynamicAllocationEnabled() bool {
 	if da := j.Spec.DynamicAllocation; da != nil && da.Enabled {
 		return true
