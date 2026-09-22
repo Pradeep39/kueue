@@ -65,9 +65,11 @@ the two surfaces the operator accepts — the same asymmetry `dynamicAllocationE
 **This is upstream behavior, not introduced by the elastic-scaling work.**
 `numInitialExecutors` is byte-identical to its pre-PR-#16 version
 (`git show cc69cceaa^`), so `kubernetes-sigs/kueue` has the same hole. Kueue's own
-`pkg/controller/jobs/apachesparkapplication` integration already gets this right:
-`staticExecutorCount()` reads the conf key first, then `instanceConfig.InitExecutors`, then
-Spark's default of 2.
+`pkg/controller/jobs/apachesparkapplication` integration already got this right:
+`staticExecutorCount()` read the conf key first, then `instanceConfig.InitExecutors`, then
+Spark's default of 2. (That package has since been removed; the rule is carried forward as a
+requirement in [`apache-sparkapplication-integration-design.md`](./apache-sparkapplication-integration-design.md)
+§6.)
 
 ## 3. Fix
 
@@ -221,11 +223,11 @@ rather than through a static count that Dynamic Allocation would leave stale. Th
 false positive is bounded — an application that is genuinely static gets the elastic path, whose
 initial count still resolves through the same `numInitialExecutors` ladder.
 
-Scope note: this applies to the Kubeflow CRD. The Apache integration resolves
-`staticExecutorCount` conf-key-first, so "structured field first" is not a package-wide rule to
-be consistent with in the first place — see
+Scope note: this applies to the Kubeflow CRD. On the Apache CRD the conf key wins instead,
+because `instanceConfig` never reaches Spark — so "structured field first" was never a
+package-wide rule to be consistent with. See
 [`apache-sparkapplication-integration-design.md`](./apache-sparkapplication-integration-design.md)
-§5 for why that CRD inverts it.
+§6 ("Resource arithmetic to carry over").
 
 ## 6. Testing
 

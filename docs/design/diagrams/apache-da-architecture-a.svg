@@ -166,8 +166,8 @@
 <circle cx="2299" cy="2158" r="8.5" fill="#ffffff" stroke="#25506e" stroke-width="1.1"/><text x="2299" y="2161.5" font-size="9.5" font-weight="600" text-anchor="middle" fill="#25506e">23</text>
 <rect x="44" y="2232" width="2392" height="95" rx="4" fill="#fdf6e3" stroke="#d9bc7a"/>
 <text x="56" y="2249" font-size="11" fill="#7a5a12">Scale-down is deliberately not drawn. It is two in-place patches - spec.podSets[].count and status.admission - and</text>
-<text x="56" y="2264" font-size="11" fill="#7a5a12">the second is only permitted by the decrease-only, elastic-only exception in Kueue's own workload webhook. That</text>
-<text x="56" y="2279" font-size="11" fill="#7a5a12">exception is KUEUE-side and cannot be delivered from the operator, so this architecture is not completable</text>
-<text x="56" y="2294" font-size="11" fill="#7a5a12">operator-side alone. Delete-and-recreate is not a substitute: it drops the predecessor the scheduler needs in order</text>
-<text x="56" y="2309" font-size="11" fill="#7a5a12">to charge only the delta.</text>
+<text x="56" y="2264" font-size="11" fill="#7a5a12">the second is only permitted by the decrease-only, elastic-only exception in Kueue's workload webhook. That</text>
+<text x="56" y="2279" font-size="11" fill="#7a5a12">exception already exists and is keyed off the WORKLOAD's kueue.x-k8s.io/elastic-job annotation, not off any job, so</text>
+<text x="56" y="2294" font-size="11" fill="#7a5a12">the operator can perform both patches with no further Kueue change. What it must NOT do is delete and recreate: that</text>
+<text x="56" y="2309" font-size="11" fill="#7a5a12">drops the predecessor the scheduler needs in order to charge only the delta.</text>
 </svg>

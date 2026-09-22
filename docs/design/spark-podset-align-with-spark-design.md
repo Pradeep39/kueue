@@ -3,12 +3,17 @@
 Status: proposed
 Date: 2026-09-16
 
-Four corrections to the two SparkApplication integrations — `pkg/controller/jobs/sparkapplication`
-(Kubeflow, `sparkoperator.k8s.io/v1beta2`) and `pkg/controller/jobs/apachesparkapplication`
-(`spark.apache.org/v1`, designed in
-[`apache-sparkapplication-integration-design.md`](./apache-sparkapplication-integration-design.md)).
-Each one replaces a rule that looked reasonable from the CRD with the
-rule the pod is actually created under.
+Four corrections to what were then the two SparkApplication integrations —
+`pkg/controller/jobs/sparkapplication` (Kubeflow, `sparkoperator.k8s.io/v1beta2`) and
+`pkg/controller/jobs/apachesparkapplication` (`spark.apache.org/v1`). Each one replaces a rule
+that looked reasonable from the CRD with the rule the pod is actually created under.
+
+> **Note:** the Apache integration has since been **removed** — quota management for
+> `spark.apache.org/v1` follows an operator-owned Workload model instead. See
+> [`apache-sparkapplication-integration-design.md`](./apache-sparkapplication-integration-design.md).
+> The corrections below still stand as statements about how Spark builds a pod, and §6 of that
+> document carries them forward as requirements on the operator-side implementation. Only the
+> Kubeflow half of each fix is still live code.
 
 The governing principle, stated once: **a PodSet must charge what the kubelet will be asked
 for.** Where two surfaces disagree, the one Spark reads wins — not the one that looks most

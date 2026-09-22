@@ -98,10 +98,11 @@ A = seq([
                "kube-scheduler then places them", "as-is"),
     note("Scale-down is deliberately not drawn. It is two in-place patches - spec.podSets[].count "
          "and status.admission - and the second is only permitted by the decrease-only, "
-         "elastic-only exception in Kueue's own workload webhook. That exception is KUEUE-side and "
-         "cannot be delivered from the operator, so this architecture is not completable "
-         "operator-side alone. Delete-and-recreate is not a substitute: it drops the predecessor "
-         "the scheduler needs in order to charge only the delta."),
+         "elastic-only exception in Kueue's workload webhook. That exception already exists and is "
+         "keyed off the WORKLOAD's kueue.x-k8s.io/elastic-job annotation, not off any job, so the "
+         "operator can perform both patches with no further Kueue change. What it must NOT do is "
+         "delete and recreate: that drops the predecessor the scheduler needs in order to charge "
+         "only the delta."),
 ])
 
 if __name__ == "__main__":
