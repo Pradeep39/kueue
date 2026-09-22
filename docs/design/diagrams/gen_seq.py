@@ -60,7 +60,7 @@ def esc(s):
     return html.escape(s, quote=False)
 
 
-def build(title, subtitle, lanes, msgs, out):
+def build(title, subtitle, lanes, msgs, out, extra_legend=None):
     n = len(lanes)
     width = MARGIN * 2 + LANE_W * n
     centers = [MARGIN + LANE_W // 2 + i * LANE_W for i in range(n)]
@@ -115,13 +115,29 @@ def build(title, subtitle, lanes, msgs, out):
         )
     p.append('</g>')
 
-    for i, (name, file) in enumerate(lanes):
+    # Optional second legend, for diagrams that tint lane headers to mean something -
+    # e.g. which process a component is physically deployed in. List of (bg, bd, label).
+    # Sits immediately left of the arrow legend, in the same band, to stay clear of the title.
+    if extra_legend:
+        ex = lx - 348
+        p.append(f'<g font-size="10.5" fill="{MUTED}">')
+        for i, (bg, bd, lab) in enumerate(extra_legend):
+            yy = 24 + i * 15
+            p.append(
+                f'<rect x="{ex}" y="{yy}" width="22" height="11" rx="2.5" fill="{bg}" stroke="{bd}"/>'
+                f'<text x="{ex + 29}" y="{yy + 9}">{esc(lab)}</text>'
+            )
+        p.append('</g>')
+
+    for i, lane in enumerate(lanes):
+        name, file = lane[0], lane[1]
+        head_bg, head_bd = lane[2] if len(lane) > 2 else (HEAD_BG, HEAD_BD)
         cx = centers[i]
         x = cx - LANE_W // 2 + 8
         w = LANE_W - 16
         p.append(
             f'<rect x="{x}" y="{HEAD_TOP}" width="{w}" height="{HEAD_H}" rx="5" '
-            f'fill="{HEAD_BG}" stroke="{HEAD_BD}"/>'
+            f'fill="{head_bg}" stroke="{head_bd}"/>'
         )
         nl = wrap(name, 26)
         ty = HEAD_TOP + 18 if len(nl) > 1 else HEAD_TOP + 22
@@ -461,14 +477,22 @@ DOWN = seq([
 # Write beside this script, so a regeneration updates the committed SVGs/PNGs in place.
 d = Path(__file__).resolve().parent
 
-for name, title, sub, lanes, msgs in [
-    ("kueue-da-upscale", "Kueue: how a Spark Dynamic Allocation scale-UP is inferred",
-     "Elastic SparkApplication + ElasticJobsViaWorkloadSlices — Pradeep39/kueue", UP_LANES, UP),
-    ("kueue-da-downscale", "Kueue: how a Spark Dynamic Allocation scale-DOWN is inferred",
-     "Elastic SparkApplication + ElasticJobsViaWorkloadSlices — Pradeep39/kueue", DOWN_LANES, DOWN),
-]:
-    svg = d / f"{name}.svg"
-    build(title, sub, lanes, msgs, svg)
-    subprocess.run(["rsvg-convert", "-w", "2400", "-o", str(d / f"{name}.png"), str(svg)],
+
+def render(name, title, sub, lanes, msgs, out_dir=None, extra_legend=None):
+    """Emit one SVG beside this script and shell out to rsvg-convert for the PNG."""
+    out_dir = out_dir or d
+    svg = out_dir / f"{name}.svg"
+    build(title, sub, lanes, msgs, svg, extra_legend=extra_legend)
+    subprocess.run(["rsvg-convert", "-w", "2400", "-o", str(out_dir / f"{name}.png"), str(svg)],
                    check=True)
-    print(f"{svg}  ->  {d / (name + '.png')}")
+    print(f"{svg}  ->  {out_dir / (name + '.png')}")
+
+
+# Guarded so sibling generators can import build()/call()/event()/self_()/note()/seq()/render()
+# without regenerating these two.
+if __name__ == "__main__":
+    SUB = "Elastic SparkApplication + ElasticJobsViaWorkloadSlices — Pradeep39/kueue"
+    render("kueue-da-upscale",
+           "Kueue: how a Spark Dynamic Allocation scale-UP is inferred", SUB, UP_LANES, UP)
+    render("kueue-da-downscale",
+           "Kueue: how a Spark Dynamic Allocation scale-DOWN is inferred", SUB, DOWN_LANES, DOWN)

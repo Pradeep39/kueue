@@ -147,7 +147,9 @@ and gates executor Pods. Requires suppressing upstream's Kueue path (§2b). Remo
 Dynamic Allocation exception is **irrelevant** here — the whole factory path stays off.
 
 **Architecture A — the operator owns the Workload.** Upstream's model, extended to Dynamic
-Allocation. Requires, in Java: live-Pod-derived counts with a debounced Pod watch, slice
+Allocation. Traced lane by lane, with each component's deployment side marked, in
+[`diagrams/apache-da-architecture-a.png`](./diagrams/apache-da-architecture-a.png). Requires, in
+Java: live-Pod-derived counts with a debounced Pod watch, slice
 annotations and the replacement protocol, scheduling-gate injection coordinated with Kueue's
 ungater, removal of the admitted early-return, and in-place scale-down instead of
 delete-and-recreate. It also still depends on #21's decrease-only `validateAdmissionUpdate`
