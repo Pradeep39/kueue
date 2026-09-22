@@ -74,7 +74,10 @@ def build(title, subtitle, lanes, msgs, out, extra_legend=None):
         elif m["kind"] == "self":
             extra = 20 + 14 * (len(wrap(m["text"], SELF_WRAP)) - 1) + (12 if m.get("ref") else 0)
         else:
-            extra = 15 * (len(wrap(m["text"], 42)) - 1)
+            # The ref line is drawn above the arrow like the text is, so it needs its own
+            # 12px reserved here too - the self_ branch above already does this. Without it,
+            # consecutive multi-line arrows that both carry refs overlap.
+            extra = 15 * (len(wrap(m["text"], 42)) - 1) + (12 if m.get("ref") else 0)
         y += STEP + extra
     height = y + 40
 

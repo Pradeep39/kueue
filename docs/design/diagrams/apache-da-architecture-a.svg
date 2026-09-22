@@ -1,6 +1,6 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="2480" height="2370" viewBox="0 0 2480 2370" font-family="Helvetica Neue, Helvetica, Arial, sans-serif">
+<svg xmlns="http://www.w3.org/2000/svg" width="2480" height="2418" viewBox="0 0 2480 2418" font-family="Helvetica Neue, Helvetica, Arial, sans-serif">
 <defs><marker id="ac" viewBox="0 0 10 8" refX="9" refY="4" markerWidth="9" markerHeight="7" orient="auto"><path d="M0 0 L10 4 L0 8 z" fill="#25506e"/></marker><marker id="ae" viewBox="0 0 10 8" refX="9" refY="4" markerWidth="9" markerHeight="7" orient="auto"><path d="M0 0 L10 4 L0 8 z" fill="#9c5a1c"/></marker><marker id="as" viewBox="0 0 10 8" refX="9" refY="4" markerWidth="8" markerHeight="6" orient="auto"><path d="M0 0 L10 4 L0 8 z" fill="#3f6d52"/></marker></defs>
-<rect width="2480" height="2370" fill="#ffffff"/>
+<rect width="2480" height="2418" fill="#ffffff"/>
 <text x="34" y="38" font-size="21" font-weight="600" fill="#1f2933">PROPOSED: operator-owned Workload for a Dynamic Allocation SparkApplication</text>
 <text x="34" y="60" font-size="12.5" fill="#6b7785">Architecture A — apache/spark-kubernetes-operator + Pradeep39/kueue · lane tint and sublabel give the deployment side; sublabel also gives change status</text>
 <g font-size="10.5" fill="#6b7785">
@@ -17,48 +17,48 @@
 <text x="168" y="118" font-size="12.5" font-weight="600" text-anchor="middle" fill="#1f2933">Spark driver (DA)</text>
 <text x="168" y="134" font-size="9.5" font-family="Menlo, monospace" text-anchor="middle" fill="#6b7785">SPARK · driver pod · as-is ·</text>
 <text x="168" y="145" font-size="9.5" font-family="Menlo, monospace" text-anchor="middle" fill="#6b7785">ExecutorAllocationManager</text>
-<line x1="168" y1="164" x2="168" y2="2346" stroke="#c3cbd5" stroke-width="1.2" stroke-dasharray="4 5"/>
+<line x1="168" y1="164" x2="168" y2="2394" stroke="#c3cbd5" stroke-width="1.2" stroke-dasharray="4 5"/>
 <rect x="310" y="96" width="252" height="68" rx="5" fill="#f2f4f6" stroke="#c2cad3"/>
 <text x="436" y="118" font-size="12.5" font-weight="600" text-anchor="middle" fill="#1f2933">kube-apiserver</text>
 <text x="436" y="134" font-size="9.5" font-family="Menlo, monospace" text-anchor="middle" fill="#6b7785">CLUSTER · control plane</text>
-<line x1="436" y1="164" x2="436" y2="2346" stroke="#c3cbd5" stroke-width="1.2" stroke-dasharray="4 5"/>
+<line x1="436" y1="164" x2="436" y2="2394" stroke="#c3cbd5" stroke-width="1.2" stroke-dasharray="4 5"/>
 <rect x="578" y="96" width="252" height="68" rx="5" fill="#fdf1e0" stroke="#dcb375"/>
 <text x="704" y="118" font-size="12.5" font-weight="600" text-anchor="middle" fill="#1f2933">executor Pod watch</text>
 <text x="704" y="134" font-size="9.5" font-family="Menlo, monospace" text-anchor="middle" fill="#6b7785">OPERATOR · Java · NEW ·</text>
 <text x="704" y="145" font-size="9.5" font-family="Menlo, monospace" text-anchor="middle" fill="#6b7785">label-keyed watch + debounce</text>
-<line x1="704" y1="164" x2="704" y2="2346" stroke="#c3cbd5" stroke-width="1.2" stroke-dasharray="4 5"/>
+<line x1="704" y1="164" x2="704" y2="2394" stroke="#c3cbd5" stroke-width="1.2" stroke-dasharray="4 5"/>
 <rect x="846" y="96" width="252" height="68" rx="5" fill="#fdf1e0" stroke="#dcb375"/>
 <text x="972" y="118" font-size="12.5" font-weight="600" text-anchor="middle" fill="#1f2933">SparkAppReconciler</text>
 <text x="972" y="134" font-size="9.5" font-family="Menlo, monospace" text-anchor="middle" fill="#6b7785">OPERATOR · Java · CHANGE ·</text>
 <text x="972" y="145" font-size="9.5" font-family="Menlo, monospace" text-anchor="middle" fill="#6b7785">reconcilesteps/AppInitStep.java</text>
-<line x1="972" y1="164" x2="972" y2="2346" stroke="#c3cbd5" stroke-width="1.2" stroke-dasharray="4 5"/>
+<line x1="972" y1="164" x2="972" y2="2394" stroke="#c3cbd5" stroke-width="1.2" stroke-dasharray="4 5"/>
 <rect x="1114" y="96" width="252" height="68" rx="5" fill="#fdf1e0" stroke="#dcb375"/>
 <text x="1240" y="118" font-size="12.5" font-weight="600" text-anchor="middle" fill="#1f2933">live executor count</text>
 <text x="1240" y="134" font-size="9.5" font-family="Menlo, monospace" text-anchor="middle" fill="#6b7785">OPERATOR · Java · NEW · count</text>
 <text x="1240" y="145" font-size="9.5" font-family="Menlo, monospace" text-anchor="middle" fill="#6b7785">derivation + DA clamp</text>
-<line x1="1240" y1="164" x2="1240" y2="2346" stroke="#c3cbd5" stroke-width="1.2" stroke-dasharray="4 5"/>
+<line x1="1240" y1="164" x2="1240" y2="2394" stroke="#c3cbd5" stroke-width="1.2" stroke-dasharray="4 5"/>
 <rect x="1382" y="96" width="252" height="68" rx="5" fill="#fdf1e0" stroke="#dcb375"/>
 <text x="1508" y="118" font-size="12.5" font-weight="600" text-anchor="middle" fill="#1f2933">Workload factory</text>
 <text x="1508" y="134" font-size="9.5" font-family="Menlo, monospace" text-anchor="middle" fill="#6b7785">OPERATOR · Java · CHANGE ·</text>
 <text x="1508" y="145" font-size="9.5" font-family="Menlo, monospace" text-anchor="middle" fill="#6b7785">kueue/KueueWorkloadFactory.java</text>
 <text x="1508" y="156" font-size="9.5" font-family="Menlo, monospace" text-anchor="middle" fill="#6b7785">+ Utils</text>
-<line x1="1508" y1="164" x2="1508" y2="2346" stroke="#c3cbd5" stroke-width="1.2" stroke-dasharray="4 5"/>
+<line x1="1508" y1="164" x2="1508" y2="2394" stroke="#c3cbd5" stroke-width="1.2" stroke-dasharray="4 5"/>
 <rect x="1650" y="96" width="252" height="68" rx="5" fill="#e6eff6" stroke="#8fb2cb"/>
 <text x="1776" y="118" font-size="12.5" font-weight="600" text-anchor="middle" fill="#1f2933">Scheduler + flavorassigner</text>
 <text x="1776" y="134" font-size="9.5" font-family="Menlo, monospace" text-anchor="middle" fill="#6b7785">KUEUE · Go · as-is ·</text>
 <text x="1776" y="145" font-size="9.5" font-family="Menlo, monospace" text-anchor="middle" fill="#6b7785">scheduler/scheduler.go</text>
-<line x1="1776" y1="164" x2="1776" y2="2346" stroke="#c3cbd5" stroke-width="1.2" stroke-dasharray="4 5"/>
+<line x1="1776" y1="164" x2="1776" y2="2394" stroke="#c3cbd5" stroke-width="1.2" stroke-dasharray="4 5"/>
 <rect x="1918" y="96" width="252" height="68" rx="5" fill="#e6eff6" stroke="#8fb2cb"/>
 <text x="2044" y="118" font-size="12.5" font-weight="600" text-anchor="middle" fill="#1f2933">scheduler cache</text>
 <text x="2044" y="134" font-size="9.5" font-family="Menlo, monospace" text-anchor="middle" fill="#6b7785">KUEUE · Go · as-is ·</text>
 <text x="2044" y="145" font-size="9.5" font-family="Menlo, monospace" text-anchor="middle" fill="#6b7785">cache/scheduler/clusterqueue.go</text>
-<line x1="2044" y1="164" x2="2044" y2="2346" stroke="#c3cbd5" stroke-width="1.2" stroke-dasharray="4 5"/>
+<line x1="2044" y1="164" x2="2044" y2="2394" stroke="#c3cbd5" stroke-width="1.2" stroke-dasharray="4 5"/>
 <rect x="2186" y="96" width="252" height="68" rx="5" fill="#e6eff6" stroke="#8fb2cb"/>
 <text x="2312" y="118" font-size="12.5" font-weight="600" text-anchor="middle" fill="#1f2933">elasticJobUngater</text>
 <text x="2312" y="134" font-size="9.5" font-family="Menlo, monospace" text-anchor="middle" fill="#6b7785">KUEUE · Go · as-is ·</text>
 <text x="2312" y="145" font-size="9.5" font-family="Menlo, monospace" text-anchor="middle" fill="#6b7785">elasticjobs/elastic_job_ungater.</text>
 <text x="2312" y="156" font-size="9.5" font-family="Menlo, monospace" text-anchor="middle" fill="#6b7785">go</text>
-<line x1="2312" y1="164" x2="2312" y2="2346" stroke="#c3cbd5" stroke-width="1.2" stroke-dasharray="4 5"/>
+<line x1="2312" y1="164" x2="2312" y2="2394" stroke="#c3cbd5" stroke-width="1.2" stroke-dasharray="4 5"/>
 <rect x="44" y="202" width="2392" height="95" rx="4" fill="#fdf6e3" stroke="#d9bc7a"/>
 <text x="56" y="219" font-size="11" fill="#7a5a12">Precondition, and the first thing that has to be built: the executor pod template must already carry</text>
 <text x="56" y="234" font-size="11" fill="#7a5a12">kueue.x-k8s.io/elastic-job as a scheduling gate, plus the PodSet label and the workload-slice-name annotation. In</text>
@@ -136,38 +136,38 @@
 <text x="1106" y="1649" font-size="11" text-anchor="middle" fill="#1f2933">status.admission</text>
 <text x="1106" y="1664" font-size="9.5" font-family="Menlo, monospace" text-anchor="middle" fill="#25506e">as-is</text>
 <circle cx="1763" cy="1659" r="8.5" fill="#ffffff" stroke="#25506e" stroke-width="1.1"/><text x="1763" y="1662.5" font-size="9.5" font-weight="600" text-anchor="middle" fill="#25506e">17</text>
-<line x1="1779" y1="1735" x2="2040" y2="1735" stroke="#25506e" stroke-width="1.7" marker-end="url(#ac)"/>
-<text x="1910" y="1714" font-size="11" text-anchor="middle" fill="#1f2933">AddOrUpdateWorkload</text>
-<text x="1910" y="1729" font-size="9.5" font-family="Menlo, monospace" text-anchor="middle" fill="#25506e">as-is</text>
-<circle cx="1789" cy="1724" r="8.5" fill="#ffffff" stroke="#25506e" stroke-width="1.1"/><text x="1789" y="1727.5" font-size="9.5" font-weight="600" text-anchor="middle" fill="#25506e">18</text>
-<path d="M2044 1785 L2110 1785 L2110 1807 L2049 1807" fill="none" stroke="#3f6d52" stroke-width="1.5" marker-end="url(#as)"/>
-<text x="2128" y="1772" font-size="11" text-anchor="start" fill="#1f2933"><tspan fill="#6b7785" font-weight="600">19. </tspan>sliceChainKey / reconcileSliceGroup charge</text>
-<text x="2128" y="1786" font-size="11" text-anchor="start" fill="#1f2933">only the chain tip. Key is namespace + slice</text>
-<text x="2128" y="1800" font-size="11" text-anchor="start" fill="#1f2933">name + owning job UID, so the ownerReference</text>
-<text x="2128" y="1814" font-size="11" text-anchor="start" fill="#1f2933">must be right</text>
-<text x="2128" y="1828" font-size="9.5" font-family="Menlo, monospace" text-anchor="start" fill="#3f6d52">as-is</text>
-<line x1="1773" y1="1909" x2="440" y2="1909" stroke="#25506e" stroke-width="1.7" marker-end="url(#ac)"/>
-<text x="1106" y="1888" font-size="11" text-anchor="middle" fill="#1f2933">Finish the predecessor slice</text>
-<text x="1106" y="1903" font-size="9.5" font-family="Menlo, monospace" text-anchor="middle" fill="#25506e">as-is</text>
-<circle cx="1763" cy="1898" r="8.5" fill="#ffffff" stroke="#25506e" stroke-width="1.1"/><text x="1763" y="1901.5" font-size="9.5" font-weight="600" text-anchor="middle" fill="#25506e">20</text>
-<line x1="439" y1="1959" x2="2308" y2="1959" stroke="#9c5a1c" stroke-width="1.7" marker-end="url(#ae)" stroke-dasharray="6 4"/>
-<text x="1374" y="1950" font-size="11" text-anchor="middle" fill="#1f2933">Workload update event</text>
-<circle cx="449" cy="1948" r="8.5" fill="#ffffff" stroke="#9c5a1c" stroke-width="1.1"/><text x="449" y="1951.5" font-size="9.5" font-weight="600" text-anchor="middle" fill="#9c5a1c">21</text>
-<path d="M2312 2009 L2246 2009 L2246 2031 L2307 2031" fill="none" stroke="#3f6d52" stroke-width="1.5" marker-end="url(#as)"/>
-<text x="2228" y="1996" font-size="11" text-anchor="end" fill="#1f2933"><tspan fill="#6b7785" font-weight="600">22. </tspan>podsToUngate — room = granted -</text>
-<text x="2228" y="2010" font-size="11" text-anchor="end" fill="#1f2933">alreadyUngated. Reads the PodSet label and</text>
-<text x="2228" y="2024" font-size="11" text-anchor="end" fill="#1f2933">slice annotation OFF THE PODS, which is why</text>
-<text x="2228" y="2038" font-size="11" text-anchor="end" fill="#1f2933">the operator must stamp them</text>
-<text x="2228" y="2052" font-size="9.5" font-family="Menlo, monospace" text-anchor="end" fill="#3f6d52">as-is</text>
-<line x1="2309" y1="2133" x2="440" y2="2133" stroke="#25506e" stroke-width="1.7" marker-end="url(#ac)"/>
-<text x="1374" y="2097" font-size="11" text-anchor="middle" fill="#1f2933">remove the gate from exactly `room` Pods;</text>
-<text x="1374" y="2112" font-size="11" text-anchor="middle" fill="#1f2933">kube-scheduler then places them</text>
-<text x="1374" y="2127" font-size="9.5" font-family="Menlo, monospace" text-anchor="middle" fill="#25506e">as-is</text>
-<circle cx="2299" cy="2122" r="8.5" fill="#ffffff" stroke="#25506e" stroke-width="1.1"/><text x="2299" y="2125.5" font-size="9.5" font-weight="600" text-anchor="middle" fill="#25506e">23</text>
-<rect x="44" y="2184" width="2392" height="95" rx="4" fill="#fdf6e3" stroke="#d9bc7a"/>
-<text x="56" y="2201" font-size="11" fill="#7a5a12">Scale-down is deliberately not drawn. It is two in-place patches - spec.podSets[].count and status.admission - and</text>
-<text x="56" y="2216" font-size="11" fill="#7a5a12">the second is only permitted by the decrease-only, elastic-only exception in Kueue's own workload webhook. That</text>
-<text x="56" y="2231" font-size="11" fill="#7a5a12">exception is KUEUE-side and cannot be delivered from the operator, so this architecture is not completable</text>
-<text x="56" y="2246" font-size="11" fill="#7a5a12">operator-side alone. Delete-and-recreate is not a substitute: it drops the predecessor the scheduler needs in order</text>
-<text x="56" y="2261" font-size="11" fill="#7a5a12">to charge only the delta.</text>
+<line x1="1779" y1="1747" x2="2040" y2="1747" stroke="#25506e" stroke-width="1.7" marker-end="url(#ac)"/>
+<text x="1910" y="1726" font-size="11" text-anchor="middle" fill="#1f2933">AddOrUpdateWorkload</text>
+<text x="1910" y="1741" font-size="9.5" font-family="Menlo, monospace" text-anchor="middle" fill="#25506e">as-is</text>
+<circle cx="1789" cy="1736" r="8.5" fill="#ffffff" stroke="#25506e" stroke-width="1.1"/><text x="1789" y="1739.5" font-size="9.5" font-weight="600" text-anchor="middle" fill="#25506e">18</text>
+<path d="M2044 1809 L2110 1809 L2110 1831 L2049 1831" fill="none" stroke="#3f6d52" stroke-width="1.5" marker-end="url(#as)"/>
+<text x="2128" y="1796" font-size="11" text-anchor="start" fill="#1f2933"><tspan fill="#6b7785" font-weight="600">19. </tspan>sliceChainKey / reconcileSliceGroup charge</text>
+<text x="2128" y="1810" font-size="11" text-anchor="start" fill="#1f2933">only the chain tip. Key is namespace + slice</text>
+<text x="2128" y="1824" font-size="11" text-anchor="start" fill="#1f2933">name + owning job UID, so the ownerReference</text>
+<text x="2128" y="1838" font-size="11" text-anchor="start" fill="#1f2933">must be right</text>
+<text x="2128" y="1852" font-size="9.5" font-family="Menlo, monospace" text-anchor="start" fill="#3f6d52">as-is</text>
+<line x1="1773" y1="1933" x2="440" y2="1933" stroke="#25506e" stroke-width="1.7" marker-end="url(#ac)"/>
+<text x="1106" y="1912" font-size="11" text-anchor="middle" fill="#1f2933">Finish the predecessor slice</text>
+<text x="1106" y="1927" font-size="9.5" font-family="Menlo, monospace" text-anchor="middle" fill="#25506e">as-is</text>
+<circle cx="1763" cy="1922" r="8.5" fill="#ffffff" stroke="#25506e" stroke-width="1.1"/><text x="1763" y="1925.5" font-size="9.5" font-weight="600" text-anchor="middle" fill="#25506e">20</text>
+<line x1="439" y1="1995" x2="2308" y2="1995" stroke="#9c5a1c" stroke-width="1.7" marker-end="url(#ae)" stroke-dasharray="6 4"/>
+<text x="1374" y="1986" font-size="11" text-anchor="middle" fill="#1f2933">Workload update event</text>
+<circle cx="449" cy="1984" r="8.5" fill="#ffffff" stroke="#9c5a1c" stroke-width="1.1"/><text x="449" y="1987.5" font-size="9.5" font-weight="600" text-anchor="middle" fill="#9c5a1c">21</text>
+<path d="M2312 2045 L2246 2045 L2246 2067 L2307 2067" fill="none" stroke="#3f6d52" stroke-width="1.5" marker-end="url(#as)"/>
+<text x="2228" y="2032" font-size="11" text-anchor="end" fill="#1f2933"><tspan fill="#6b7785" font-weight="600">22. </tspan>podsToUngate — room = granted -</text>
+<text x="2228" y="2046" font-size="11" text-anchor="end" fill="#1f2933">alreadyUngated. Reads the PodSet label and</text>
+<text x="2228" y="2060" font-size="11" text-anchor="end" fill="#1f2933">slice annotation OFF THE PODS, which is why</text>
+<text x="2228" y="2074" font-size="11" text-anchor="end" fill="#1f2933">the operator must stamp them</text>
+<text x="2228" y="2088" font-size="9.5" font-family="Menlo, monospace" text-anchor="end" fill="#3f6d52">as-is</text>
+<line x1="2309" y1="2169" x2="440" y2="2169" stroke="#25506e" stroke-width="1.7" marker-end="url(#ac)"/>
+<text x="1374" y="2133" font-size="11" text-anchor="middle" fill="#1f2933">remove the gate from exactly `room` Pods;</text>
+<text x="1374" y="2148" font-size="11" text-anchor="middle" fill="#1f2933">kube-scheduler then places them</text>
+<text x="1374" y="2163" font-size="9.5" font-family="Menlo, monospace" text-anchor="middle" fill="#25506e">as-is</text>
+<circle cx="2299" cy="2158" r="8.5" fill="#ffffff" stroke="#25506e" stroke-width="1.1"/><text x="2299" y="2161.5" font-size="9.5" font-weight="600" text-anchor="middle" fill="#25506e">23</text>
+<rect x="44" y="2232" width="2392" height="95" rx="4" fill="#fdf6e3" stroke="#d9bc7a"/>
+<text x="56" y="2249" font-size="11" fill="#7a5a12">Scale-down is deliberately not drawn. It is two in-place patches - spec.podSets[].count and status.admission - and</text>
+<text x="56" y="2264" font-size="11" fill="#7a5a12">the second is only permitted by the decrease-only, elastic-only exception in Kueue's own workload webhook. That</text>
+<text x="56" y="2279" font-size="11" fill="#7a5a12">exception is KUEUE-side and cannot be delivered from the operator, so this architecture is not completable</text>
+<text x="56" y="2294" font-size="11" fill="#7a5a12">operator-side alone. Delete-and-recreate is not a substitute: it drops the predecessor the scheduler needs in order</text>
+<text x="56" y="2309" font-size="11" fill="#7a5a12">to charge only the delta.</text>
 </svg>
