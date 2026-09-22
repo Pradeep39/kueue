@@ -180,6 +180,13 @@ manager cluster owns the real Workload and does the slicing — or a pod-owning 
 The Java task list, with the Go original each piece mirrors. The Go is deleted from `main` but
 recoverable from history (§8) and the Kubeflow equivalents are still present and live.
 
+The removed implementation's two scaling flows are drawn in
+[`diagrams/apache-kueue-da-upscale.png`](./diagrams/apache-kueue-da-upscale.png) and
+[`diagrams/apache-kueue-da-downscale.png`](./diagrams/apache-kueue-da-downscale.png), with the Go
+line numbers pinned to the last commit where the package existed. Read them against
+[`diagrams/apache-da-architecture-a.png`](./diagrams/apache-da-architecture-a.png) to see which
+lanes move into the operator.
+
 1. **An executor Pod watch.** Label-keyed on the app-name and role labels — executor Pods are
    owned by the *driver* Pod, so there is no OwnerReference chain to watch. Trailing-edge
    debounce with a max-wait ceiling; 5s/30s was the tuned pair. *Mirrors
