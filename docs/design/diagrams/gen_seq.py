@@ -359,9 +359,13 @@ SYMBOLS = {
 }
 
 
-def line_of(key):
-    """First line matching the symbol's pattern. Raises if it no longer matches."""
-    path, pattern, _ = SYMBOLS[key]
+def line_of(key, table=None):
+    """First line matching the symbol's pattern. Raises if it no longer matches.
+
+    `table` lets a sibling generator resolve its own symbols through this machinery instead of
+    hardcoding line numbers; it defaults to this module's SYMBOLS.
+    """
+    path, pattern, _ = (table or SYMBOLS)[key]
     src = REPO_ROOT / path
     if not src.exists():
         raise SystemExit(f"gen_seq.py: {path} does not exist (moved or renamed?)")
@@ -374,14 +378,15 @@ def line_of(key):
         "The symbol was renamed or removed - fix SYMBOLS rather than dropping the reference.")
 
 
-def ref(key):
+def ref(key, table=None):
     """'label.go:NNN', resolved now."""
-    return f"{SYMBOLS[key][2]}:{line_of(key)}"
+    return f"{(table or SYMBOLS)[key][2]}:{line_of(key, table)}"
 
 
-def refs(*keys):
+def refs(*keys, table=None):
     """Several references in one file: 'scheduler.go:518, :921'."""
-    first, rest = ref(keys[0]), [str(line_of(k)) for k in keys[1:]]
+    first = ref(keys[0], table)
+    rest = [str(line_of(k, table)) for k in keys[1:]]
     return ", :".join([first] + rest)
 
 
