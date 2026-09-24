@@ -284,6 +284,29 @@ def note(text):
 # key -> (repo-relative path, regex matching the definition, label shown on the diagram)
 SP = "pkg/controller/jobs/sparkapplication"
 SYMBOLS = {
+    # The watch wiring. controller-runtime lives in vendor/, so these resolve against the
+    # vendored copy - a dependency bump that moves them fails the build loudly, which is right.
+    "watchRegistration": (
+        f"{SP}/sparkapplication_controller.go",
+        r"b\.Watches\(&corev1\.Pod\{\}", "controller.go"),
+    "cr.GetInformer": (
+        "vendor/sigs.k8s.io/controller-runtime/pkg/internal/source/kind.go",
+        r"ks\.Cache\.GetInformer\(ctx, ks\.Type\)", "internal/source/kind.go"),
+    "cr.AddEventHandler": (
+        "vendor/sigs.k8s.io/controller-runtime/pkg/internal/source/kind.go",
+        r"i\.AddEventHandlerWithOptions\(", "internal/source/kind.go"),
+    "cr.OnAdd": (
+        "vendor/sigs.k8s.io/controller-runtime/pkg/internal/source/event_handler.go",
+        r"^func \(e \*EventHandler\[object, request\]\) OnAdd\(",
+        "internal/source/event_handler.go"),
+    "cr.OnUpdate": (
+        "vendor/sigs.k8s.io/controller-runtime/pkg/internal/source/event_handler.go",
+        r"^func \(e \*EventHandler\[object, request\]\) OnUpdate\(",
+        "internal/source/event_handler.go"),
+    "cr.OnDelete": (
+        "vendor/sigs.k8s.io/controller-runtime/pkg/internal/source/event_handler.go",
+        r"^func \(e \*EventHandler\[object, request\]\) OnDelete\(",
+        "internal/source/event_handler.go"),
     "isTrackedExecutorPod": (
         f"{SP}/sparkapplication_executor_pod_handler.go",
         r"^func isTrackedExecutorPod", "pod_handler.go"),
@@ -393,6 +416,7 @@ def refs(*keys, table=None):
 UP_LANES = [
     ("Spark driver (DA)", "ExecutorAllocationManager"),
     ("kube-apiserver", "—"),
+    ("shared Pod informer", "controller-runtime cache · LIST then WATCH"),
     ("executorPodHandler", "sparkapplication_executor_pod_handler.go"),
     ("JobReconciler", ref("ensureOneWorkload")),
     ("PodSets / count", "sparkapplication_podset.go"),
@@ -406,47 +430,71 @@ UP = seq([
     note("Precondition: the executor pod template already carries kueue.x-k8s.io/elastic-job as a "
          "scheduling gate, injected once at CR create by sparkapplication_webhook.go Default(). "
          "Every Pod the driver creates from it is born gated."),
+    note("How the watch is wired, once at manager start and not per application: NewReconciler calls "
+         "b.Watches(&corev1.Pod{}, newExecutorPodHandler(), WithPredicates(executorPodPredicate{})) "
+         f"({ref('watchRegistration')}), and only when ElasticJobsViaWorkloadSlices is on - otherwise "
+         "the cluster-wide Pod watch would be paid for and unused. controller-runtime's source.Kind "
+         f"then calls Cache.GetInformer(Pod) ({ref('cr.GetInformer')}), which returns the manager's "
+         "EXISTING shared Pod informer, so this adds a listener rather than a second watch "
+         f"connection, and registers on it with AddEventHandlerWithOptions ({ref('cr.AddEventHandler')})."),
     call(0, 1, "create executor Pods (born gated)"),
-    event(1, 2, "Pod CREATE event"),
-    self_(2, "isTrackedExecutorPod() — label match on "
-             "sparkoperator.k8s.io/app-name + spark-role", ref("isTrackedExecutorPod")),
-    self_(2, "schedule() — trailing-edge debounce 5s, maxWait 30s", ref("schedule")),
-    call(2, 3, "enqueue reconcile.Request for the SparkApplication"),
-    call(3, 4, "PodSets(ctx, client)", f'ensureOneWorkload -> {ref("PodSets")}'),
-    call(4, 1, "List Pods by app-name + spark-role label"),
-    self_(4, "isVerifiedLiveExecutor() — non-terminal Pods count, "
+    event(1, 2, "watch stream: ADDED. The informer LISTs once at start "
+               "and then holds a long-lived WATCH"),
+    self_(2, "Reflector -> DeltaFIFO -> sharedIndexInformer fans the "
+             "delta out to every registered listener"),
+    self_(2, "predicate: isTrackedExecutorPod - label match on "
+             "sparkoperator.k8s.io/app-name + spark-role. Run by "
+             "controller-runtime INSIDE OnAdd, before the handler, so a "
+             "driver or non-Spark Pod never reaches it",
+          ref("isTrackedExecutorPod")),
+    call(2, 3, "predicates passed -> handler.Create(ctx, evt, queue)",
+         ref("cr.OnAdd")),
+    note("Two things that arrow hides. OnAdd also fires for every Pod in the informer's INITIAL "
+         "LIST (IsInInitialList), so on an operator restart a large application replays all its "
+         "existing executors as Creates - the debounce below absorbs that into one reconcile. And the "
+         "event carries no count: it is purely a trigger to go and look."),
+    self_(3, "schedule() — trailing-edge debounce 5s, maxWait 30s. Per-key "
+             "timers, NOT the workqueue's delay heap: staggered AddAfter "
+             "calls from one burst would each fire and defeat the coalescing",
+          ref("schedule")),
+    call(3, 4, "q.Add(req) — from inside the timer callback, naming the "
+               "SparkApplication and not the Pod"),
+    call(4, 5, "PodSets(ctx, client)", f'ensureOneWorkload -> {ref("PodSets")}'),
+    call(5, 1, "List Pods by app-name + spark-role label"),
+    self_(5, "isVerifiedLiveExecutor() — non-terminal Pods count, "
              "INCLUDING still-gated ones (defect 3)", ref("isVerifiedLiveExecutor")),
     note("This is the whole inference. There is no DA event and no call from Spark into Kueue: the "
          "desired executor count is re-derived from live Pod objects on every debounced reconcile, "
          f"and cached for the pass ({ref('liveExecutorCount')}). The derived count is then clamped "
          f"to Dynamic Allocation's own minExecutors/maxExecutors ({ref('clampToDynamicAllocationBounds')})."),
-    call(4, 3, "executor PodSet Count = N_live"),
-    call(3, 5, "EnsureWorkloadSlices(podSets, ...)", ref("EnsureWorkloadSlices")),
-    self_(5, "ScaledUp() -> a NEW slice, never an in-place grow", ref("ScaledUp")),
-    call(5, 1, "create Workload slice + replacement-for annotation; "
+    call(5, 4, "executor PodSet Count = N_live"),
+    call(4, 6, "EnsureWorkloadSlices(podSets, ...)", ref("EnsureWorkloadSlices")),
+    self_(6, "ScaledUp() -> a NEW slice, never an in-place grow", ref("ScaledUp")),
+    call(6, 1, "create Workload slice + replacement-for annotation; "
                "name from GetWorkloadNameExtraPart (sequence number)", ref("GetWorkloadNameExtraPart")),
-    event(1, 6, "pending Workload observed"),
-    self_(6, "ReplacedWorkloadSlice / FindReplacedSliceTarget — "
+    event(1, 7, "pending Workload observed"),
+    self_(7, "ReplacedWorkloadSlice / FindReplacedSliceTarget — "
              "predecessor becomes the preemption target", refs("FindReplacedSliceTarget_call", "ReplacedWorkloadSlice_call")),
-    self_(6, "Assignment.append — charges the snapshot only the "
+    self_(7, "Assignment.append — charges the snapshot only the "
              "DELTA vs the replaced slice", ref("Assignment.append")),
-    call(6, 1, "Assignment.ToAPI — FULL count written to status.admission",
+    call(7, 1, "Assignment.ToAPI — FULL count written to status.admission",
          ref("Assignment.ToAPI")),
-    call(6, 7, "AddOrUpdateWorkload", ref("AddOrUpdateWorkload")),
-    self_(7, "sliceChainKey / reconcileSliceGroup — only the chain "
+    call(7, 8, "AddOrUpdateWorkload", ref("AddOrUpdateWorkload")),
+    self_(8, "sliceChainKey / reconcileSliceGroup — only the chain "
              "tip is charged (ns + slice name + job UID)", ref("reconcileSliceGroup")),
-    call(6, 1, "replaceOldWorkloadSlice — Finish the predecessor", ref("replaceOldWorkloadSlice")),
-    event(1, 8, "Workload update event"),
-    self_(8, "podsToUngate — room = granted - alreadyUngated", ref("podsToUngate")),
-    call(8, 1, "remove the scheduling gate from exactly `room` Pods; "
+    call(7, 1, "replaceOldWorkloadSlice — Finish the predecessor", ref("replaceOldWorkloadSlice")),
+    event(1, 9, "Workload update event"),
+    self_(9, "podsToUngate — room = granted - alreadyUngated", ref("podsToUngate")),
+    call(9, 1, "remove the scheduling gate from exactly `room` Pods; "
                "kube-scheduler then places them"),
-    call(7, 1, "Cache.Usage -> ClusterQueue.status.flavorsUsage",
+    call(8, 1, "Cache.Usage -> ClusterQueue.status.flavorsUsage",
          ref("flavorsUsage")),
 ])
 
 DOWN_LANES = [
     ("Spark driver (DA)", "ExecutorAllocationManager"),
     ("kube-apiserver", "—"),
+    ("shared Pod informer", "controller-runtime cache · LIST then WATCH"),
     ("executorPodHandler", "sparkapplication_executor_pod_handler.go"),
     ("JobReconciler", ref("ensureOneWorkload")),
     ("PodSets / count", "sparkapplication_podset.go"),
@@ -457,26 +505,33 @@ DOWN_LANES = [
 
 DOWN = seq([
     call(0, 1, "delete executor Pods (executorIdleTimeout elapsed)"),
-    event(1, 2, "Pod DELETE / UPDATE event"),
-    call(2, 3, "debounced enqueue — same handler as scale-up"),
-    call(3, 4, "PodSets(ctx, client)"),
-    self_(4, "isVerifiedLiveExecutor — a Pod with DeletionTimestamp "
+    event(1, 2, "watch stream: DELETED, or MODIFIED while terminating"),
+    self_(2, "OnDelete / OnUpdate. DeleteEvent.Object is the LAST-KNOWN "
+             "object from the informer cache, which is the only reason "
+             "label-based mapping still works on a delete",
+          refs("cr.OnDelete", "cr.OnUpdate")),
+    call(2, 3, "predicates passed -> handler.Delete / handler.Update",
+         ref("isTrackedExecutorPod")),
+    call(3, 4, "debounced enqueue — same timer map as scale-up, so a burst "
+               "of deletions is one reconcile", ref("schedule")),
+    call(4, 5, "PodSets(ctx, client)"),
+    self_(5, "isVerifiedLiveExecutor — a Pod with DeletionTimestamp "
              "still counts until Succeeded/Failed", ref("isVerifiedLiveExecutor")),
-    call(4, 3, "executor PodSet Count = N_live (lower)"),
-    call(3, 5, "EnsureWorkloadSlices(podSets, ...)", ref("EnsureWorkloadSlices")),
-    self_(5, "ScaledDown() -> in-place patch. No new slice, and the "
+    call(5, 4, "executor PodSet Count = N_live (lower)"),
+    call(4, 6, "EnsureWorkloadSlices(podSets, ...)", ref("EnsureWorkloadSlices")),
+    self_(6, "ScaledDown() -> in-place patch. No new slice, and the "
              "scheduler is never involved", ref("ScaledDown")),
-    call(5, 1, "updatePodSetCountsWithRetry — lower spec.podSets[].count",
+    call(6, 1, "updatePodSetCountsWithRetry — lower spec.podSets[].count",
          ref("updatePodSetCountsWithRetry")),
-    call(5, 1, "scaleDownAdmission — lower the granted count, rescale "
+    call(6, 1, "scaleDownAdmission — lower the granted count, rescale "
                "ResourceUsage, truncate TopologyAssignment", ref("scaleDownAdmission")),
-    call(1, 6, "admission mutation must pass validation"),
-    self_(6, "validateAdmissionUpdate — decrease-only, elastic-only "
+    call(1, 7, "admission mutation must pass validation"),
+    self_(7, "validateAdmissionUpdate — decrease-only, elastic-only "
              "exception; batch/v1 Job admission stays immutable", ref("validateAdmissionUpdate")),
-    event(1, 7, "Workload update"),
-    self_(7, "totalRequestsFromAdmission — charges min(spec.count, granted)",
+    event(1, 8, "Workload update"),
+    self_(8, "totalRequestsFromAdmission — charges min(spec.count, granted)",
           ref("totalRequestsFromAdmission")),
-    call(7, 1, "flavorsUsage drops"),
+    call(8, 1, "flavorsUsage drops"),
     note("Asymmetry worth remembering: scale-up creates a Workload and traverses the full "
          "scheduler + preemption path; scale-down is two in-place patches and never reaches the "
          "scheduler. Both are driven by the same debounced Pod watch."),

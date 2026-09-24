@@ -1,150 +1,184 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="2480" height="2181" viewBox="0 0 2480 2181" font-family="Helvetica Neue, Helvetica, Arial, sans-serif">
+<svg xmlns="http://www.w3.org/2000/svg" width="2748" height="2734" viewBox="0 0 2748 2734" font-family="Helvetica Neue, Helvetica, Arial, sans-serif">
 <defs><marker id="ac" viewBox="0 0 10 8" refX="9" refY="4" markerWidth="9" markerHeight="7" orient="auto"><path d="M0 0 L10 4 L0 8 z" fill="#25506e"/></marker><marker id="ae" viewBox="0 0 10 8" refX="9" refY="4" markerWidth="9" markerHeight="7" orient="auto"><path d="M0 0 L10 4 L0 8 z" fill="#9c5a1c"/></marker><marker id="as" viewBox="0 0 10 8" refX="9" refY="4" markerWidth="8" markerHeight="6" orient="auto"><path d="M0 0 L10 4 L0 8 z" fill="#3f6d52"/></marker></defs>
-<rect width="2480" height="2181" fill="#ffffff"/>
+<rect width="2748" height="2734" fill="#ffffff"/>
 <text x="34" y="38" font-size="21" font-weight="600" fill="#1f2933">Kueue: how a Spark Dynamic Allocation scale-UP is inferred</text>
 <text x="34" y="60" font-size="12.5" fill="#6b7785">Elastic SparkApplication + ElasticJobsViaWorkloadSlices — Pradeep39/kueue</text>
 <g font-size="10.5" fill="#6b7785">
-<line x1="2090" y1="30" x2="2116" y2="30" stroke="#25506e" stroke-width="1.6" marker-end="url(#ac)"/><text x="2123" y="33.5">call / API write</text>
-<line x1="2090" y1="45" x2="2116" y2="45" stroke="#9c5a1c" stroke-width="1.6" marker-end="url(#ae)" stroke-dasharray="5 3"/><text x="2123" y="48.5">watch event</text>
-<line x1="2090" y1="60" x2="2116" y2="60" stroke="#3f6d52" stroke-width="1.6" marker-end="url(#as)"/><text x="2123" y="63.5">internal computation</text>
+<line x1="2358" y1="30" x2="2384" y2="30" stroke="#25506e" stroke-width="1.6" marker-end="url(#ac)"/><text x="2391" y="33.5">call / API write</text>
+<line x1="2358" y1="45" x2="2384" y2="45" stroke="#9c5a1c" stroke-width="1.6" marker-end="url(#ae)" stroke-dasharray="5 3"/><text x="2391" y="48.5">watch event</text>
+<line x1="2358" y1="60" x2="2384" y2="60" stroke="#3f6d52" stroke-width="1.6" marker-end="url(#as)"/><text x="2391" y="63.5">internal computation</text>
 </g>
 <rect x="42" y="96" width="252" height="68" rx="5" fill="#eef2f6" stroke="#b9c3cf"/>
 <text x="168" y="118" font-size="12.5" font-weight="600" text-anchor="middle" fill="#1f2933">Spark driver (DA)</text>
 <text x="168" y="134" font-size="9.5" font-family="Menlo, monospace" text-anchor="middle" fill="#6b7785">ExecutorAllocationManager</text>
-<line x1="168" y1="164" x2="168" y2="2157" stroke="#c3cbd5" stroke-width="1.2" stroke-dasharray="4 5"/>
+<line x1="168" y1="164" x2="168" y2="2710" stroke="#c3cbd5" stroke-width="1.2" stroke-dasharray="4 5"/>
 <rect x="310" y="96" width="252" height="68" rx="5" fill="#eef2f6" stroke="#b9c3cf"/>
 <text x="436" y="118" font-size="12.5" font-weight="600" text-anchor="middle" fill="#1f2933">kube-apiserver</text>
 <text x="436" y="134" font-size="9.5" font-family="Menlo, monospace" text-anchor="middle" fill="#6b7785">—</text>
-<line x1="436" y1="164" x2="436" y2="2157" stroke="#c3cbd5" stroke-width="1.2" stroke-dasharray="4 5"/>
+<line x1="436" y1="164" x2="436" y2="2710" stroke="#c3cbd5" stroke-width="1.2" stroke-dasharray="4 5"/>
 <rect x="578" y="96" width="252" height="68" rx="5" fill="#eef2f6" stroke="#b9c3cf"/>
-<text x="704" y="118" font-size="12.5" font-weight="600" text-anchor="middle" fill="#1f2933">executorPodHandler</text>
-<text x="704" y="134" font-size="9.5" font-family="Menlo, monospace" text-anchor="middle" fill="#6b7785">sparkapplication_executor_pod_ha</text>
-<text x="704" y="145" font-size="9.5" font-family="Menlo, monospace" text-anchor="middle" fill="#6b7785">ndler.go</text>
-<line x1="704" y1="164" x2="704" y2="2157" stroke="#c3cbd5" stroke-width="1.2" stroke-dasharray="4 5"/>
+<text x="704" y="118" font-size="12.5" font-weight="600" text-anchor="middle" fill="#1f2933">shared Pod informer</text>
+<text x="704" y="134" font-size="9.5" font-family="Menlo, monospace" text-anchor="middle" fill="#6b7785">controller-runtime cache · LIST</text>
+<text x="704" y="145" font-size="9.5" font-family="Menlo, monospace" text-anchor="middle" fill="#6b7785">then WATCH</text>
+<line x1="704" y1="164" x2="704" y2="2710" stroke="#c3cbd5" stroke-width="1.2" stroke-dasharray="4 5"/>
 <rect x="846" y="96" width="252" height="68" rx="5" fill="#eef2f6" stroke="#b9c3cf"/>
-<text x="972" y="118" font-size="12.5" font-weight="600" text-anchor="middle" fill="#1f2933">JobReconciler</text>
-<text x="972" y="134" font-size="9.5" font-family="Menlo, monospace" text-anchor="middle" fill="#6b7785">jobframework/reconciler.go:1029</text>
-<line x1="972" y1="164" x2="972" y2="2157" stroke="#c3cbd5" stroke-width="1.2" stroke-dasharray="4 5"/>
+<text x="972" y="118" font-size="12.5" font-weight="600" text-anchor="middle" fill="#1f2933">executorPodHandler</text>
+<text x="972" y="134" font-size="9.5" font-family="Menlo, monospace" text-anchor="middle" fill="#6b7785">sparkapplication_executor_pod_ha</text>
+<text x="972" y="145" font-size="9.5" font-family="Menlo, monospace" text-anchor="middle" fill="#6b7785">ndler.go</text>
+<line x1="972" y1="164" x2="972" y2="2710" stroke="#c3cbd5" stroke-width="1.2" stroke-dasharray="4 5"/>
 <rect x="1114" y="96" width="252" height="68" rx="5" fill="#eef2f6" stroke="#b9c3cf"/>
-<text x="1240" y="118" font-size="12.5" font-weight="600" text-anchor="middle" fill="#1f2933">PodSets / count</text>
-<text x="1240" y="134" font-size="9.5" font-family="Menlo, monospace" text-anchor="middle" fill="#6b7785">sparkapplication_podset.go</text>
-<line x1="1240" y1="164" x2="1240" y2="2157" stroke="#c3cbd5" stroke-width="1.2" stroke-dasharray="4 5"/>
+<text x="1240" y="118" font-size="12.5" font-weight="600" text-anchor="middle" fill="#1f2933">JobReconciler</text>
+<text x="1240" y="134" font-size="9.5" font-family="Menlo, monospace" text-anchor="middle" fill="#6b7785">jobframework/reconciler.go:1029</text>
+<line x1="1240" y1="164" x2="1240" y2="2710" stroke="#c3cbd5" stroke-width="1.2" stroke-dasharray="4 5"/>
 <rect x="1382" y="96" width="252" height="68" rx="5" fill="#eef2f6" stroke="#b9c3cf"/>
-<text x="1508" y="118" font-size="12.5" font-weight="600" text-anchor="middle" fill="#1f2933">workloadslicing</text>
-<text x="1508" y="134" font-size="9.5" font-family="Menlo, monospace" text-anchor="middle" fill="#6b7785">workloadslicing/workloadslicing.</text>
-<text x="1508" y="145" font-size="9.5" font-family="Menlo, monospace" text-anchor="middle" fill="#6b7785">go</text>
-<line x1="1508" y1="164" x2="1508" y2="2157" stroke="#c3cbd5" stroke-width="1.2" stroke-dasharray="4 5"/>
+<text x="1508" y="118" font-size="12.5" font-weight="600" text-anchor="middle" fill="#1f2933">PodSets / count</text>
+<text x="1508" y="134" font-size="9.5" font-family="Menlo, monospace" text-anchor="middle" fill="#6b7785">sparkapplication_podset.go</text>
+<line x1="1508" y1="164" x2="1508" y2="2710" stroke="#c3cbd5" stroke-width="1.2" stroke-dasharray="4 5"/>
 <rect x="1650" y="96" width="252" height="68" rx="5" fill="#eef2f6" stroke="#b9c3cf"/>
-<text x="1776" y="118" font-size="12.5" font-weight="600" text-anchor="middle" fill="#1f2933">Scheduler + flavorassigner</text>
-<text x="1776" y="134" font-size="9.5" font-family="Menlo, monospace" text-anchor="middle" fill="#6b7785">scheduler/scheduler.go</text>
-<line x1="1776" y1="164" x2="1776" y2="2157" stroke="#c3cbd5" stroke-width="1.2" stroke-dasharray="4 5"/>
+<text x="1776" y="118" font-size="12.5" font-weight="600" text-anchor="middle" fill="#1f2933">workloadslicing</text>
+<text x="1776" y="134" font-size="9.5" font-family="Menlo, monospace" text-anchor="middle" fill="#6b7785">workloadslicing/workloadslicing.</text>
+<text x="1776" y="145" font-size="9.5" font-family="Menlo, monospace" text-anchor="middle" fill="#6b7785">go</text>
+<line x1="1776" y1="164" x2="1776" y2="2710" stroke="#c3cbd5" stroke-width="1.2" stroke-dasharray="4 5"/>
 <rect x="1918" y="96" width="252" height="68" rx="5" fill="#eef2f6" stroke="#b9c3cf"/>
-<text x="2044" y="118" font-size="12.5" font-weight="600" text-anchor="middle" fill="#1f2933">scheduler cache</text>
-<text x="2044" y="134" font-size="9.5" font-family="Menlo, monospace" text-anchor="middle" fill="#6b7785">cache/scheduler/clusterqueue.go</text>
-<line x1="2044" y1="164" x2="2044" y2="2157" stroke="#c3cbd5" stroke-width="1.2" stroke-dasharray="4 5"/>
+<text x="2044" y="118" font-size="12.5" font-weight="600" text-anchor="middle" fill="#1f2933">Scheduler + flavorassigner</text>
+<text x="2044" y="134" font-size="9.5" font-family="Menlo, monospace" text-anchor="middle" fill="#6b7785">scheduler/scheduler.go</text>
+<line x1="2044" y1="164" x2="2044" y2="2710" stroke="#c3cbd5" stroke-width="1.2" stroke-dasharray="4 5"/>
 <rect x="2186" y="96" width="252" height="68" rx="5" fill="#eef2f6" stroke="#b9c3cf"/>
-<text x="2312" y="118" font-size="12.5" font-weight="600" text-anchor="middle" fill="#1f2933">elasticJobUngater</text>
-<text x="2312" y="134" font-size="9.5" font-family="Menlo, monospace" text-anchor="middle" fill="#6b7785">controller/elasticjobs/elastic_j</text>
-<text x="2312" y="145" font-size="9.5" font-family="Menlo, monospace" text-anchor="middle" fill="#6b7785">ob_ungater.go</text>
-<line x1="2312" y1="164" x2="2312" y2="2157" stroke="#c3cbd5" stroke-width="1.2" stroke-dasharray="4 5"/>
-<rect x="44" y="202" width="2392" height="50" rx="4" fill="#fdf6e3" stroke="#d9bc7a"/>
+<text x="2312" y="118" font-size="12.5" font-weight="600" text-anchor="middle" fill="#1f2933">scheduler cache</text>
+<text x="2312" y="134" font-size="9.5" font-family="Menlo, monospace" text-anchor="middle" fill="#6b7785">cache/scheduler/clusterqueue.go</text>
+<line x1="2312" y1="164" x2="2312" y2="2710" stroke="#c3cbd5" stroke-width="1.2" stroke-dasharray="4 5"/>
+<rect x="2454" y="96" width="252" height="68" rx="5" fill="#eef2f6" stroke="#b9c3cf"/>
+<text x="2580" y="118" font-size="12.5" font-weight="600" text-anchor="middle" fill="#1f2933">elasticJobUngater</text>
+<text x="2580" y="134" font-size="9.5" font-family="Menlo, monospace" text-anchor="middle" fill="#6b7785">controller/elasticjobs/elastic_j</text>
+<text x="2580" y="145" font-size="9.5" font-family="Menlo, monospace" text-anchor="middle" fill="#6b7785">ob_ungater.go</text>
+<line x1="2580" y1="164" x2="2580" y2="2710" stroke="#c3cbd5" stroke-width="1.2" stroke-dasharray="4 5"/>
+<rect x="44" y="202" width="2660" height="50" rx="4" fill="#fdf6e3" stroke="#d9bc7a"/>
 <text x="56" y="219" font-size="11" fill="#7a5a12">Precondition: the executor pod template already carries kueue.x-k8s.io/elastic-job as a scheduling gate, injected</text>
 <text x="56" y="234" font-size="11" fill="#7a5a12">once at CR create by sparkapplication_webhook.go Default(). Every Pod the driver creates from it is born gated.</text>
-<line x1="171" y1="303" x2="432" y2="303" stroke="#25506e" stroke-width="1.7" marker-end="url(#ac)"/>
-<text x="302" y="294" font-size="11" text-anchor="middle" fill="#1f2933">create executor Pods (born gated)</text>
-<circle cx="181" cy="292" r="8.5" fill="#ffffff" stroke="#25506e" stroke-width="1.1"/><text x="181" y="295.5" font-size="9.5" font-weight="600" text-anchor="middle" fill="#25506e">1</text>
-<line x1="439" y1="353" x2="700" y2="353" stroke="#9c5a1c" stroke-width="1.7" marker-end="url(#ae)" stroke-dasharray="6 4"/>
-<text x="570" y="344" font-size="11" text-anchor="middle" fill="#1f2933">Pod CREATE event</text>
-<circle cx="449" cy="342" r="8.5" fill="#ffffff" stroke="#9c5a1c" stroke-width="1.1"/><text x="449" y="345.5" font-size="9.5" font-weight="600" text-anchor="middle" fill="#9c5a1c">2</text>
-<path d="M704 403 L770 403 L770 425 L709 425" fill="none" stroke="#3f6d52" stroke-width="1.5" marker-end="url(#as)"/>
-<text x="788" y="404" font-size="11" text-anchor="start" fill="#1f2933"><tspan fill="#6b7785" font-weight="600">3. </tspan>isTrackedExecutorPod() — label match on</text>
-<text x="788" y="418" font-size="11" text-anchor="start" fill="#1f2933">sparkoperator.k8s.io/app-name + spark-role</text>
-<text x="788" y="432" font-size="9.5" font-family="Menlo, monospace" text-anchor="start" fill="#3f6d52">pod_handler.go:70</text>
-<path d="M704 499 L770 499 L770 521 L709 521" fill="none" stroke="#3f6d52" stroke-width="1.5" marker-end="url(#as)"/>
-<text x="788" y="500" font-size="11" text-anchor="start" fill="#1f2933"><tspan fill="#6b7785" font-weight="600">4. </tspan>schedule() — trailing-edge debounce 5s,</text>
-<text x="788" y="514" font-size="11" text-anchor="start" fill="#1f2933">maxWait 30s</text>
-<text x="788" y="528" font-size="9.5" font-family="Menlo, monospace" text-anchor="start" fill="#3f6d52">pod_handler.go:135</text>
-<line x1="707" y1="595" x2="968" y2="595" stroke="#25506e" stroke-width="1.7" marker-end="url(#ac)"/>
-<text x="838" y="571" font-size="11" text-anchor="middle" fill="#1f2933">enqueue reconcile.Request for the</text>
-<text x="838" y="586" font-size="11" text-anchor="middle" fill="#1f2933">SparkApplication</text>
-<circle cx="717" cy="584" r="8.5" fill="#ffffff" stroke="#25506e" stroke-width="1.1"/><text x="717" y="587.5" font-size="9.5" font-weight="600" text-anchor="middle" fill="#25506e">5</text>
-<line x1="975" y1="660" x2="1236" y2="660" stroke="#25506e" stroke-width="1.7" marker-end="url(#ac)"/>
-<text x="1106" y="639" font-size="11" text-anchor="middle" fill="#1f2933">PodSets(ctx, client)</text>
-<text x="1106" y="654" font-size="9.5" font-family="Menlo, monospace" text-anchor="middle" fill="#25506e">ensureOneWorkload -&gt; controller.go:157</text>
-<circle cx="985" cy="649" r="8.5" fill="#ffffff" stroke="#25506e" stroke-width="1.1"/><text x="985" y="652.5" font-size="9.5" font-weight="600" text-anchor="middle" fill="#25506e">6</text>
-<line x1="1237" y1="722" x2="440" y2="722" stroke="#25506e" stroke-width="1.7" marker-end="url(#ac)"/>
-<text x="838" y="713" font-size="11" text-anchor="middle" fill="#1f2933">List Pods by app-name + spark-role label</text>
-<circle cx="1227" cy="711" r="8.5" fill="#ffffff" stroke="#25506e" stroke-width="1.1"/><text x="1227" y="714.5" font-size="9.5" font-weight="600" text-anchor="middle" fill="#25506e">7</text>
-<path d="M1240 772 L1306 772 L1306 794 L1245 794" fill="none" stroke="#3f6d52" stroke-width="1.5" marker-end="url(#as)"/>
-<text x="1324" y="773" font-size="11" text-anchor="start" fill="#1f2933"><tspan fill="#6b7785" font-weight="600">8. </tspan>isVerifiedLiveExecutor() — non-terminal Pods</text>
-<text x="1324" y="787" font-size="11" text-anchor="start" fill="#1f2933">count, INCLUDING still-gated ones (defect 3)</text>
-<text x="1324" y="801" font-size="9.5" font-family="Menlo, monospace" text-anchor="start" fill="#3f6d52">podset.go:176</text>
-<rect x="44" y="854" width="2392" height="65" rx="4" fill="#fdf6e3" stroke="#d9bc7a"/>
-<text x="56" y="871" font-size="11" fill="#7a5a12">This is the whole inference. There is no DA event and no call from Spark into Kueue: the desired executor count is</text>
-<text x="56" y="886" font-size="11" fill="#7a5a12">re-derived from live Pod objects on every debounced reconcile, and cached for the pass (podset.go:194). The derived</text>
-<text x="56" y="901" font-size="11" fill="#7a5a12">count is then clamped to Dynamic Allocation's own minExecutors/maxExecutors (podset.go:356).</text>
-<line x1="1237" y1="970" x2="976" y2="970" stroke="#25506e" stroke-width="1.7" marker-end="url(#ac)"/>
-<text x="1106" y="961" font-size="11" text-anchor="middle" fill="#1f2933">executor PodSet Count = N_live</text>
-<circle cx="1227" cy="959" r="8.5" fill="#ffffff" stroke="#25506e" stroke-width="1.1"/><text x="1227" y="962.5" font-size="9.5" font-weight="600" text-anchor="middle" fill="#25506e">9</text>
-<line x1="975" y1="1020" x2="1504" y2="1020" stroke="#25506e" stroke-width="1.7" marker-end="url(#ac)"/>
-<text x="1240" y="999" font-size="11" text-anchor="middle" fill="#1f2933">EnsureWorkloadSlices(podSets, ...)</text>
-<text x="1240" y="1014" font-size="9.5" font-family="Menlo, monospace" text-anchor="middle" fill="#25506e">workloadslicing.go:245</text>
-<circle cx="985" cy="1009" r="8.5" fill="#ffffff" stroke="#25506e" stroke-width="1.1"/><text x="985" y="1012.5" font-size="9.5" font-weight="600" text-anchor="middle" fill="#25506e">10</text>
-<path d="M1508 1082 L1574 1082 L1574 1104 L1513 1104" fill="none" stroke="#3f6d52" stroke-width="1.5" marker-end="url(#as)"/>
-<text x="1592" y="1083" font-size="11" text-anchor="start" fill="#1f2933"><tspan fill="#6b7785" font-weight="600">11. </tspan>ScaledUp() -&gt; a NEW slice, never an in-place</text>
-<text x="1592" y="1097" font-size="11" text-anchor="start" fill="#1f2933">grow</text>
-<text x="1592" y="1111" font-size="9.5" font-family="Menlo, monospace" text-anchor="start" fill="#3f6d52">workloadslicing.go:235</text>
-<line x1="1505" y1="1178" x2="440" y2="1178" stroke="#25506e" stroke-width="1.7" marker-end="url(#ac)"/>
-<text x="972" y="1127" font-size="11" text-anchor="middle" fill="#1f2933">create Workload slice + replacement-for</text>
-<text x="972" y="1142" font-size="11" text-anchor="middle" fill="#1f2933">annotation; name from</text>
-<text x="972" y="1157" font-size="11" text-anchor="middle" fill="#1f2933">GetWorkloadNameExtraPart (sequence number)</text>
-<text x="972" y="1172" font-size="9.5" font-family="Menlo, monospace" text-anchor="middle" fill="#25506e">controller.go:149</text>
-<circle cx="1495" cy="1167" r="8.5" fill="#ffffff" stroke="#25506e" stroke-width="1.1"/><text x="1495" y="1170.5" font-size="9.5" font-weight="600" text-anchor="middle" fill="#25506e">12</text>
-<line x1="439" y1="1270" x2="1772" y2="1270" stroke="#9c5a1c" stroke-width="1.7" marker-end="url(#ae)" stroke-dasharray="6 4"/>
-<text x="1106" y="1261" font-size="11" text-anchor="middle" fill="#1f2933">pending Workload observed</text>
-<circle cx="449" cy="1259" r="8.5" fill="#ffffff" stroke="#9c5a1c" stroke-width="1.1"/><text x="449" y="1262.5" font-size="9.5" font-weight="600" text-anchor="middle" fill="#9c5a1c">13</text>
-<path d="M1776 1320 L1842 1320 L1842 1342 L1781 1342" fill="none" stroke="#3f6d52" stroke-width="1.5" marker-end="url(#as)"/>
-<text x="1860" y="1314" font-size="11" text-anchor="start" fill="#1f2933"><tspan fill="#6b7785" font-weight="600">14. </tspan>ReplacedWorkloadSlice /</text>
-<text x="1860" y="1328" font-size="11" text-anchor="start" fill="#1f2933">FindReplacedSliceTarget — predecessor becomes</text>
-<text x="1860" y="1342" font-size="11" text-anchor="start" fill="#1f2933">the preemption target</text>
-<text x="1860" y="1356" font-size="9.5" font-family="Menlo, monospace" text-anchor="start" fill="#3f6d52">scheduler.go:518, :921</text>
-<path d="M1776 1430 L1842 1430 L1842 1452 L1781 1452" fill="none" stroke="#3f6d52" stroke-width="1.5" marker-end="url(#as)"/>
-<text x="1860" y="1431" font-size="11" text-anchor="start" fill="#1f2933"><tspan fill="#6b7785" font-weight="600">15. </tspan>Assignment.append — charges the snapshot only</text>
-<text x="1860" y="1445" font-size="11" text-anchor="start" fill="#1f2933">the DELTA vs the replaced slice</text>
-<text x="1860" y="1459" font-size="9.5" font-family="Menlo, monospace" text-anchor="start" fill="#3f6d52">flavorassigner.go:1026</text>
-<line x1="1773" y1="1526" x2="440" y2="1526" stroke="#25506e" stroke-width="1.7" marker-end="url(#ac)"/>
-<text x="1106" y="1490" font-size="11" text-anchor="middle" fill="#1f2933">Assignment.ToAPI — FULL count written to</text>
-<text x="1106" y="1505" font-size="11" text-anchor="middle" fill="#1f2933">status.admission</text>
-<text x="1106" y="1520" font-size="9.5" font-family="Menlo, monospace" text-anchor="middle" fill="#25506e">flavorassigner.go:252</text>
-<circle cx="1763" cy="1515" r="8.5" fill="#ffffff" stroke="#25506e" stroke-width="1.1"/><text x="1763" y="1518.5" font-size="9.5" font-weight="600" text-anchor="middle" fill="#25506e">16</text>
-<line x1="1779" y1="1603" x2="2040" y2="1603" stroke="#25506e" stroke-width="1.7" marker-end="url(#ac)"/>
-<text x="1910" y="1582" font-size="11" text-anchor="middle" fill="#1f2933">AddOrUpdateWorkload</text>
-<text x="1910" y="1597" font-size="9.5" font-family="Menlo, monospace" text-anchor="middle" fill="#25506e">cache.go:816</text>
-<circle cx="1789" cy="1592" r="8.5" fill="#ffffff" stroke="#25506e" stroke-width="1.1"/><text x="1789" y="1595.5" font-size="9.5" font-weight="600" text-anchor="middle" fill="#25506e">17</text>
-<path d="M2044 1665 L2110 1665 L2110 1687 L2049 1687" fill="none" stroke="#3f6d52" stroke-width="1.5" marker-end="url(#as)"/>
-<text x="2128" y="1659" font-size="11" text-anchor="start" fill="#1f2933"><tspan fill="#6b7785" font-weight="600">18. </tspan>sliceChainKey / reconcileSliceGroup — only the</text>
-<text x="2128" y="1673" font-size="11" text-anchor="start" fill="#1f2933">chain tip is charged (ns + slice name + job</text>
-<text x="2128" y="1687" font-size="11" text-anchor="start" fill="#1f2933">UID)</text>
-<text x="2128" y="1701" font-size="9.5" font-family="Menlo, monospace" text-anchor="start" fill="#3f6d52">clusterqueue.go:603</text>
-<line x1="1773" y1="1775" x2="440" y2="1775" stroke="#25506e" stroke-width="1.7" marker-end="url(#ac)"/>
-<text x="1106" y="1739" font-size="11" text-anchor="middle" fill="#1f2933">replaceOldWorkloadSlice — Finish the</text>
-<text x="1106" y="1754" font-size="11" text-anchor="middle" fill="#1f2933">predecessor</text>
-<text x="1106" y="1769" font-size="9.5" font-family="Menlo, monospace" text-anchor="middle" fill="#25506e">scheduler.go:635</text>
-<circle cx="1763" cy="1764" r="8.5" fill="#ffffff" stroke="#25506e" stroke-width="1.1"/><text x="1763" y="1767.5" font-size="9.5" font-weight="600" text-anchor="middle" fill="#25506e">19</text>
-<line x1="439" y1="1852" x2="2308" y2="1852" stroke="#9c5a1c" stroke-width="1.7" marker-end="url(#ae)" stroke-dasharray="6 4"/>
-<text x="1374" y="1843" font-size="11" text-anchor="middle" fill="#1f2933">Workload update event</text>
-<circle cx="449" cy="1841" r="8.5" fill="#ffffff" stroke="#9c5a1c" stroke-width="1.1"/><text x="449" y="1844.5" font-size="9.5" font-weight="600" text-anchor="middle" fill="#9c5a1c">20</text>
-<path d="M2312 1902 L2246 1902 L2246 1924 L2307 1924" fill="none" stroke="#3f6d52" stroke-width="1.5" marker-end="url(#as)"/>
-<text x="2228" y="1910" font-size="11" text-anchor="end" fill="#1f2933"><tspan fill="#6b7785" font-weight="600">21. </tspan>podsToUngate — room = granted - alreadyUngated</text>
-<text x="2228" y="1924" font-size="9.5" font-family="Menlo, monospace" text-anchor="end" fill="#3f6d52">ungater.go:265</text>
-<line x1="2309" y1="1984" x2="440" y2="1984" stroke="#25506e" stroke-width="1.7" marker-end="url(#ac)"/>
-<text x="1374" y="1945" font-size="11" text-anchor="middle" fill="#1f2933">remove the scheduling gate from exactly</text>
-<text x="1374" y="1960" font-size="11" text-anchor="middle" fill="#1f2933">`room` Pods; kube-scheduler then places</text>
-<text x="1374" y="1975" font-size="11" text-anchor="middle" fill="#1f2933">them</text>
-<circle cx="2299" cy="1973" r="8.5" fill="#ffffff" stroke="#25506e" stroke-width="1.1"/><text x="2299" y="1976.5" font-size="9.5" font-weight="600" text-anchor="middle" fill="#25506e">22</text>
-<line x1="2041" y1="2064" x2="440" y2="2064" stroke="#25506e" stroke-width="1.7" marker-end="url(#ac)"/>
-<text x="1240" y="2028" font-size="11" text-anchor="middle" fill="#1f2933">Cache.Usage -&gt;</text>
-<text x="1240" y="2043" font-size="11" text-anchor="middle" fill="#1f2933">ClusterQueue.status.flavorsUsage</text>
-<text x="1240" y="2058" font-size="9.5" font-family="Menlo, monospace" text-anchor="middle" fill="#25506e">clusterqueue_controller.go:553</text>
-<circle cx="2031" cy="2053" r="8.5" fill="#ffffff" stroke="#25506e" stroke-width="1.1"/><text x="2031" y="2056.5" font-size="9.5" font-weight="600" text-anchor="middle" fill="#25506e">23</text>
+<rect x="44" y="289" width="2660" height="110" rx="4" fill="#fdf6e3" stroke="#d9bc7a"/>
+<text x="56" y="306" font-size="11" fill="#7a5a12">How the watch is wired, once at manager start and not per application: NewReconciler calls b.Watches(&amp;corev1.Pod{},</text>
+<text x="56" y="321" font-size="11" fill="#7a5a12">newExecutorPodHandler(), WithPredicates(executorPodPredicate{})) (controller.go:79), and only when</text>
+<text x="56" y="336" font-size="11" fill="#7a5a12">ElasticJobsViaWorkloadSlices is on - otherwise the cluster-wide Pod watch would be paid for and unused.</text>
+<text x="56" y="351" font-size="11" fill="#7a5a12">controller-runtime's source.Kind then calls Cache.GetInformer(Pod) (internal/source/kind.go:88), which returns the</text>
+<text x="56" y="366" font-size="11" fill="#7a5a12">manager's EXISTING shared Pod informer, so this adds a listener rather than a second watch connection, and registers</text>
+<text x="56" y="381" font-size="11" fill="#7a5a12">on it with AddEventHandlerWithOptions (internal/source/kind.go:112).</text>
+<line x1="171" y1="450" x2="432" y2="450" stroke="#25506e" stroke-width="1.7" marker-end="url(#ac)"/>
+<text x="302" y="441" font-size="11" text-anchor="middle" fill="#1f2933">create executor Pods (born gated)</text>
+<circle cx="181" cy="439" r="8.5" fill="#ffffff" stroke="#25506e" stroke-width="1.1"/><text x="181" y="442.5" font-size="9.5" font-weight="600" text-anchor="middle" fill="#25506e">1</text>
+<line x1="439" y1="500" x2="700" y2="500" stroke="#9c5a1c" stroke-width="1.7" marker-end="url(#ae)" stroke-dasharray="6 4"/>
+<text x="570" y="461" font-size="11" text-anchor="middle" fill="#1f2933">watch stream: ADDED. The informer LISTs</text>
+<text x="570" y="476" font-size="11" text-anchor="middle" fill="#1f2933">once at start and then holds a long-lived</text>
+<text x="570" y="491" font-size="11" text-anchor="middle" fill="#1f2933">WATCH</text>
+<circle cx="449" cy="489" r="8.5" fill="#ffffff" stroke="#9c5a1c" stroke-width="1.1"/><text x="449" y="492.5" font-size="9.5" font-weight="600" text-anchor="middle" fill="#9c5a1c">2</text>
+<path d="M704 580 L770 580 L770 602 L709 602" fill="none" stroke="#3f6d52" stroke-width="1.5" marker-end="url(#as)"/>
+<text x="788" y="581" font-size="11" text-anchor="start" fill="#1f2933"><tspan fill="#6b7785" font-weight="600">3. </tspan>Reflector -&gt; DeltaFIFO -&gt; sharedIndexInformer</text>
+<text x="788" y="595" font-size="11" text-anchor="start" fill="#1f2933">fans the delta out to every registered</text>
+<text x="788" y="609" font-size="11" text-anchor="start" fill="#1f2933">listener</text>
+<path d="M704 678 L770 678 L770 700 L709 700" fill="none" stroke="#3f6d52" stroke-width="1.5" marker-end="url(#as)"/>
+<text x="788" y="658" font-size="11" text-anchor="start" fill="#1f2933"><tspan fill="#6b7785" font-weight="600">4. </tspan>predicate: isTrackedExecutorPod - label match</text>
+<text x="788" y="672" font-size="11" text-anchor="start" fill="#1f2933">on sparkoperator.k8s.io/app-name + spark-role.</text>
+<text x="788" y="686" font-size="11" text-anchor="start" fill="#1f2933">Run by controller-runtime INSIDE OnAdd, before</text>
+<text x="788" y="700" font-size="11" text-anchor="start" fill="#1f2933">the handler, so a driver or non-Spark Pod</text>
+<text x="788" y="714" font-size="11" text-anchor="start" fill="#1f2933">never reaches it</text>
+<text x="788" y="728" font-size="9.5" font-family="Menlo, monospace" text-anchor="start" fill="#3f6d52">pod_handler.go:70</text>
+<line x1="707" y1="816" x2="968" y2="816" stroke="#25506e" stroke-width="1.7" marker-end="url(#ac)"/>
+<text x="838" y="780" font-size="11" text-anchor="middle" fill="#1f2933">predicates passed -&gt; handler.Create(ctx,</text>
+<text x="838" y="795" font-size="11" text-anchor="middle" fill="#1f2933">evt, queue)</text>
+<text x="838" y="810" font-size="9.5" font-family="Menlo, monospace" text-anchor="middle" fill="#25506e">internal/source/event_handler.go:63</text>
+<circle cx="717" cy="805" r="8.5" fill="#ffffff" stroke="#25506e" stroke-width="1.1"/><text x="717" y="808.5" font-size="9.5" font-weight="600" text-anchor="middle" fill="#25506e">5</text>
+<rect x="44" y="879" width="2660" height="65" rx="4" fill="#fdf6e3" stroke="#d9bc7a"/>
+<text x="56" y="896" font-size="11" fill="#7a5a12">Two things that arrow hides. OnAdd also fires for every Pod in the informer's INITIAL LIST (IsInInitialList), so on</text>
+<text x="56" y="911" font-size="11" fill="#7a5a12">an operator restart a large application replays all its existing executors as Creates - the debounce below absorbs</text>
+<text x="56" y="926" font-size="11" fill="#7a5a12">that into one reconcile. And the event carries no count: it is purely a trigger to go and look.</text>
+<path d="M972 995 L1038 995 L1038 1017 L977 1017" fill="none" stroke="#3f6d52" stroke-width="1.5" marker-end="url(#as)"/>
+<text x="1056" y="975" font-size="11" text-anchor="start" fill="#1f2933"><tspan fill="#6b7785" font-weight="600">6. </tspan>schedule() — trailing-edge debounce 5s,</text>
+<text x="1056" y="989" font-size="11" text-anchor="start" fill="#1f2933">maxWait 30s. Per-key timers, NOT the</text>
+<text x="1056" y="1003" font-size="11" text-anchor="start" fill="#1f2933">workqueue's delay heap: staggered AddAfter</text>
+<text x="1056" y="1017" font-size="11" text-anchor="start" fill="#1f2933">calls from one burst would each fire and</text>
+<text x="1056" y="1031" font-size="11" text-anchor="start" fill="#1f2933">defeat the coalescing</text>
+<text x="1056" y="1045" font-size="9.5" font-family="Menlo, monospace" text-anchor="start" fill="#3f6d52">pod_handler.go:135</text>
+<line x1="975" y1="1133" x2="1236" y2="1133" stroke="#25506e" stroke-width="1.7" marker-end="url(#ac)"/>
+<text x="1106" y="1094" font-size="11" text-anchor="middle" fill="#1f2933">q.Add(req) — from inside the timer</text>
+<text x="1106" y="1109" font-size="11" text-anchor="middle" fill="#1f2933">callback, naming the SparkApplication and</text>
+<text x="1106" y="1124" font-size="11" text-anchor="middle" fill="#1f2933">not the Pod</text>
+<circle cx="985" cy="1122" r="8.5" fill="#ffffff" stroke="#25506e" stroke-width="1.1"/><text x="985" y="1125.5" font-size="9.5" font-weight="600" text-anchor="middle" fill="#25506e">7</text>
+<line x1="1243" y1="1213" x2="1504" y2="1213" stroke="#25506e" stroke-width="1.7" marker-end="url(#ac)"/>
+<text x="1374" y="1192" font-size="11" text-anchor="middle" fill="#1f2933">PodSets(ctx, client)</text>
+<text x="1374" y="1207" font-size="9.5" font-family="Menlo, monospace" text-anchor="middle" fill="#25506e">ensureOneWorkload -&gt; controller.go:157</text>
+<circle cx="1253" cy="1202" r="8.5" fill="#ffffff" stroke="#25506e" stroke-width="1.1"/><text x="1253" y="1205.5" font-size="9.5" font-weight="600" text-anchor="middle" fill="#25506e">8</text>
+<line x1="1505" y1="1275" x2="440" y2="1275" stroke="#25506e" stroke-width="1.7" marker-end="url(#ac)"/>
+<text x="972" y="1266" font-size="11" text-anchor="middle" fill="#1f2933">List Pods by app-name + spark-role label</text>
+<circle cx="1495" cy="1264" r="8.5" fill="#ffffff" stroke="#25506e" stroke-width="1.1"/><text x="1495" y="1267.5" font-size="9.5" font-weight="600" text-anchor="middle" fill="#25506e">9</text>
+<path d="M1508 1325 L1574 1325 L1574 1347 L1513 1347" fill="none" stroke="#3f6d52" stroke-width="1.5" marker-end="url(#as)"/>
+<text x="1592" y="1326" font-size="11" text-anchor="start" fill="#1f2933"><tspan fill="#6b7785" font-weight="600">10. </tspan>isVerifiedLiveExecutor() — non-terminal Pods</text>
+<text x="1592" y="1340" font-size="11" text-anchor="start" fill="#1f2933">count, INCLUDING still-gated ones (defect 3)</text>
+<text x="1592" y="1354" font-size="9.5" font-family="Menlo, monospace" text-anchor="start" fill="#3f6d52">podset.go:176</text>
+<rect x="44" y="1407" width="2660" height="65" rx="4" fill="#fdf6e3" stroke="#d9bc7a"/>
+<text x="56" y="1424" font-size="11" fill="#7a5a12">This is the whole inference. There is no DA event and no call from Spark into Kueue: the desired executor count is</text>
+<text x="56" y="1439" font-size="11" fill="#7a5a12">re-derived from live Pod objects on every debounced reconcile, and cached for the pass (podset.go:194). The derived</text>
+<text x="56" y="1454" font-size="11" fill="#7a5a12">count is then clamped to Dynamic Allocation's own minExecutors/maxExecutors (podset.go:356).</text>
+<line x1="1505" y1="1523" x2="1244" y2="1523" stroke="#25506e" stroke-width="1.7" marker-end="url(#ac)"/>
+<text x="1374" y="1514" font-size="11" text-anchor="middle" fill="#1f2933">executor PodSet Count = N_live</text>
+<circle cx="1495" cy="1512" r="8.5" fill="#ffffff" stroke="#25506e" stroke-width="1.1"/><text x="1495" y="1515.5" font-size="9.5" font-weight="600" text-anchor="middle" fill="#25506e">11</text>
+<line x1="1243" y1="1573" x2="1772" y2="1573" stroke="#25506e" stroke-width="1.7" marker-end="url(#ac)"/>
+<text x="1508" y="1552" font-size="11" text-anchor="middle" fill="#1f2933">EnsureWorkloadSlices(podSets, ...)</text>
+<text x="1508" y="1567" font-size="9.5" font-family="Menlo, monospace" text-anchor="middle" fill="#25506e">workloadslicing.go:245</text>
+<circle cx="1253" cy="1562" r="8.5" fill="#ffffff" stroke="#25506e" stroke-width="1.1"/><text x="1253" y="1565.5" font-size="9.5" font-weight="600" text-anchor="middle" fill="#25506e">12</text>
+<path d="M1776 1635 L1842 1635 L1842 1657 L1781 1657" fill="none" stroke="#3f6d52" stroke-width="1.5" marker-end="url(#as)"/>
+<text x="1860" y="1636" font-size="11" text-anchor="start" fill="#1f2933"><tspan fill="#6b7785" font-weight="600">13. </tspan>ScaledUp() -&gt; a NEW slice, never an in-place</text>
+<text x="1860" y="1650" font-size="11" text-anchor="start" fill="#1f2933">grow</text>
+<text x="1860" y="1664" font-size="9.5" font-family="Menlo, monospace" text-anchor="start" fill="#3f6d52">workloadslicing.go:235</text>
+<line x1="1773" y1="1731" x2="440" y2="1731" stroke="#25506e" stroke-width="1.7" marker-end="url(#ac)"/>
+<text x="1106" y="1680" font-size="11" text-anchor="middle" fill="#1f2933">create Workload slice + replacement-for</text>
+<text x="1106" y="1695" font-size="11" text-anchor="middle" fill="#1f2933">annotation; name from</text>
+<text x="1106" y="1710" font-size="11" text-anchor="middle" fill="#1f2933">GetWorkloadNameExtraPart (sequence number)</text>
+<text x="1106" y="1725" font-size="9.5" font-family="Menlo, monospace" text-anchor="middle" fill="#25506e">controller.go:149</text>
+<circle cx="1763" cy="1720" r="8.5" fill="#ffffff" stroke="#25506e" stroke-width="1.1"/><text x="1763" y="1723.5" font-size="9.5" font-weight="600" text-anchor="middle" fill="#25506e">14</text>
+<line x1="439" y1="1823" x2="2040" y2="1823" stroke="#9c5a1c" stroke-width="1.7" marker-end="url(#ae)" stroke-dasharray="6 4"/>
+<text x="1240" y="1814" font-size="11" text-anchor="middle" fill="#1f2933">pending Workload observed</text>
+<circle cx="449" cy="1812" r="8.5" fill="#ffffff" stroke="#9c5a1c" stroke-width="1.1"/><text x="449" y="1815.5" font-size="9.5" font-weight="600" text-anchor="middle" fill="#9c5a1c">15</text>
+<path d="M2044 1873 L2110 1873 L2110 1895 L2049 1895" fill="none" stroke="#3f6d52" stroke-width="1.5" marker-end="url(#as)"/>
+<text x="2128" y="1867" font-size="11" text-anchor="start" fill="#1f2933"><tspan fill="#6b7785" font-weight="600">16. </tspan>ReplacedWorkloadSlice /</text>
+<text x="2128" y="1881" font-size="11" text-anchor="start" fill="#1f2933">FindReplacedSliceTarget — predecessor becomes</text>
+<text x="2128" y="1895" font-size="11" text-anchor="start" fill="#1f2933">the preemption target</text>
+<text x="2128" y="1909" font-size="9.5" font-family="Menlo, monospace" text-anchor="start" fill="#3f6d52">scheduler.go:518, :921</text>
+<path d="M2044 1983 L2110 1983 L2110 2005 L2049 2005" fill="none" stroke="#3f6d52" stroke-width="1.5" marker-end="url(#as)"/>
+<text x="2128" y="1984" font-size="11" text-anchor="start" fill="#1f2933"><tspan fill="#6b7785" font-weight="600">17. </tspan>Assignment.append — charges the snapshot only</text>
+<text x="2128" y="1998" font-size="11" text-anchor="start" fill="#1f2933">the DELTA vs the replaced slice</text>
+<text x="2128" y="2012" font-size="9.5" font-family="Menlo, monospace" text-anchor="start" fill="#3f6d52">flavorassigner.go:1026</text>
+<line x1="2041" y1="2079" x2="440" y2="2079" stroke="#25506e" stroke-width="1.7" marker-end="url(#ac)"/>
+<text x="1240" y="2043" font-size="11" text-anchor="middle" fill="#1f2933">Assignment.ToAPI — FULL count written to</text>
+<text x="1240" y="2058" font-size="11" text-anchor="middle" fill="#1f2933">status.admission</text>
+<text x="1240" y="2073" font-size="9.5" font-family="Menlo, monospace" text-anchor="middle" fill="#25506e">flavorassigner.go:252</text>
+<circle cx="2031" cy="2068" r="8.5" fill="#ffffff" stroke="#25506e" stroke-width="1.1"/><text x="2031" y="2071.5" font-size="9.5" font-weight="600" text-anchor="middle" fill="#25506e">18</text>
+<line x1="2047" y1="2156" x2="2308" y2="2156" stroke="#25506e" stroke-width="1.7" marker-end="url(#ac)"/>
+<text x="2178" y="2135" font-size="11" text-anchor="middle" fill="#1f2933">AddOrUpdateWorkload</text>
+<text x="2178" y="2150" font-size="9.5" font-family="Menlo, monospace" text-anchor="middle" fill="#25506e">cache.go:816</text>
+<circle cx="2057" cy="2145" r="8.5" fill="#ffffff" stroke="#25506e" stroke-width="1.1"/><text x="2057" y="2148.5" font-size="9.5" font-weight="600" text-anchor="middle" fill="#25506e">19</text>
+<path d="M2312 2218 L2378 2218 L2378 2240 L2317 2240" fill="none" stroke="#3f6d52" stroke-width="1.5" marker-end="url(#as)"/>
+<text x="2396" y="2212" font-size="11" text-anchor="start" fill="#1f2933"><tspan fill="#6b7785" font-weight="600">20. </tspan>sliceChainKey / reconcileSliceGroup — only the</text>
+<text x="2396" y="2226" font-size="11" text-anchor="start" fill="#1f2933">chain tip is charged (ns + slice name + job</text>
+<text x="2396" y="2240" font-size="11" text-anchor="start" fill="#1f2933">UID)</text>
+<text x="2396" y="2254" font-size="9.5" font-family="Menlo, monospace" text-anchor="start" fill="#3f6d52">clusterqueue.go:603</text>
+<line x1="2041" y1="2328" x2="440" y2="2328" stroke="#25506e" stroke-width="1.7" marker-end="url(#ac)"/>
+<text x="1240" y="2292" font-size="11" text-anchor="middle" fill="#1f2933">replaceOldWorkloadSlice — Finish the</text>
+<text x="1240" y="2307" font-size="11" text-anchor="middle" fill="#1f2933">predecessor</text>
+<text x="1240" y="2322" font-size="9.5" font-family="Menlo, monospace" text-anchor="middle" fill="#25506e">scheduler.go:635</text>
+<circle cx="2031" cy="2317" r="8.5" fill="#ffffff" stroke="#25506e" stroke-width="1.1"/><text x="2031" y="2320.5" font-size="9.5" font-weight="600" text-anchor="middle" fill="#25506e">21</text>
+<line x1="439" y1="2405" x2="2576" y2="2405" stroke="#9c5a1c" stroke-width="1.7" marker-end="url(#ae)" stroke-dasharray="6 4"/>
+<text x="1508" y="2396" font-size="11" text-anchor="middle" fill="#1f2933">Workload update event</text>
+<circle cx="449" cy="2394" r="8.5" fill="#ffffff" stroke="#9c5a1c" stroke-width="1.1"/><text x="449" y="2397.5" font-size="9.5" font-weight="600" text-anchor="middle" fill="#9c5a1c">22</text>
+<path d="M2580 2455 L2514 2455 L2514 2477 L2575 2477" fill="none" stroke="#3f6d52" stroke-width="1.5" marker-end="url(#as)"/>
+<text x="2496" y="2463" font-size="11" text-anchor="end" fill="#1f2933"><tspan fill="#6b7785" font-weight="600">23. </tspan>podsToUngate — room = granted - alreadyUngated</text>
+<text x="2496" y="2477" font-size="9.5" font-family="Menlo, monospace" text-anchor="end" fill="#3f6d52">ungater.go:265</text>
+<line x1="2577" y1="2537" x2="440" y2="2537" stroke="#25506e" stroke-width="1.7" marker-end="url(#ac)"/>
+<text x="1508" y="2498" font-size="11" text-anchor="middle" fill="#1f2933">remove the scheduling gate from exactly</text>
+<text x="1508" y="2513" font-size="11" text-anchor="middle" fill="#1f2933">`room` Pods; kube-scheduler then places</text>
+<text x="1508" y="2528" font-size="11" text-anchor="middle" fill="#1f2933">them</text>
+<circle cx="2567" cy="2526" r="8.5" fill="#ffffff" stroke="#25506e" stroke-width="1.1"/><text x="2567" y="2529.5" font-size="9.5" font-weight="600" text-anchor="middle" fill="#25506e">24</text>
+<line x1="2309" y1="2617" x2="440" y2="2617" stroke="#25506e" stroke-width="1.7" marker-end="url(#ac)"/>
+<text x="1374" y="2581" font-size="11" text-anchor="middle" fill="#1f2933">Cache.Usage -&gt;</text>
+<text x="1374" y="2596" font-size="11" text-anchor="middle" fill="#1f2933">ClusterQueue.status.flavorsUsage</text>
+<text x="1374" y="2611" font-size="9.5" font-family="Menlo, monospace" text-anchor="middle" fill="#25506e">clusterqueue_controller.go:553</text>
+<circle cx="2299" cy="2606" r="8.5" fill="#ffffff" stroke="#25506e" stroke-width="1.1"/><text x="2299" y="2609.5" font-size="9.5" font-weight="600" text-anchor="middle" fill="#25506e">25</text>
 </svg>

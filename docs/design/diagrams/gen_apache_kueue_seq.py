@@ -12,12 +12,15 @@ because the package was about to be deleted; that removal was abandoned, so pinn
 just rot, which is the exact problem the resolver exists to prevent.
 """
 
-from gen_seq import call, event, note, ref, render, self_, seq
+from gen_seq import call, event, note, ref, refs, render, self_, seq
 
 # apachesparkapplication symbols, resolved from source like the generic ones. A renamed symbol
 # fails the build with the key that no longer matches, rather than emitting a wrong number.
 AP = "pkg/controller/jobs/apachesparkapplication"
 A_SYMBOLS = {
+    "watchRegistration": (
+        f"{AP}/apachesparkapplication_controller.go",
+        r"b\.Watches\(&corev1\.Pod\{\}", "controller.go"),
     "isTrackedExecutorPod": (
         f"{AP}/apachesparkapplication_executor_pod_handler.go",
         r"^func isTrackedExecutorPod", "pod_handler.go"),
@@ -87,6 +90,7 @@ SUB = ("Kueue-owned Workload · pkg/controller/jobs/apachesparkapplication (PR #
 UP_LANES = [
     ("Spark driver (DA)", "SPARK · driver pod · ExecutorAllocationManager", SPARK_T),
     ("kube-apiserver", "CLUSTER · control plane", SPARK_T),
+    ("shared Pod informer", "KUEUE · controller-runtime cache · LIST then WATCH", KUEUE_T),
     ("executorPodHandler", "KUEUE · apachesparkapplication_executor_pod_handler.go", KUEUE_T),
     ("JobReconciler", "KUEUE · " + ref("ensureOneWorkload"), KUEUE_T),
     ("PodSets / count", "KUEUE · apachesparkapplication_podset.go", KUEUE_T),
@@ -103,23 +107,44 @@ UP = seq([
          "Every executor the driver creates from that template is born gated. The Apache operator "
          "plays no part in scaling at all - it only needs to honour spec.suspend, which "
          f"{aref('Suspend')} sets for the initial admission."),
+    note("How the watch is wired, once at manager start and not per application: NewReconciler calls "
+         "b.Watches(&corev1.Pod{}, newExecutorPodHandler(), WithPredicates(executorPodPredicate{})) "
+         f"({aref('watchRegistration')}), and only when ElasticJobsViaWorkloadSlices is on - otherwise "
+         "the cluster-wide Pod watch would be paid for and unused. controller-runtime's source.Kind "
+         f"then calls Cache.GetInformer(Pod) ({ref('cr.GetInformer')}), which returns the manager's "
+         "EXISTING shared Pod informer - so this adds a listener, not a second watch connection - and "
+         f"registers on it with AddEventHandlerWithOptions ({ref('cr.AddEventHandler')})."),
     call(0, 1, "create executor Pods (born gated)"),
-    event(1, 2, "Pod CREATE event"),
-    self_(2, "isTrackedExecutorPod - label match on the Apache "
-             "app-name + spark-role labels. Executor Pods are owned "
-             "by the DRIVER Pod, so there is no OwnerReference chain",
+    event(1, 2, "watch stream: ADDED. The informer LISTs once at start "
+               "and then holds a long-lived WATCH"),
+    self_(2, "Reflector -> DeltaFIFO -> sharedIndexInformer fans the "
+             "delta out to every registered listener"),
+    self_(2, "predicate: isTrackedExecutorPod - label match on the Apache "
+             "app-name + spark-role labels. Executor Pods are owned by the "
+             "DRIVER Pod, so there is no OwnerReference chain to follow and "
+             "Owns() cannot be used. Run by controller-runtime inside OnAdd, "
+             "before the handler",
           aref('isTrackedExecutorPod')),
-    self_(2, "schedule - trailing-edge debounce 5s, maxWait 30s. "
-             "The ceiling matters: operator status churn can land more "
+    call(2, 3, "predicates passed -> handler.Create(ctx, evt, queue)",
+         ref("cr.OnAdd")),
+    note("Two things that arrow hides. OnAdd also fires for every Pod in the informer's INITIAL "
+         "LIST (IsInInitialList), so on an operator restart a large application replays all its "
+         "existing executors as Creates - the debounce below absorbs that into one reconcile. And the "
+         "event carries no count: it is purely a trigger to go and look."),
+    self_(3, "schedule - trailing-edge debounce 5s, maxWait 30s. Per-key "
+             "timers, NOT the workqueue's delay heap: staggered AddAfter "
+             "calls from one burst would each fire and defeat the coalescing. "
+             "The ceiling matters because operator status churn can land more "
              "often than the quiet window",
           aref('schedule')),
-    call(2, 3, "enqueue reconcile.Request for the SparkApplication"),
-    call(3, 4, "PodSets(ctx, client)", aref('PodSets')),
-    call(4, 1, "List Pods by " + aref('PodLabelSelector')),
-    self_(4, "isVerifiedLiveExecutor - non-terminal Pods count, "
+    call(3, 4, "q.Add(req) - from inside the timer callback, naming the "
+               "SparkApplication and not the Pod"),
+    call(4, 5, "PodSets(ctx, client)", aref('PodSets')),
+    call(5, 1, "List Pods by " + aref('PodLabelSelector')),
+    self_(5, "isVerifiedLiveExecutor - non-terminal Pods count, "
              "INCLUDING still-gated ones (defect 3)",
           aref('isVerifiedLiveExecutor')),
-    self_(4, "clampToDynamicAllocationBounds - conf keys first, then "
+    self_(5, "clampToDynamicAllocationBounds - conf keys first, then "
              "instanceConfig. Lower bound stops a mid-startup read "
              "dismantling a just-granted gang",
           aref('clampToDynamicAllocationBounds')),
@@ -129,35 +154,35 @@ UP = seq([
          f"{aref('initialExecutorCount')}, a MAX over instances/initialExecutors/minExecutors. Memory is "
          f"Spark's own base+overhead arithmetic from sparkConf ({aref('totalMemoryBytes')}), never the "
          "pod template - Spark overwrites the template's cpu and memory before creating the pod."),
-    call(4, 3, "executor PodSet Count = N_live"),
-    call(3, 5, "EnsureWorkloadSlices(podSets, ...)", ref("EnsureWorkloadSlices")),
-    self_(5, "ScaledUp() -> a NEW slice, never an in-place grow",
+    call(5, 4, "executor PodSet Count = N_live"),
+    call(4, 6, "EnsureWorkloadSlices(podSets, ...)", ref("EnsureWorkloadSlices")),
+    self_(6, "ScaledUp() -> a NEW slice, never an in-place grow",
           ref("ScaledUp")),
-    call(5, 1, "create Workload slice + replacement-for annotation; name from "
+    call(6, 1, "create Workload slice + replacement-for annotation; name from "
                "GetWorkloadNameExtraPart, a per-job sequence number because DA "
                "scaling never bumps Generation",
          aref('GetWorkloadNameExtraPart') + " / " + aref('workloadSequenceNumber')),
-    event(1, 6, "pending Workload observed"),
-    self_(6, "ReplacedWorkloadSlice / FindReplacedSliceTarget - the "
+    event(1, 7, "pending Workload observed"),
+    self_(7, "ReplacedWorkloadSlice / FindReplacedSliceTarget - the "
              "predecessor becomes the preemption target",
           ref("FindReplacedSliceTarget_call")),
-    self_(6, "Assignment.append charges the snapshot only the DELTA "
+    self_(7, "Assignment.append charges the snapshot only the DELTA "
              "vs the replaced slice", ref("Assignment.append")),
-    call(6, 1, "Assignment.ToAPI - FULL count written to status.admission",
+    call(7, 1, "Assignment.ToAPI - FULL count written to status.admission",
          ref("Assignment.ToAPI")),
-    call(6, 7, "AddOrUpdateWorkload", ref("AddOrUpdateWorkload")),
-    self_(7, "sliceChainKey / reconcileSliceGroup - only the chain "
+    call(7, 8, "AddOrUpdateWorkload", ref("AddOrUpdateWorkload")),
+    self_(8, "sliceChainKey / reconcileSliceGroup - only the chain "
              "tip is charged (ns + slice name + owning job UID)",
           ref("reconcileSliceGroup")),
-    call(6, 1, "replaceOldWorkloadSlice - Finish the predecessor",
+    call(7, 1, "replaceOldWorkloadSlice - Finish the predecessor",
          ref("replaceOldWorkloadSlice")),
-    event(1, 8, "Workload update event"),
-    self_(8, "podsToUngate - room = granted - alreadyUngated, capped "
+    event(1, 9, "Workload update event"),
+    self_(9, "podsToUngate - room = granted - alreadyUngated, capped "
              "by the GRANT and not the request",
           ref("podsToUngate")),
-    call(8, 1, "remove the gate from exactly `room` Pods; kube-scheduler "
+    call(9, 1, "remove the gate from exactly `room` Pods; kube-scheduler "
                "then places them"),
-    call(7, 1, "Cache.Usage -> ClusterQueue.status.flavorsUsage, and the "
+    call(8, 1, "Cache.Usage -> ClusterQueue.status.flavorsUsage, and the "
                "cohort's borrowing headroom with it",
          ref("flavorsUsage")),
 ])
@@ -165,6 +190,7 @@ UP = seq([
 DOWN_LANES = [
     ("Spark driver (DA)", "SPARK · driver pod · ExecutorAllocationManager", SPARK_T),
     ("kube-apiserver", "CLUSTER · control plane", SPARK_T),
+    ("shared Pod informer", "KUEUE · controller-runtime cache · LIST then WATCH", KUEUE_T),
     ("executorPodHandler", "KUEUE · apachesparkapplication_executor_pod_handler.go", KUEUE_T),
     ("JobReconciler", "KUEUE · " + ref("ensureOneWorkload"), KUEUE_T),
     ("PodSets / count", "KUEUE · apachesparkapplication_podset.go", KUEUE_T),
@@ -175,34 +201,40 @@ DOWN_LANES = [
 
 DOWN = seq([
     call(0, 1, "delete executor Pods (executorIdleTimeout elapsed)"),
-    event(1, 2, "Pod DELETE / UPDATE event"),
-    call(2, 3, "debounced enqueue - same handler as scale-up",
-         aref('schedule')),
-    call(3, 4, "PodSets(ctx, client)", aref('PodSets')),
-    self_(4, "isVerifiedLiveExecutor - a Pod with a DeletionTimestamp "
+    event(1, 2, "watch stream: DELETED, or MODIFIED while terminating"),
+    self_(2, "OnDelete / OnUpdate. DeleteEvent.Object is the LAST-KNOWN "
+             "object from the informer cache, which is the only reason "
+             "label-based mapping still works on a delete",
+          refs("cr.OnDelete", "cr.OnUpdate")),
+    call(2, 3, "predicates passed -> handler.Delete / handler.Update",
+         aref('isTrackedExecutorPod')),
+    call(3, 4, "debounced enqueue - same timer map as scale-up, so a burst "
+               "of deletions is one reconcile", aref('schedule')),
+    call(4, 5, "PodSets(ctx, client)", aref('PodSets')),
+    self_(5, "isVerifiedLiveExecutor - a Pod with a DeletionTimestamp "
              "STILL counts until Succeeded/Failed: its containers run "
              "and it holds node resources until then",
           aref('isVerifiedLiveExecutor')),
-    call(4, 3, "executor PodSet Count = N_live (lower)"),
-    call(3, 5, "EnsureWorkloadSlices(podSets, ...)", ref("EnsureWorkloadSlices")),
-    self_(5, "ScaledDown() -> in-place patch. No new slice, and the "
+    call(5, 4, "executor PodSet Count = N_live (lower)"),
+    call(4, 6, "EnsureWorkloadSlices(podSets, ...)", ref("EnsureWorkloadSlices")),
+    self_(6, "ScaledDown() -> in-place patch. No new slice, and the "
              "scheduler is never involved", ref("ScaledDown")),
-    call(5, 1, "updatePodSetCountsWithRetry - lower spec.podSets[].count",
+    call(6, 1, "updatePodSetCountsWithRetry - lower spec.podSets[].count",
          ref("updatePodSetCountsWithRetry")),
-    call(5, 1, "scaleDownAdmission - lower the granted count, rescale "
+    call(6, 1, "scaleDownAdmission - lower the granted count, rescale "
                "ResourceUsage proportionally (it is the podSet TOTAL, not "
                "per-pod), truncate TopologyAssignment",
          ref("scaleDownAdmission")),
-    call(1, 6, "admission mutation must pass validation"),
-    self_(6, "validateAdmissionUpdate - the narrow decrease-only, "
+    call(1, 7, "admission mutation must pass validation"),
+    self_(7, "validateAdmissionUpdate - the narrow decrease-only, "
              "elastic-only exception. Plain batch/v1 Job admission "
              "stays fully immutable",
           ref("validateAdmissionUpdate")),
-    event(1, 7, "Workload update"),
-    self_(7, "totalRequestsFromAdmission - charges min(spec.count, "
+    event(1, 8, "Workload update"),
+    self_(8, "totalRequestsFromAdmission - charges min(spec.count, "
              "granted), so a stale high grant cannot inflate usage",
           ref("totalRequestsFromAdmission")),
-    call(7, 1, "flavorsUsage drops; the freed quota returns to the "
+    call(8, 1, "flavorsUsage drops; the freed quota returns to the "
                "ClusterQueue and becomes lendable in the cohort again",
          ref("flavorsUsage")),
     note("The asymmetry this pair exists to show: scale-UP creates a Workload and traverses the "

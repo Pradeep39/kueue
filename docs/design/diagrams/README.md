@@ -82,6 +82,41 @@ cannot be delivered from the operator.
 
 Lane headers name the owning file; each arrow carries `file.go:line`.
 
+## How the executor Pod watch is wired
+
+All four Dynamic Allocation flows now show this explicitly, because it is the step most easily
+misread: **nothing is pushed from Spark.** Dynamic Allocation never calls Kueue. The driver's
+`ExecutorAllocationManager` writes executor Pods straight to the API server, and Kueue learns
+about them the ordinary way — off a watch stream — which is why there is a `shared Pod informer`
+lane between `kube-apiserver` and `executorPodHandler`.
+
+Registration happens **once at manager start, not per application**, and is drawn as the callout
+at the top of each up-flow:
+
+1. `NewReconciler` calls `b.Watches(&corev1.Pod{}, newExecutorPodHandler(), WithPredicates(executorPodPredicate{}))`
+   — only when `ElasticJobsViaWorkloadSlices` is on, so a cluster-wide Pod watch is not paid for
+   when the feature it exists for is off.
+2. controller-runtime's `source.Kind` calls `Cache.GetInformer(Pod)`, which returns the manager's
+   **existing** shared informer — a listener is added, not a second watch connection.
+3. It registers `NewEventHandler(ctx, queue, handler, predicates)` on that informer.
+
+Delivery per event: API server emits `ADDED`/`MODIFIED`/`DELETED` → Reflector → `DeltaFIFO` →
+`sharedIndexInformer` fans out → controller-runtime's `OnAdd`/`OnUpdate`/`OnDelete` builds the
+typed event, **runs the predicate**, and only then invokes the handler → `schedule()` starts a
+per-key debounce timer → `q.Add(req)` fires later from the timer callback, naming the
+**SparkApplication, not the Pod**.
+
+Three details the flows call out because each one surprises people:
+
+- **`Owns()` cannot be used.** Executor Pods are owned by the *driver Pod*, so there is no
+  OwnerReference chain back to the SparkApplication. Hence a hand-written handler that maps by
+  label.
+- **`OnAdd` also fires for the informer's initial LIST** (`IsInInitialList`), so an operator
+  restart replays every existing executor as a Create. The debounce absorbs that into one
+  reconcile.
+- **The event carries no count.** It is purely a trigger; `computeLiveExecutorCount` re-lists.
+  That is why coalescing events loses nothing and a missed event self-corrects.
+
 ## The asymmetry the pair is meant to show
 
 **Scale-up** spans all nine lanes: it creates a *new* Workload slice and traverses the
