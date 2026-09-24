@@ -2,8 +2,12 @@
 """Generate SVG sequence diagrams for Kueue's inference of Spark Dynamic Allocation scaling."""
 
 import html
+import re
 import subprocess
 from pathlib import Path
+
+# docs/design/diagrams/gen_seq.py -> repo root
+REPO_ROOT = Path(__file__).resolve().parents[3]
 
 LANE_W = 268
 MARGIN = 34
@@ -56,7 +60,7 @@ def esc(s):
     return html.escape(s, quote=False)
 
 
-def build(title, subtitle, lanes, msgs, out):
+def build(title, subtitle, lanes, msgs, out, extra_legend=None):
     n = len(lanes)
     width = MARGIN * 2 + LANE_W * n
     centers = [MARGIN + LANE_W // 2 + i * LANE_W for i in range(n)]
@@ -70,7 +74,10 @@ def build(title, subtitle, lanes, msgs, out):
         elif m["kind"] == "self":
             extra = 20 + 14 * (len(wrap(m["text"], SELF_WRAP)) - 1) + (12 if m.get("ref") else 0)
         else:
-            extra = 15 * (len(wrap(m["text"], 42)) - 1)
+            # The ref line is drawn above the arrow like the text is, so it needs its own
+            # 12px reserved here too - the self_ branch above already does this. Without it,
+            # consecutive multi-line arrows that both carry refs overlap.
+            extra = 15 * (len(wrap(m["text"], 42)) - 1) + (12 if m.get("ref") else 0)
         y += STEP + extra
     height = y + 40
 
@@ -111,13 +118,29 @@ def build(title, subtitle, lanes, msgs, out):
         )
     p.append('</g>')
 
-    for i, (name, file) in enumerate(lanes):
+    # Optional second legend, for diagrams that tint lane headers to mean something -
+    # e.g. which process a component is physically deployed in. List of (bg, bd, label).
+    # Sits immediately left of the arrow legend, in the same band, to stay clear of the title.
+    if extra_legend:
+        ex = lx - 348
+        p.append(f'<g font-size="10.5" fill="{MUTED}">')
+        for i, (bg, bd, lab) in enumerate(extra_legend):
+            yy = 24 + i * 15
+            p.append(
+                f'<rect x="{ex}" y="{yy}" width="22" height="11" rx="2.5" fill="{bg}" stroke="{bd}"/>'
+                f'<text x="{ex + 29}" y="{yy + 9}">{esc(lab)}</text>'
+            )
+        p.append('</g>')
+
+    for i, lane in enumerate(lanes):
+        name, file = lane[0], lane[1]
+        head_bg, head_bd = lane[2] if len(lane) > 2 else (HEAD_BG, HEAD_BD)
         cx = centers[i]
         x = cx - LANE_W // 2 + 8
         w = LANE_W - 16
         p.append(
             f'<rect x="{x}" y="{HEAD_TOP}" width="{w}" height="{HEAD_H}" rx="5" '
-            f'fill="{HEAD_BG}" stroke="{HEAD_BD}"/>'
+            f'fill="{head_bg}" stroke="{head_bd}"/>'
         )
         nl = wrap(name, 26)
         ty = HEAD_TOP + 18 if len(nl) > 1 else HEAD_TOP + 22
@@ -250,11 +273,128 @@ def note(text):
     return {"kind": "note", "text": text}
 
 
+# Every code reference on an arrow is resolved from the source at generation time.
+#
+# These were hardcoded until 2026-09-21, and 14 of 17 had rotted: PRs #26-#35 moved
+# isVerifiedLiveExecutor 119 -> 176, totalRequestsFromAdmission 674 -> 790, and so on. A
+# stale line number is worse than none, because it reads as precise. Anchoring on a symbol
+# pattern means the numbers are correct whenever the diagrams are regenerated, and an
+# unmatched pattern fails the build loudly instead of emitting a wrong number.
+#
+# key -> (repo-relative path, regex matching the definition, label shown on the diagram)
+SP = "pkg/controller/jobs/sparkapplication"
+SYMBOLS = {
+    "isTrackedExecutorPod": (
+        f"{SP}/sparkapplication_executor_pod_handler.go",
+        r"^func isTrackedExecutorPod", "pod_handler.go"),
+    "schedule": (
+        f"{SP}/sparkapplication_executor_pod_handler.go",
+        r"^func \(.*\) schedule\(", "pod_handler.go"),
+    "isVerifiedLiveExecutor": (
+        f"{SP}/sparkapplication_podset.go",
+        r"^func isVerifiedLiveExecutor", "podset.go"),
+    "liveExecutorCount": (
+        f"{SP}/sparkapplication_podset.go",
+        r"^func \(j \*SparkApplication\) liveExecutorCount\(", "podset.go"),
+    "clampToDynamicAllocationBounds": (
+        f"{SP}/sparkapplication_podset.go",
+        r"^func \(j \*SparkApplication\) clampToDynamicAllocationBounds\(", "podset.go"),
+    "PodSets": (
+        f"{SP}/sparkapplication_controller.go",
+        r"^func \(j \*SparkApplication\) PodSets\(", "controller.go"),
+    "GetWorkloadNameExtraPart": (
+        f"{SP}/sparkapplication_controller.go",
+        r"^func \(j \*SparkApplication\) GetWorkloadNameExtraPart\(", "controller.go"),
+    "ensureOneWorkload": (
+        "pkg/controller/jobframework/reconciler.go",
+        r"^func \(r \*JobReconciler\) ensureOneWorkload\(", "jobframework/reconciler.go"),
+    "EnsureWorkloadSlices": (
+        "pkg/workloadslicing/workloadslicing.go",
+        r"^func EnsureWorkloadSlices\(", "workloadslicing.go"),
+    "ScaledUp": (
+        "pkg/workloadslicing/workloadslicing.go",
+        r"^func ScaledUp\(", "workloadslicing.go"),
+    "ScaledDown": (
+        "pkg/workloadslicing/workloadslicing.go",
+        r"^func ScaledDown\(", "workloadslicing.go"),
+    "updatePodSetCountsWithRetry": (
+        "pkg/workloadslicing/workloadslicing.go",
+        r"^func updatePodSetCountsWithRetry\(", "workloadslicing.go"),
+    "scaleDownAdmission": (
+        "pkg/workloadslicing/workloadslicing.go",
+        r"^func scaleDownAdmission\(", "workloadslicing.go"),
+    "ReplacedWorkloadSlice_call": (
+        "pkg/scheduler/scheduler.go",
+        r"workloadslicing\.ReplacedWorkloadSlice\(", "scheduler.go"),
+    "FindReplacedSliceTarget_call": (
+        "pkg/scheduler/scheduler.go",
+        r"workloadslicing\.FindReplacedSliceTarget\(", "scheduler.go"),
+    "replaceOldWorkloadSlice": (
+        "pkg/scheduler/scheduler.go",
+        r"^func \(s \*Scheduler\) replaceOldWorkloadSlice\(", "scheduler.go"),
+    "Assignment.append": (
+        "pkg/scheduler/flavorassigner/flavorassigner.go",
+        r"^func \(a \*Assignment\) append\(", "flavorassigner.go"),
+    "Assignment.ToAPI": (
+        "pkg/scheduler/flavorassigner/flavorassigner.go",
+        r"^func \(a \*Assignment\) ToAPI\(", "flavorassigner.go"),
+    "AddOrUpdateWorkload": (
+        "pkg/cache/scheduler/cache.go",
+        r"^func \(c \*Cache\) AddOrUpdateWorkload\(", "cache.go"),
+    "reconcileSliceGroup": (
+        "pkg/cache/scheduler/clusterqueue.go",
+        r"^func \(c \*clusterQueue\) reconcileSliceGroup\(", "clusterqueue.go"),
+    "flavorsUsage": (
+        "pkg/controller/core/clusterqueue_controller.go",
+        r"Status\.FlavorsUsage = ", "clusterqueue_controller.go"),
+    "validateAdmissionUpdate": (
+        "pkg/webhooks/workload_webhook.go",
+        r"^func validateAdmissionUpdate\(", "workload_webhook.go"),
+    "totalRequestsFromAdmission": (
+        "pkg/workload/workload.go",
+        r"^func totalRequestsFromAdmission\(", "workload.go"),
+    "podsToUngate": (
+        "pkg/controller/elasticjobs/elastic_job_ungater.go",
+        r"^func \(r \*elasticJobUngater\) podsToUngate\(", "ungater.go"),
+}
+
+
+def line_of(key, table=None):
+    """First line matching the symbol's pattern. Raises if it no longer matches.
+
+    `table` lets a sibling generator resolve its own symbols through this machinery instead of
+    hardcoding line numbers; it defaults to this module's SYMBOLS.
+    """
+    path, pattern, _ = (table or SYMBOLS)[key]
+    src = REPO_ROOT / path
+    if not src.exists():
+        raise SystemExit(f"gen_seq.py: {path} does not exist (moved or renamed?)")
+    rx = re.compile(pattern)
+    for n, text in enumerate(src.read_text().splitlines(), 1):
+        if rx.search(text):
+            return n
+    raise SystemExit(
+        f"gen_seq.py: no line in {path} matches {pattern!r} for key {key!r}. "
+        "The symbol was renamed or removed - fix SYMBOLS rather than dropping the reference.")
+
+
+def ref(key, table=None):
+    """'label.go:NNN', resolved now."""
+    return f"{(table or SYMBOLS)[key][2]}:{line_of(key, table)}"
+
+
+def refs(*keys, table=None):
+    """Several references in one file: 'scheduler.go:518, :921'."""
+    first = ref(keys[0], table)
+    rest = [str(line_of(k, table)) for k in keys[1:]]
+    return ", :".join([first] + rest)
+
+
 UP_LANES = [
     ("Spark driver (DA)", "ExecutorAllocationManager"),
     ("kube-apiserver", "—"),
     ("executorPodHandler", "sparkapplication_executor_pod_handler.go"),
-    ("JobReconciler", "jobframework/reconciler.go:962"),
+    ("JobReconciler", ref("ensureOneWorkload")),
     ("PodSets / count", "sparkapplication_podset.go"),
     ("workloadslicing", "workloadslicing/workloadslicing.go"),
     ("Scheduler + flavorassigner", "scheduler/scheduler.go"),
@@ -269,45 +409,46 @@ UP = seq([
     call(0, 1, "create executor Pods (born gated)"),
     event(1, 2, "Pod CREATE event"),
     self_(2, "isTrackedExecutorPod() — label match on "
-             "sparkoperator.k8s.io/app-name + spark-role", "pod_handler.go:70"),
-    self_(2, "schedule() — trailing-edge debounce 5s, maxWait 30s", "pod_handler.go:135"),
+             "sparkoperator.k8s.io/app-name + spark-role", ref("isTrackedExecutorPod")),
+    self_(2, "schedule() — trailing-edge debounce 5s, maxWait 30s", ref("schedule")),
     call(2, 3, "enqueue reconcile.Request for the SparkApplication"),
-    call(3, 4, "PodSets(ctx, client)", "ensureOneWorkload -> controller.go:157"),
+    call(3, 4, "PodSets(ctx, client)", f'ensureOneWorkload -> {ref("PodSets")}'),
     call(4, 1, "List Pods by app-name + spark-role label"),
     self_(4, "isVerifiedLiveExecutor() — non-terminal Pods count, "
-             "INCLUDING still-gated ones (defect 3)", "podset.go:119"),
+             "INCLUDING still-gated ones (defect 3)", ref("isVerifiedLiveExecutor")),
     note("This is the whole inference. There is no DA event and no call from Spark into Kueue: the "
          "desired executor count is re-derived from live Pod objects on every debounced reconcile, "
-         "and cached for the pass (podset.go:137)."),
+         f"and cached for the pass ({ref('liveExecutorCount')}). The derived count is then clamped "
+         f"to Dynamic Allocation's own minExecutors/maxExecutors ({ref('clampToDynamicAllocationBounds')})."),
     call(4, 3, "executor PodSet Count = N_live"),
-    call(3, 5, "EnsureWorkloadSlices(podSets, ...)", "workloadslicing.go:173"),
-    self_(5, "ScaledUp() -> a NEW slice, never an in-place grow", "workloadslicing.go:163"),
+    call(3, 5, "EnsureWorkloadSlices(podSets, ...)", ref("EnsureWorkloadSlices")),
+    self_(5, "ScaledUp() -> a NEW slice, never an in-place grow", ref("ScaledUp")),
     call(5, 1, "create Workload slice + replacement-for annotation; "
-               "name from GetWorkloadNameExtraPart (sequence number)", "controller.go:149"),
+               "name from GetWorkloadNameExtraPart (sequence number)", ref("GetWorkloadNameExtraPart")),
     event(1, 6, "pending Workload observed"),
     self_(6, "ReplacedWorkloadSlice / FindReplacedSliceTarget — "
-             "predecessor becomes the preemption target", "scheduler.go:794, :469"),
+             "predecessor becomes the preemption target", refs("FindReplacedSliceTarget_call", "ReplacedWorkloadSlice_call")),
     self_(6, "Assignment.append — charges the snapshot only the "
-             "DELTA vs the replaced slice", "flavorassigner.go:967"),
+             "DELTA vs the replaced slice", ref("Assignment.append")),
     call(6, 1, "Assignment.ToAPI — FULL count written to status.admission",
-         "flavorassigner.go:208"),
-    call(6, 7, "AddOrUpdateWorkload", "cache.go:794"),
+         ref("Assignment.ToAPI")),
+    call(6, 7, "AddOrUpdateWorkload", ref("AddOrUpdateWorkload")),
     self_(7, "sliceChainKey / reconcileSliceGroup — only the chain "
-             "tip is charged (ns + slice name + job UID)", "clusterqueue.go"),
-    call(6, 1, "replaceOldWorkloadSlice — Finish the predecessor", "scheduler.go:585"),
+             "tip is charged (ns + slice name + job UID)", ref("reconcileSliceGroup")),
+    call(6, 1, "replaceOldWorkloadSlice — Finish the predecessor", ref("replaceOldWorkloadSlice")),
     event(1, 8, "Workload update event"),
-    self_(8, "podsToUngate — room = granted - alreadyUngated", "ungater.go:185"),
+    self_(8, "podsToUngate — room = granted - alreadyUngated", ref("podsToUngate")),
     call(8, 1, "remove the scheduling gate from exactly `room` Pods; "
                "kube-scheduler then places them"),
     call(7, 1, "Cache.Usage -> ClusterQueue.status.flavorsUsage",
-         "clusterqueue_controller.go:534"),
+         ref("flavorsUsage")),
 ])
 
 DOWN_LANES = [
     ("Spark driver (DA)", "ExecutorAllocationManager"),
     ("kube-apiserver", "—"),
     ("executorPodHandler", "sparkapplication_executor_pod_handler.go"),
-    ("JobReconciler", "jobframework/reconciler.go:962"),
+    ("JobReconciler", ref("ensureOneWorkload")),
     ("PodSets / count", "sparkapplication_podset.go"),
     ("workloadslicing", "workloadslicing/workloadslicing.go"),
     ("Workload webhook", "webhooks/workload_webhook.go"),
@@ -320,38 +461,46 @@ DOWN = seq([
     call(2, 3, "debounced enqueue — same handler as scale-up"),
     call(3, 4, "PodSets(ctx, client)"),
     self_(4, "isVerifiedLiveExecutor — a Pod with DeletionTimestamp "
-             "still counts until Succeeded/Failed", "podset.go:119"),
+             "still counts until Succeeded/Failed", ref("isVerifiedLiveExecutor")),
     call(4, 3, "executor PodSet Count = N_live (lower)"),
-    call(3, 5, "EnsureWorkloadSlices(podSets, ...)", "workloadslicing.go:173"),
+    call(3, 5, "EnsureWorkloadSlices(podSets, ...)", ref("EnsureWorkloadSlices")),
     self_(5, "ScaledDown() -> in-place patch. No new slice, and the "
-             "scheduler is never involved", "workloadslicing.go:156"),
+             "scheduler is never involved", ref("ScaledDown")),
     call(5, 1, "updatePodSetCountsWithRetry — lower spec.podSets[].count",
-         "workloadslicing.go:325"),
+         ref("updatePodSetCountsWithRetry")),
     call(5, 1, "scaleDownAdmission — lower the granted count, rescale "
-               "ResourceUsage, truncate TopologyAssignment", "workloadslicing.go:282"),
+               "ResourceUsage, truncate TopologyAssignment", ref("scaleDownAdmission")),
     call(1, 6, "admission mutation must pass validation"),
     self_(6, "validateAdmissionUpdate — decrease-only, elastic-only "
-             "exception; batch/v1 Job admission stays immutable", "workload_webhook.go:376"),
+             "exception; batch/v1 Job admission stays immutable", ref("validateAdmissionUpdate")),
     event(1, 7, "Workload update"),
     self_(7, "totalRequestsFromAdmission — charges min(spec.count, granted)",
-          "workload.go:674"),
+          ref("totalRequestsFromAdmission")),
     call(7, 1, "flavorsUsage drops"),
     note("Asymmetry worth remembering: scale-up creates a Workload and traverses the full "
          "scheduler + preemption path; scale-down is two in-place patches and never reaches the "
          "scheduler. Both are driven by the same debounced Pod watch."),
 ])
 
-d = Path.home() / "kueue-diagrams"
-d.mkdir(exist_ok=True)
+# Write beside this script, so a regeneration updates the committed SVGs/PNGs in place.
+d = Path(__file__).resolve().parent
 
-for name, title, sub, lanes, msgs in [
-    ("kueue-da-upscale", "Kueue: how a Spark Dynamic Allocation scale-UP is inferred",
-     "Elastic SparkApplication + ElasticJobsViaWorkloadSlices — Pradeep39/kueue", UP_LANES, UP),
-    ("kueue-da-downscale", "Kueue: how a Spark Dynamic Allocation scale-DOWN is inferred",
-     "Elastic SparkApplication + ElasticJobsViaWorkloadSlices — Pradeep39/kueue", DOWN_LANES, DOWN),
-]:
-    svg = d / f"{name}.svg"
-    build(title, sub, lanes, msgs, svg)
-    subprocess.run(["rsvg-convert", "-w", "2400", "-o", str(d / f"{name}.png"), str(svg)],
+
+def render(name, title, sub, lanes, msgs, out_dir=None, extra_legend=None):
+    """Emit one SVG beside this script and shell out to rsvg-convert for the PNG."""
+    out_dir = out_dir or d
+    svg = out_dir / f"{name}.svg"
+    build(title, sub, lanes, msgs, svg, extra_legend=extra_legend)
+    subprocess.run(["rsvg-convert", "-w", "2400", "-o", str(out_dir / f"{name}.png"), str(svg)],
                    check=True)
-    print(f"{svg}  ->  {d / (name + '.png')}")
+    print(f"{svg}  ->  {out_dir / (name + '.png')}")
+
+
+# Guarded so sibling generators can import build()/call()/event()/self_()/note()/seq()/render()
+# without regenerating these two.
+if __name__ == "__main__":
+    SUB = "Elastic SparkApplication + ElasticJobsViaWorkloadSlices — Pradeep39/kueue"
+    render("kueue-da-upscale",
+           "Kueue: how a Spark Dynamic Allocation scale-UP is inferred", SUB, UP_LANES, UP)
+    render("kueue-da-downscale",
+           "Kueue: how a Spark Dynamic Allocation scale-DOWN is inferred", SUB, DOWN_LANES, DOWN)

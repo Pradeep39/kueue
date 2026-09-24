@@ -1,0 +1,401 @@
+# Design: Kueue integration for the Apache Spark Kubernetes Operator
+
+Status: **merged** as PR #28 (package `pkg/controller/jobs/apachesparkapplication`), with the
+resource-charging rules subsequently **reversed by PR #33**. This document describes the code
+as it stands on `main`; §8 records what #28 originally decided and why it changed, because the
+PR body still describes the superseded rule.
+
+Applies to the Apache operator's `spark.apache.org/v1` `SparkApplication`. The pre-existing
+Kubeflow integration (`pkg/controller/jobs/sparkapplication`,
+`sparkoperator.k8s.io/v1beta2`) is a separate package and is not affected by anything here.
+
+---
+
+## 1. Why a second Spark integration exists
+
+Two unrelated operators both call their CRD `SparkApplication`. They share no API group, no
+schema, and no state machine:
+
+| | Kubeflow | Apache |
+|---|---|---|
+| CRD | `sparkoperator.k8s.io/v1beta2` | `spark.apache.org/v1` |
+| operator language | Go | Java |
+| executor count surface | `spec.executor.instances` (structured) | `spark.executor.instances` in `sparkConf` |
+| suspend field | `spec.suspend` (native) | **none upstream** — see §2 |
+| lifecycle | phase string | explicit state machine with transition history |
+
+`jobframework.GenericJob` is per-GVK, so nothing about the Kubeflow integration is reusable
+beyond the general elastic-scaling machinery in `pkg/workloadslicing`. Hence a new package
+rather than a variant of the old one.
+
+Registration surface: framework name `spark.apache.org/sparkapplication`, behind the alpha
+feature gate `ApacheSparkApplicationIntegration`, **default `false`** since 0.17
+(`pkg/features/kube_features.go`). Both the gate *and* the framework name in
+`.integrations.frameworks` must be on; with either missing the integration is inert.
+
+## 2. The hard prerequisite, and how upstream overtook it
+
+`jobframework.GenericJob` requires a suspend-like spec field. When #28 was written, upstream
+Apache had none, so the integration could not function against a stock operator build. It
+depends on the paired fork change — `Pradeep39/spark-kubernetes-operator`, branch
+`spark-application-suspend` — which adds `.spec.suspend`, a `Suspended` state, and
+`StoppedByScheduler` for preemption. Neither half does anything observable alone.
+
+**This changed on 2026-09-14, after #28 merged.** Upstream added the field and more:
+
+- **SPARK-59475** put `suspend` on `BaseSpec`, the parent of both `ApplicationSpec` and
+  `ClusterSpec`, as `protected boolean suspend = false` with `@Default("false")`. Two
+  differences from the fork's version, which is `protected Boolean suspend` on
+  `ApplicationSpec` only: upstream's also makes SparkCluster suspendable, and upstream's CRD
+  carries `default: false`, so the API server always materialises the field and an explicit
+  `suspend: false` is indistinguishable from an omitted one. Harmless for Kueue, which always
+  writes an explicit value, but the distinction is gone and cannot be recovered without
+  another API change.
+- **SPARK-59490 / SPARK-59503** added `kueue/KueueWorkloadFactory.java`: the *operator* builds
+  the Kueue `v1beta2` Workload itself, driver + executor PodSets, `active = !suspend`. It
+  **throws `UnsupportedOperationException` when `spark.dynamicAllocation.enabled=true`.**
+
+So upstream now covers the static case, and refuses exactly the case this fork exists to
+handle. None of it is in release `1.0.0`. Two consequences recorded for whoever picks this up:
+
+1. **Dynamic Allocation is the differentiator.** The static gating surface in this package
+   overlaps upstream; the elastic path (§6) does not.
+2. **The two halves are mutually exclusive, and with upstream `main` the operator's half cannot
+   be switched off.** See §2b — this is stronger than a configuration caution.
+
+### 2b. Upstream's Workload creation collides with this integration, and has no opt-out
+
+The decisive compatibility fact, and the one to settle before pairing this package with an
+operator built from upstream `main`. Established by reading both sides on 2026-09-21; **not
+yet observed on a cluster.**
+
+- **Upstream keys its Workload creation off the same label this integration needs.**
+  `Constants.LABEL_QUEUE_NAME` is `kueue.x-k8s.io/queue-name`, and `AppInitStep`'s
+  `holdForKueueAdmission` runs whenever `KueueWorkloadFactory.hasQueueName(app)` is true. So
+  labelling a SparkApplication for Kueue *is* what triggers the operator's half.
+- **There is no config toggle to disable it.** The only Kueue option in `SparkOperatorConf` is
+  `spark.kubernetes.operator.kueue.workloadInformer.enabled`, which controls whether the
+  operator *watches* Workloads for faster admission notice — not whether it creates them.
+- **jobframework will claim the operator's Workload rather than merely coexist with it.**
+  Upstream builds its Workload with an ownerReference to the SparkApplication and
+  `controller = true`. `FindMatchingWorkloads` lists by the owner index this package registers
+  (`SetupWorkloadOwnerIndex(gvk)`) and keeps any Workload whose controller matches the job's
+  Kind, APIVersion and name — which upstream's does exactly. `EquivalentToWorkload` then
+  compares podSets, and they will not match: different counts (live-derived vs
+  `spark.executor.instances`), and a template carrying the executor scheduling gate. A
+  non-equivalent Workload goes to `toDelete` and **jobframework deletes it**, while the
+  operator's `requestAdmission` recreates it through `getOrCreateSecondaryResource` on its next
+  reconcile.
+
+The expected failure mode is therefore **two controllers deleting each other's Workload in a
+loop**, not two Workloads quietly double-charging. Worse, `holdForKueueAdmission` holds the
+driver until *its* Workload is admitted, so an application in this state would hang rather than
+merely mis-account. (If `EquivalentToWorkload` ever did judge them equivalent, jobframework
+would adopt upstream's Workload instead and the two would then fight over its podSets — broken
+either way.)
+
+**What this costs, and the cheap fix.** Architecture B below needs nothing from the operator but
+`spec.suspend`, which upstream `main` now has natively (SPARK-59475) — so the fork's
+`spark-application-suspend` branch is redundant, but a *new* patch is required to suppress the
+Kueue path. Adding the missing toggle upstream (say
+`spark.kubernetes.operator.kueue.enabled`, defaulting true) is small, obviously reasonable on
+its own terms, and a prerequisite for this package coexisting with a stock operator. It is
+probably the cleanest first upstream contribution, and it is independent of the Dynamic
+Allocation question.
+
+### 2a. Deleting upstream's DA exception would not make upstream's path work
+
+Worth stating explicitly, because the `UnsupportedOperationException` reads like the only thing
+standing in the way. It is not: it is a *correct refusal*, and removing it would turn a clean
+error into silent under-reservation. Verified against upstream `main` on 2026-09-21:
+
+- **The count is frozen at build time.** `buildExecutorPodSet` reads `spark.executor.instances`
+  once (default 2). Dynamic Allocation changes the live Pod count, not `sparkConf`, so the
+  Workload would be admitted at the static number and never track scaling.
+- **After admission the operator stops reconciling the Workload.** `requestAdmission`
+  early-returns on `isAdmitted(workload)` before comparing podSets. The only in-place update in
+  `KueueWorkloadUtils` is the priority class.
+- **Its one reaction to a changed podSet is destructive, and only while pending.** On a
+  `spark.operator/kueue-pod-sets-hash` mismatch it deletes the Workload and returns `STALE`.
+  Delete-and-recreate is the opposite of the slice-replacement protocol, which needs the
+  predecessor to remain in the snapshot so the replacement is charged only the delta.
+- **No gating and no slice awareness anywhere upstream.** No `SchedulingGate` usage and no
+  `workload-slice` references at all. So DA-created executor Pods are never gated — there is no
+  admission control over them, the driver creates them and kube-scheduler places them
+  regardless of quota — and with no `kueue.x-k8s.io/workload-slice-name` annotation
+  `sliceChainKey` returns `""`, so the per-chain netting from #21 never engages and
+  `ReplacedWorkloadSlice` never finds a predecessor.
+
+For the operator to own DA Workloads it would need, in Java: live-Pod-derived counts with a
+debounced Pod watch, slice annotations plus the replacement protocol, gate injection into the
+executor template coordinated with Kueue's ungater, removal of the admitted early-return, and
+in-place scale-down instead of delete-and-recreate — i.e. this design reimplemented. And that
+still would not be sufficient on its own, because in-place scale-down depends on #21's
+decrease-only `validateAdmissionUpdate` relaxation, which lives in Kueue rather than the
+operator.
+
+Nothing in §§3–7 depends on how that question is resolved.
+
+### 2c. The two architectures, stated once
+
+Pairing this package with a modified upstream operator means choosing one of these. They are
+not combinable, for the reasons in §2b.
+
+**Architecture B — Kueue owns the Workload.** What §§3–7 describe. The operator supplies
+`spec.suspend` and nothing else; Kueue derives counts from live Pods, drives slice replacement,
+and gates executor Pods. Requires suppressing upstream's Kueue path (§2b). Removing upstream's
+Dynamic Allocation exception is **irrelevant** here — the whole factory path stays off.
+
+**Architecture A — the operator owns the Workload.** Upstream's model, extended to Dynamic
+Allocation. Traced lane by lane, with each component's deployment side marked, in
+[`diagrams/apache-da-architecture-a.png`](./diagrams/apache-da-architecture-a.png). Requires, in
+Java: live-Pod-derived counts with a debounced Pod watch, slice
+annotations and the replacement protocol, scheduling-gate injection coordinated with Kueue's
+ungater, removal of the admitted early-return, and in-place scale-down instead of
+delete-and-recreate. It also still depends on #21's decrease-only `validateAdmissionUpdate`
+relaxation, which lives in Kueue rather than the operator, so it cannot be delivered
+operator-side alone. This integration would be disabled, and §§3–7 would not apply.
+
+Removing the `UnsupportedOperationException` is a precondition of A and a no-op for B. In
+neither case is it sufficient on its own.
+
+### 2d. What of the elastic logic is reusable under an operator-owned Workload
+
+Asked because the executor Pod watch and the slice protocol are the expensive part and it would
+be good not to reimplement them. The dividing line:
+
+**Already owner-agnostic** — keys off Workload and Pod annotations, indifferent to who created
+them: `ReplacedWorkloadSlice` / `FindReplacedSliceTarget`, `Assignment.append`'s delta charging,
+the per-chain cache netting (`sliceChainKey` = namespace + `WorkloadSliceNameAnnotation` +
+owning job UID), `elasticJobUngater` (keys off `constants.PodSetLabel` +
+`WorkloadSliceNameAnnotation` on Pods), and the decrease-only `validateAdmissionUpdate`
+exception.
+
+**Integration-bound** — requires a registered `GenericJob`: the executor Pod watch, whose
+`reconcile.Request`s only the integration's reconciler consumes; `PodSets()`,
+`computeLiveExecutorCount` and `clampToDynamicAllocationBounds`, which are `GenericJob` methods;
+and `EnsureWorkloadSlices` itself, which has **exactly one** production caller
+(`ensureOneWorkload`), reachable only via `ReconcileGenericJob` and gated on
+`workloadslicing.Enabled(jobObject)` — an annotation on the *job*, not the Workload.
+
+So the Workload-level half is already reusable; the job-level half (watch → derive → ensure
+slices) is what must live in a Kueue reconciler.
+
+**Prebuilt workloads do not bridge this — considered and rejected.** Kueue's
+`kueue.x-k8s.io/prebuilt-workload-name` looks like the supported way for an external actor to
+create the Workload while an integration still manages the job, and `ensureOneWorkload`'s
+prebuilt branch even mentions workload slicing. It does not work: the prebuilt branch is checked
+*before* the slice branch and returns, so setting the label **disables** slicing rather than
+enabling it. Its slice-aware line only skips an in-sync check. Every in-tree producer of that
+label is a MultiKueue adapter — where the manager cluster owns the real Workload and does the
+slicing, and the worker's early return is what stops it clobbering the manager's decisions — or
+a pod-owning reconciler (statefulset, leaderworkerset). It was never an
+external-Workload-creation hook.
+
+Making it one is a coherent upstream-Kueue feature request (let the prebuilt branch fall through
+to slicing, and give a prebuilt elastic job a way to supply podSets). It would serve any
+operator-side integration, not just Spark. It is a code change, not configuration.
+
+**A cheaper split, if upstream will take it.** The operator already computes the Dynamic
+Allocation condition in order to throw on it. Having `holdForKueueAdmission` *skip* when
+`spark.dynamicAllocation.enabled=true` would route static applications through upstream's
+factory and Dynamic Allocation ones to this integration, with no application served by both.
+The catch: both sides gate on the same `kueue.x-k8s.io/queue-name` label, so this integration
+would also have to decline static applications, and `IntegrationCallbacks` has no per-object
+opt-out (`CanSupportIntegration` is cluster-level). Small changes on both sides rather than one,
+but far smaller than either A or the prebuilt feature — and it reframes upstream's existing check
+as a delegation rather than asking them to support Dynamic Allocation.
+
+Upstream did implement the lifecycle, not just the field (`SuspendUtils.java`, plus handling
+in `AppInitStep`, `ClusterInitStep`, `EventUtils`, `ApplicationStatus`, and a
+`SparkOperatorConf` knob). It has **no** `AppSuspendStep` and no `StoppedByScheduler`, so the
+fork's preemption-specific state has no upstream counterpart by name. Whether `SuspendUtils`
+covers preempting an already-running driver is **unverified**.
+
+## 3. The Go API types are a hand-written partial projection
+
+The operator is Java and publishes no Go module, so `api/v1/types.go` is a hand-written
+projection of only the fields this integration reads. That is safe **only** because
+jobframework *patches* the job rather than calling `client.Update`. A `client.Update` would
+serialise the projection and silently drop every field it omits.
+
+**Never introduce a `client.Update` on a `spark.apache.org` SparkApplication.**
+
+## 4. What Kueue charges: Spark's arithmetic, not the pod template
+
+This is the rule #33 reversed; §8 has the history.
+
+`buildPodTemplateSpec` starts from the submitter's
+`spec.{driverSpec,executorSpec}.podTemplateSpec` when present, then **overwrites the Spark
+container's cpu and memory** with values derived from `sparkConf`.
+
+The reason is what happens to the real pod. The operator writes the template to a file and
+passes it as `spark.kubernetes.{driver,executor}.podTemplateFile`; Spark's
+`Basic{Driver,Executor}FeatureStep` then replaces that container's cpu and memory with its own
+computed values before the pod is created. **A template resource request is therefore never
+what the pod asks for**, so charging it verbatim would charge a number the kubelet never sees.
+Upstream's own `KueueWorkloadFactory.decorateContainerResources` overwrites it too, with the
+comment *"Like Spark, overwrite the requests of the pod template."*
+
+`totalMemoryBytes` reproduces Spark's formula:
+
+```
+base                         spark.{role}.memory, default 1g
+overhead                     spark.{role}.memoryOverhead if set, else
+                             max(trunc(factor × base), minMemoryOverhead)
+factor                       spark.{role}.memoryOverheadFactor, else
+                             spark.kubernetes.memoryOverheadFactor, else
+                             0.1 JVM / 0.4 non-JVM
+minMemoryOverhead            spark.{role}.minMemoryOverhead, else 384MiB
++ spark.executor.pyspark.memory        executors only
++ spark.memory.offHeap.size            only when spark.memory.offHeap.enabled
+```
+
+Three details that are easy to get wrong and are deliberate here:
+
+- **Spark truncates, it does not round**: `(factor * memoryMiB).toInt`.
+- **The limit equals the request.** Spark intends heap+overhead to be the whole allocation.
+- **`spark.{role}.minMemoryOverhead`** is honoured. The Kubeflow package hardcodes 384MiB.
+
+CPU: `cpuRequest` reads `spark.kubernetes.{role}.request.cores` and falls back to
+`spark.{role}.cores`. There is deliberately **no** fallback to `limit.cores` — Spark has none
+either.
+
+## 5. Count precedence: `sparkConf` first on this CRD
+
+The inverse of the Kubeflow package, and the inversion is load-bearing rather than an
+inconsistency.
+
+`staticExecutorCount` prefers `spark.executor.instances` over
+`spec.applicationTolerations.instanceConfig.initExecutors`, falling back to Spark's default of
+2. `dynamicAllocationCount` likewise prefers `spark.dynamicAllocation.{initialExecutors,
+minExecutors, maxExecutors}` over the matching `instanceConfig` field.
+
+**Why the structured field loses here:** on this CRD it never reaches Spark. The operator does
+not create executors — the driver does, from `spark.executor.instances` — and `instanceConfig`
+is consumed only by the operator's own readiness thresholds (`AppRunningStep`), never
+translated into a `--conf` at submission. Preferring `instanceConfig` would reserve quota for
+an application declaring `initExecutors: 2` while 15 pods from `spark.executor.instances: 15`
+actually run. Upstream's `KueueWorkloadFactory` reads `spark.executor.instances` alone, for the
+same reason.
+
+The Kubeflow CRD is the opposite case — there the operator maps the structured field onto a
+`--conf` at submission, so it *is* the surface Spark acts on. The rule settled with the
+maintainer is therefore not "structured first" or "conf first" but **prefer whichever surface
+Spark actually acts on**.
+
+`instanceConfig` fields are plain `int32`, so zero is treated as unset. This is the same class
+of problem as `dynamicAllocationEnabled` on the Kubeflow CRD (see
+[`sparkapplication-sparkconf-executor-instances-design.md`](./sparkapplication-sparkconf-executor-instances-design.md)
+§5), and here it is harmless because a zero bound would be meaningless.
+
+**`dynamicAllocationEnabled` reads `sparkConf` only** — no OR, because this CRD has no
+structured enablement field at all.
+
+**`declaredInitialExecutors` takes a maximum, not a precedence.** It is the largest of
+`minExecutors`, `initialExecutors` and the resolved instances count, matching
+`Utils.getDynamicAllocationInitialExecutors`. Each individual term still resolves by
+precedence; only the three-way combination is a max. Precedence decides where one property's
+value comes from; the maximum decides which property governs the count. Spark starts the
+largest of the three regardless of which the author thought authoritative, so precedence
+across them would under-reserve.
+
+## 6. Elastic scaling
+
+Mirrors the Kubeflow integration, and is the part with no upstream equivalent:
+
+- Executor counts **derived from live Pods**, never written back to the CR
+  (`liveExecutorCount` / `computeLiveExecutorCount`).
+- A **label-keyed executor Pod watch** with a 5s debounce and 30s max wait.
+- The **executor scheduling gate** (`kueue.ElasticJobSchedulingGate`) baked into the executor
+  template at CR-create time by the webhook's `Default`, with `validateElasticJob` requiring
+  it on create.
+- **`clampToDynamicAllocationBounds`** (the #26 fix, applied here too): the derived count is
+  clamped to DA's own `minExecutors`/`maxExecutors`. The lower bound is what stops a reconcile
+  that lands mid-startup — observing a partial executor set — from patching a freshly granted
+  PodSet down and dismantling the gang. As in the Kubeflow package, the upper bound is DA's
+  ceiling, **not** grantable capacity, so it narrows but does not close the gated-Pod feedback
+  loop.
+- Workload slice names use a **per-job sequence number**, not `Generation`, because DA scaling
+  never bumps `Generation`.
+
+The quota-evasion hole fixed for Kubeflow in #27 does not exist here: counts always read
+`spark.executor.instances`, error on a malformed value, and default to Spark's 2.
+
+## 7. Lifecycle mapping
+
+The Apache operator exposes a real state machine plus a `StateTransitionHistory`, which makes
+two things possible that the Kubeflow phase string does not.
+
+**`StoppedByScheduler` is deliberately not terminal.** The operator releases the driver on a
+scheduler-requested stop but reopens the application in `Suspended`. Treating it as terminal
+would end the Workload for what is actually a preemption. Relatedly, preemption is not counted
+as a failure and never consumes restart budget — being preempted is a scheduling decision, not
+an application fault. (This is one of two deliberate divergences from Apple's internal
+implementation of the same field; the other is the absence of a queue timeout, since Kueue owns
+queue-time policy. Do not port that internal code into either public repo.)
+
+**`terminalOutcome` walks the transition history.** `ResourceReleased` and
+`TerminatedWithoutReleaseResources` are reachable from both success and failure, so they carry
+no outcome of their own. When the application sits in one, the outcome is the highest-numbered
+history entry that is not itself a release state. An application whose history is unavailable
+is reported unsuccessful rather than guessed at.
+
+`PodsReady` keys off `RunningHealthy` / `RunningWithPartialCapacity`, since the operator only
+advances to those once at least `minExecutors` are ready — the state machine is a sufficient
+signal, so no Pod listing is needed.
+
+## 8. Superseded: what #28 originally decided
+
+#28's PR body describes **"pod template first, `sparkConf` as the fallback"** — a template
+value used verbatim for memory, CPU and counts, with Spark's arithmetic applied only when the
+template declared nothing. The stated rationale was that splitting by source keeps each rule in
+the regime where it is sound: verbatim where the submitter has been explicit, inferred only
+where Kueue would otherwise have nothing.
+
+**That premise is wrong, and #33 reversed it.** Both operators pass the template to Spark as
+`spark.kubernetes.{role}.podTemplateFile`, and `Basic{Driver,Executor}FeatureStep` overwrites
+the container's cpu and memory regardless. A template request is never what the pod asks for,
+so honouring it verbatim could only ever under-charge. #33 also inverted the Apache count
+precedence to conf-key-first (§5) and, on the Kubeflow side, removed the equivalent
+pod-template-first memory rule.
+
+Measured on `sandbox-picluster`: with `spark.executor.memory: 512m`, real executor pods show
+`req=896Mi lim=896Mi`. The 512-vs-896 question is closed — 896Mi is what the pod reserves.
+See [`spark-podset-align-with-spark-design.md`](./spark-podset-align-with-spark-design.md) §1.
+
+A middle path was considered and **not** implemented: pass the template through *and* have the
+webhook reject a declared request below `memory + max(0.1 × memory, 384Mi)`.
+
+## 9. Known gaps
+
+- **The webhook does not reject a malformed `spark.executor.instances` at admission**, the way
+  the Kubeflow one does after #27. `staticExecutorCount()` still returns a proper error, so the
+  failure surfaces during reconcile rather than at create time. Less immediate, not a
+  correctness gap.
+- **The gated-Pod feedback loop is narrowed, not closed** (§6).
+- **No integration tests.** envtest binaries are unreachable in this environment
+  (`storage.googleapis.com` blocked), so coverage is unit-level only: pod-template
+  construction, the memory and CPU arithmetic, static and DA executor counts, the elastic
+  path, webhook validation, and setup/registration.
+- **Unverified upstream assumption** (§2): whether Kueue's workload controller cleanly admits
+  an operator-created Workload owned by no Kueue integration.
+
+## 10. Deployment traps
+
+All hit on `sandbox-picluster`, all still true:
+
+- **Helm never upgrades CRDs in `crds/`.** `helm upgrade` silently leaves the old CRD, so
+  `spec.suspend` gets pruned by the API server and suspend appears to do nothing — the symptom
+  is `unknown field "spec.suspend"` in Kueue's log. Fix:
+  `kubectl apply --server-side --force-conflicts -f` the chart's CRD.
+- **`spark.kubernetes.operator.watchedNamespaces` needs an operator restart**, despite
+  `enableDynamicOverride(true)`. Default is `default` only, so an application in any other
+  namespace is never reconciled and no driver is created. The chart's comment names a
+  non-existent key `spark.operator.watched.namespaces`.
+- **`helm upgrade` regenerates the workload ClusterRole** and drops a hand-patched
+  `deletecollection` verb, bringing back the driver-shutdown 403 on services. Durable fix is
+  `spark-operator.workloadRbacRules` in `templates/workload-rbac.yaml` on the fork.
+- `examples/pi-suspended.yaml` on the operator fork has **no** `queue-name` label on purpose —
+  it is an operator-only test that stays suspended until the field is patched by hand. It is
+  not a Kueue example.
