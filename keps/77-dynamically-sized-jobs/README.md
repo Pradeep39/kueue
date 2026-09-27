@@ -143,6 +143,9 @@ reaches a terminal phase - including while it is still gated, and including whil
 A Pod that is gated is precisely the evidence that Dynamic Allocation wants to grow; a Pod that is terminating still
 holds node resources. Counting either one differently would make the ClusterQueue disagree with the cluster.
 
+See [SparkApplication Dynamic Allocation: design](sparkapplication-dynamic-allocation.md) for how the count is derived
+and applied, including the sequence diagrams for both directions.
+
 ### Notes/Constraints/Caveats (Optional)
 
 If Kueue needs to preempt a resized Job, it will preempt the entire Job as a single unit, regardless of whether the Job has undergone a scale-up operation.
@@ -471,6 +474,11 @@ That inversion drives four design consequences, each of which is a verification 
 Slice names cannot be derived from `metadata.generation`, as they are for the earlier phases, because Dynamic
 Allocation scaling never modifies the `SparkApplication` and so never bumps it. A monotonic per-job sequence number is
 used instead.
+
+[SparkApplication Dynamic Allocation: design](sparkapplication-dynamic-allocation.md) covers the mechanism behind these
+points - the Pod watch and why `Owns()` cannot be used, the clamp, the slice-chain quota accounting that keeps
+overlapping slices from being double-counted, the decrease-only admission exception the scale-down path needs, and the
+one known limitation - with a sequence diagram for each direction.
 
 #### Scale Down
 
