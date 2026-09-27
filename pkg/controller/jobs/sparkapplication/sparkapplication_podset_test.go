@@ -234,8 +234,31 @@ func executorAppWithTemplateMemory(request, limit *string, memoryField *string) 
 	}
 }
 
+// executorAppWithoutMemoryLimit declares memory but no memoryLimit, so nothing overwrites the
+// limit addMemoryRequests sets.
+func executorAppWithoutMemoryLimit(memoryField *string) *sparkv1beta2.SparkApplication {
+	return &sparkv1beta2.SparkApplication{
+		Spec: sparkv1beta2.SparkApplicationSpec{
+			Executor: sparkv1beta2.ExecutorSpec{
+				SparkPodSpec: sparkv1beta2.SparkPodSpec{Memory: memoryField},
+			},
+		},
+	}
+}
+
 // Spark overwrites the Spark container's memory with base+overhead when it builds the pod
 // from spec.{driver,executor}.template, so a value declared there must not be charged.
+//
+// These cases also pin an interaction #15833 introduced and does not cover: addMemoryRequests
+// now sets request and limit to base+overhead, but addMemoryLimit still overwrites the limit
+// from spec.{driver,executor}.memoryLimit without regard for the request it just raised. An
+// application that sets memoryLimit equal to memory - which is a natural thing to write, and
+// what these fixtures do - therefore ends up with request 896Mi against limit 512Mi.
+//
+// The expectations below record that as-is rather than hiding it, because it is upstream's
+// behaviour and this package now defers to upstream for the arithmetic. It should be reported:
+// upstream's sparkapplication_resources_test.go does not exercise memoryLimit at all, and the
+// docs #15833 added do not mention the interaction.
 func TestAddMemoryIgnoresThePodTemplate(t *testing.T) {
 	tests := map[string]struct {
 		app       *sparkv1beta2.SparkApplication
@@ -244,12 +267,20 @@ func TestAddMemoryIgnoresThePodTemplate(t *testing.T) {
 	}{
 		// 512Mi of heap plus the 384MiB floor, regardless of the template's 2Gi.
 		"template values are overwritten by Spark's arithmetic": {
-			app:       executorAppWithTemplateMemory(ptr.To("2Gi"), ptr.To("2Gi"), ptr.To("512m")),
-			wantReq:   "896Mi",
-			wantLimit: "896Mi",
+			app:     executorAppWithTemplateMemory(ptr.To("2Gi"), ptr.To("2Gi"), ptr.To("512m")),
+			wantReq: "896Mi",
+			// memoryLimit is set equal to memory by the fixture, and addMemoryLimit applies it
+			// verbatim, so the limit lands BELOW the request. See the comment above.
+			wantLimit: "512Mi",
 		},
 		"no template values behaves the same": {
 			app:       executorAppWithTemplateMemory(nil, nil, ptr.To("512m")),
+			wantReq:   "896Mi",
+			wantLimit: "512Mi",
+		},
+		// With no memoryLimit at all, addMemoryRequests' own limit stands and the two agree.
+		"no memoryLimit leaves request and limit equal": {
+			app:       executorAppWithoutMemoryLimit(ptr.To("512m")),
 			wantReq:   "896Mi",
 			wantLimit: "896Mi",
 		},

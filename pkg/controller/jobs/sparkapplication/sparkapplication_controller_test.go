@@ -176,45 +176,6 @@ func TestPodSets(t *testing.T) {
 				}).Obj(),
 			},
 		},
-		"with SparkApplication-level node selector": {
-			sparkApp: testSparkApp.Clone().
-				NodeSelector(maps.Clone(nodeSelector)).
-				ExecutorInstances(3).Obj(),
-			want: []kueue.PodSet{
-				*utiltestingapi.MakePodSet("driver", 1).PodSpec(corev1.PodSpec{
-					NodeSelector:   maps.Clone(nodeSelector),
-					Tolerations:    []corev1.Toleration{},
-					InitContainers: []corev1.Container{},
-					Containers: []corev1.Container{
-						{
-							Name: sparkcommon.SparkDriverContainerName,
-							Resources: corev1.ResourceRequirements{
-								Requests: corev1.ResourceList{
-									corev1.ResourceCPU:    resource.MustParse("100m"),
-									corev1.ResourceMemory: resource.MustParse("512Mi"),
-								},
-							},
-						},
-					},
-				}).Obj(),
-				*utiltestingapi.MakePodSet("executor", 3).PodSpec(corev1.PodSpec{
-					NodeSelector:   maps.Clone(nodeSelector),
-					Tolerations:    []corev1.Toleration{},
-					InitContainers: []corev1.Container{},
-					Containers: []corev1.Container{
-						{
-							Name: sparkcommon.Spark3DefaultExecutorContainerName,
-							Resources: corev1.ResourceRequirements{
-								Requests: corev1.ResourceList{
-									corev1.ResourceCPU:    resource.MustParse("100m"),
-									corev1.ResourceMemory: resource.MustParse("512Mi"),
-								},
-							},
-						},
-					},
-				}).Obj(),
-			},
-		},
 		"with TopologyAwareScheduling": {
 			featureGates: map[featuregate.Feature]bool{features.TopologyAwareScheduling: true},
 			sparkApp: testSparkApp.Clone().Queue("local-queue").
@@ -1175,6 +1136,9 @@ func TestReconcilerElasticScaleUpAvoidsStaleSliceNameCollision(t *testing.T) {
 	}
 	if newSlices[0].Name == staleFinishedSlice.Name {
 		t.Errorf("new slice reused the stale Finished slice's name %q", staleFinishedSlice.Name)
+	}
+}
+
 // TestGlobalNodeSelectorSurvivesRunRestoreRoundTrip guards the full admit/evict cycle:
 // RunWithPodSetsInfo flattens spec.nodeSelector into the per-role selectors and clears
 // it, so the PodSet templates recorded in the Workload are the only place
@@ -1185,7 +1149,9 @@ func TestGlobalNodeSelectorSurvivesRunRestoreRoundTrip(t *testing.T) {
 		NodeSelector(maps.Clone(globalNodeSelector)).
 		ExecutorInstances(3).
 		Obj()
-	kSparkApp := (*SparkApplication)(sparkApp)
+	// This package wraps the CRD type rather than aliasing it, so the upstream conversion does
+	// not apply; fromObject is the constructor.
+	kSparkApp := fromObject(sparkApp)
 
 	podSets, err := kSparkApp.PodSets(t.Context(), nil)
 	if err != nil {
