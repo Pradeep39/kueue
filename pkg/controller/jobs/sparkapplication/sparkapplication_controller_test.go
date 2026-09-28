@@ -103,6 +103,9 @@ func TestPodSets(t *testing.T) {
 									corev1.ResourceCPU:    resource.MustParse("100m"),
 									corev1.ResourceMemory: resource.MustParse("896Mi"),
 								},
+								Limits: corev1.ResourceList{
+									corev1.ResourceMemory: resource.MustParse("896Mi"),
+								},
 							},
 						},
 					},
@@ -117,6 +120,54 @@ func TestPodSets(t *testing.T) {
 							Resources: corev1.ResourceRequirements{
 								Requests: corev1.ResourceList{
 									corev1.ResourceCPU:    resource.MustParse("100m"),
+									corev1.ResourceMemory: resource.MustParse("896Mi"),
+								},
+								Limits: corev1.ResourceList{
+									corev1.ResourceMemory: resource.MustParse("896Mi"),
+								},
+							},
+						},
+					},
+				}).Obj(),
+			},
+		},
+		"with SparkApplication-level node selector": {
+			sparkApp: testSparkApp.Clone().
+				NodeSelector(maps.Clone(nodeSelector)).
+				ExecutorInstances(3).Obj(),
+			want: []kueue.PodSet{
+				*utiltestingapi.MakePodSet("driver", 1).PodSpec(corev1.PodSpec{
+					NodeSelector:   maps.Clone(nodeSelector),
+					Tolerations:    []corev1.Toleration{},
+					InitContainers: []corev1.Container{},
+					Containers: []corev1.Container{
+						{
+							Name: sparkcommon.SparkDriverContainerName,
+							Resources: corev1.ResourceRequirements{
+								Requests: corev1.ResourceList{
+									corev1.ResourceCPU:    resource.MustParse("100m"),
+									corev1.ResourceMemory: resource.MustParse("896Mi"),
+								},
+								Limits: corev1.ResourceList{
+									corev1.ResourceMemory: resource.MustParse("896Mi"),
+								},
+							},
+						},
+					},
+				}).Obj(),
+				*utiltestingapi.MakePodSet("executor", 3).PodSpec(corev1.PodSpec{
+					NodeSelector:   maps.Clone(nodeSelector),
+					Tolerations:    []corev1.Toleration{},
+					InitContainers: []corev1.Container{},
+					Containers: []corev1.Container{
+						{
+							Name: sparkcommon.Spark3DefaultExecutorContainerName,
+							Resources: corev1.ResourceRequirements{
+								Requests: corev1.ResourceList{
+									corev1.ResourceCPU:    resource.MustParse("100m"),
+									corev1.ResourceMemory: resource.MustParse("896Mi"),
+								},
+								Limits: corev1.ResourceList{
 									corev1.ResourceMemory: resource.MustParse("896Mi"),
 								},
 							},
@@ -152,6 +203,9 @@ func TestPodSets(t *testing.T) {
 										corev1.ResourceCPU:    resource.MustParse("100m"),
 										corev1.ResourceMemory: resource.MustParse("896Mi"),
 									},
+									Limits: corev1.ResourceList{
+										corev1.ResourceMemory: resource.MustParse("896Mi"),
+									},
 								},
 							},
 						},
@@ -172,6 +226,9 @@ func TestPodSets(t *testing.T) {
 								Resources: corev1.ResourceRequirements{
 									Requests: corev1.ResourceList{
 										corev1.ResourceCPU:    resource.MustParse("100m"),
+										corev1.ResourceMemory: resource.MustParse("896Mi"),
+									},
+									Limits: corev1.ResourceList{
 										corev1.ResourceMemory: resource.MustParse("896Mi"),
 									},
 								},
@@ -206,6 +263,9 @@ func TestPodSets(t *testing.T) {
 										corev1.ResourceCPU:    resource.MustParse("100m"),
 										corev1.ResourceMemory: resource.MustParse("896Mi"),
 									},
+									Limits: corev1.ResourceList{
+										corev1.ResourceMemory: resource.MustParse("896Mi"),
+									},
 								},
 							},
 						},
@@ -225,6 +285,9 @@ func TestPodSets(t *testing.T) {
 								Resources: corev1.ResourceRequirements{
 									Requests: corev1.ResourceList{
 										corev1.ResourceCPU:    resource.MustParse("100m"),
+										corev1.ResourceMemory: resource.MustParse("896Mi"),
+									},
+									Limits: corev1.ResourceList{
 										corev1.ResourceMemory: resource.MustParse("896Mi"),
 									},
 								},
@@ -1073,5 +1136,46 @@ func TestReconcilerElasticScaleUpAvoidsStaleSliceNameCollision(t *testing.T) {
 	}
 	if newSlices[0].Name == staleFinishedSlice.Name {
 		t.Errorf("new slice reused the stale Finished slice's name %q", staleFinishedSlice.Name)
+	}
+}
+
+// TestGlobalNodeSelectorSurvivesRunRestoreRoundTrip guards the full admit/evict cycle:
+// RunWithPodSetsInfo flattens spec.nodeSelector into the per-role selectors and clears
+// it, so the PodSet templates recorded in the Workload are the only place
+// RestorePodSetsInfo can read the original selector back from.
+func TestGlobalNodeSelectorSurvivesRunRestoreRoundTrip(t *testing.T) {
+	globalNodeSelector := map[string]string{"zone": "us-east"}
+	sparkApp := sparkapplicationtesting.MakeSparkApplication("test-sparkapp", "ns").
+		NodeSelector(maps.Clone(globalNodeSelector)).
+		ExecutorInstances(3).
+		Obj()
+	// This package wraps the CRD type rather than aliasing it, so the upstream conversion does
+	// not apply; fromObject is the constructor.
+	kSparkApp := fromObject(sparkApp)
+
+	podSets, err := kSparkApp.PodSets(t.Context(), nil)
+	if err != nil {
+		t.Fatalf("PodSets() returned error: %v", err)
+	}
+
+	// Mirrors how the reconciler derives the PodSetInfos it feeds back on eviction.
+	podSetsInfo := make([]podset.PodSetInfo, 0, len(podSets))
+	for i := range podSets {
+		podSetsInfo = append(podSetsInfo, podset.FromPodSet(&podSets[i]))
+	}
+
+	if err := kSparkApp.RunWithPodSetsInfo(t.Context(), nil, podSetsInfo); err != nil {
+		t.Fatalf("RunWithPodSetsInfo() returned error: %v", err)
+	}
+	kSparkApp.RestorePodSetsInfo(t.Context(), podSetsInfo)
+
+	if diff := cmp.Diff(globalNodeSelector, sparkApp.Spec.Driver.NodeSelector); diff != "" {
+		t.Errorf("driver node selector mismatch (-want,+got):\n%s", diff)
+	}
+	if diff := cmp.Diff(globalNodeSelector, sparkApp.Spec.Executor.NodeSelector); diff != "" {
+		t.Errorf("executor node selector mismatch (-want,+got):\n%s", diff)
+	}
+	if sparkApp.Spec.NodeSelector != nil {
+		t.Errorf("spec.nodeSelector should stay cleared, got %v", sparkApp.Spec.NodeSelector)
 	}
 }
