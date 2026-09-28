@@ -321,6 +321,21 @@ func EnsureWorkloadSlices(
 		return nil, true, fmt.Errorf("failed to find active workload slices: %w", err)
 	}
 
+	// DEBUG(preempt): dump exactly what this call sees and why it decides what it does.
+	// Remove before merging.
+	{
+		dbg := ctrl.LoggerFrom(ctx)
+		names := make([]string, 0, len(workloads))
+		for i := range workloads {
+			w := &workloads[i]
+			names = append(names, fmt.Sprintf("%s{evicted=%t,qr=%t,adm=%t,replaces=%q}",
+				w.Name, workloadevict.IsEvicted(w), workload.HasQuotaReservation(w),
+				workload.IsAdmitted(w), w.Annotations[constants.WorkloadSliceReplacementForAnnotation]))
+		}
+		dbg.V(2).Info("DEBUG-drain: EnsureWorkloadSlices entered",
+			"job", jobObject.GetName(), "notFinishedCount", len(workloads), "slices", names)
+	}
+
 	// An evicted slice can still own running Pods. Return it to the job
 	// reconciler until its reservation is released, unless an admitted
 	// replacement has already taken ownership of those Pods.
@@ -334,8 +349,12 @@ func EnsureWorkloadSlices(
 			return key != nil && *key == workload.Key(wl) && workload.IsAdmitted(&candidate) && !workloadevict.IsEvicted(&candidate)
 		})
 		if !replaced {
+			ctrl.LoggerFrom(ctx).V(2).Info("DEBUG-drain: returning evicted slice to the job reconciler",
+				"job", jobObject.GetName(), "slice", wl.Name)
 			return wl, true, nil
 		}
+		ctrl.LoggerFrom(ctx).V(2).Info("DEBUG-drain: evicted slice SKIPPED, an admitted replacement exists",
+			"job", jobObject.GetName(), "slice", wl.Name)
 	}
 
 	switch len(workloads) {

@@ -1159,6 +1159,16 @@ func (r *JobReconciler) ensureOneWorkload(ctx context.Context, job GenericJob, o
 			return nil, err
 		}
 		if compatible {
+			// DEBUG(preempt): what the slice path handed back. Remove before merging.
+			if wl == nil {
+				log.V(2).Info("DEBUG-drain: slice path returned NIL -> reconcile will take the workload-is-nil path and create a new slice")
+			} else {
+				log.V(2).Info("DEBUG-drain: slice path returned a workload",
+					"workload", wl.Name,
+					"evicted", workloadevict.IsEvicted(wl),
+					"admitted", workload.IsAdmitted(wl),
+					"quotaReserved", workload.HasQuotaReservation(wl))
+			}
 			if err := r.syncWorkloadSlicePriority(ctx, job, object, wl); err != nil {
 				return nil, err
 			}
