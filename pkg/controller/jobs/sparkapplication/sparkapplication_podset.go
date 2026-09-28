@@ -17,10 +17,12 @@ limitations under the License.
 package sparkapplication
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"maps"
 	"slices"
+	"strconv"
 	"strings"
 
 	sparkv1beta2 "github.com/kubeflow/spark-operator/v2/api/v1beta2"
@@ -30,6 +32,10 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/utils/ptr"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+
+	kueue "sigs.k8s.io/kueue/apis/kueue/v1beta2"
+	"sigs.k8s.io/kueue/pkg/controller/jobframework"
 )
 
 var (
@@ -49,8 +55,312 @@ var (
 	}
 )
 
-func (j *SparkApplication) numInitialExecutors() int32 {
-	return ptr.Deref(j.Spec.Executor.Instances, 0)
+// defaultExecutorInstances is Spark's own default for spark.executor.instances, used when
+// an application declares no executor count through any surface. Sizing the executor PodSet
+// at zero instead would reserve nothing while the driver goes on to create Spark's default
+// two executors outside Kueue's accounting.
+const defaultExecutorInstances int32 = 2
+
+// sparkConfExecutorInstances reads spark.executor.instances from spec.sparkConf.
+//
+// A malformed value is reported as an error rather than ignored: silently treating it as
+// absent would resurrect the accounting hole this function exists to close.
+func (j *SparkApplication) sparkConfExecutorInstances() (int32, bool, error) {
+	raw, ok := j.Spec.SparkConf["spark.executor.instances"]
+	if !ok {
+		return 0, false, nil
+	}
+	n, err := strconv.ParseInt(raw, 10, 32)
+	if err != nil {
+		return 0, false, fmt.Errorf("spark.executor.instances: %w", err)
+	}
+	return int32(n), true, nil
+}
+
+// numInitialExecutors returns the executor count to size the executor PodSet with when
+// Dynamic Allocation is disabled, or before any executor Pods have been created yet.
+//
+// The two surfaces Spark Operator accepts are consulted in precedence order rather than
+// combined: the structured spec.executor.instances field is the application's declared
+// intent, and the raw spark.executor.instances key in spec.sparkConf is the fallback for
+// applications that configure Spark directly. This mirrors how dynamicAllocationEnabled()
+// and dynamicAllocationExecutorCount() already resolve their own properties.
+//
+// Reading only the structured field, as this did before, left every sparkConf-declared
+// executor unaccounted: the PodSet was sized at zero, Kueue reserved quota for the driver
+// alone, and - with no elastic scheduling gate on a non-elastic job - the driver created
+// its executors directly, outside quota management. Observed on a real cluster with
+// spark.executor.instances: "15" and no structured field: 15 executors ran against a
+// ClusterQueue that had charged for one driver.
+//
+// This ladder is also the instances term of declaredInitialExecutors, so both paths agree on
+// where an executor count comes from.
+func (j *SparkApplication) numInitialExecutors() (int32, error) {
+	if j.Spec.Executor.Instances != nil {
+		return *j.Spec.Executor.Instances, nil
+	}
+	n, ok, err := j.sparkConfExecutorInstances()
+	if err != nil {
+		return 0, err
+	}
+	if ok {
+		return n, nil
+	}
+	return defaultExecutorInstances, nil
+}
+
+// dynamicAllocationEnabled reports whether Dynamic Allocation is enabled, checking both the
+// structured spec.dynamicAllocation.enabled field and the equivalent raw
+// spark.dynamicAllocation.enabled key in spec.sparkConf, since Spark Operator supports
+// configuring Dynamic Allocation through either.
+//
+// This is deliberately an OR, not the structured-field-before-sparkConf precedence the other
+// Kubeflow properties here use: DynamicAllocation.Enabled is a non-pointer bool with
+// omitempty, so an explicit "enabled: false" cannot be told from an omitted one, and letting
+// the structured surface win would read a bounds-here-enablement-in-sparkConf manifest as
+// static and under-reserve. TestDynamicAllocationEnabled pins this; see
+// docs/design/sparkapplication-sparkconf-executor-instances-design.md section 5 for why the
+// apparent inconsistency is not fixable without an upstream CRD change.
+func (j *SparkApplication) dynamicAllocationEnabled() bool {
+	if da := j.Spec.DynamicAllocation; da != nil && da.Enabled {
+		return true
+	}
+	enabled, _ := strconv.ParseBool(j.Spec.SparkConf["spark.dynamicAllocation.enabled"])
+	return enabled
+}
+
+// dynamicAllocationExecutorCount reads "initialExecutors", "minExecutors" or
+// "maxExecutors" from spec.dynamicAllocation, falling back to the equivalent
+// spark.dynamicAllocation.* key in spec.sparkConf when the structured field is unset.
+func (j *SparkApplication) dynamicAllocationExecutorCount(field string) (int32, bool) {
+	if da := j.Spec.DynamicAllocation; da != nil {
+		var v *int32
+		switch field {
+		case "initialExecutors":
+			v = da.InitialExecutors
+		case "minExecutors":
+			v = da.MinExecutors
+		case "maxExecutors":
+			v = da.MaxExecutors
+		}
+		if v != nil {
+			return *v, true
+		}
+	}
+	raw, ok := j.Spec.SparkConf["spark.dynamicAllocation."+field]
+	if !ok {
+		return 0, false
+	}
+	n, err := strconv.ParseInt(raw, 10, 32)
+	if err != nil {
+		return 0, false
+	}
+	return int32(n), true
+}
+
+// isVerifiedLiveExecutor reports whether pod represents a Dynamic-Allocation-managed
+// executor that should currently count against the executor PodSet: it exists and
+// hasn't reached a terminal phase yet.
+//
+// A Pod that's merely Pending/ContainerCreating still counts — quota needs to be
+// reserved as soon as the Pod is admitted to the cluster, not once it happens to reach
+// Running, otherwise there's a window where Dynamic Allocation has already consumed
+// real cluster capacity that Kueue's accounting doesn't yet know about.
+//
+// A Pod with a DeletionTimestamp set still counts too: Dynamic Allocation deletes
+// executor Pods it no longer wants, but the Pod keeps occupying node resources, and its
+// containers keep running, until it actually reaches Succeeded/Failed (or is
+// force-removed). Excluding it the instant the delete is issued would undercount live,
+// resource-consuming Pods and manufacture spurious intermediate counts as Dynamic
+// Allocation works through a batch of deletions.
+func isVerifiedLiveExecutor(pod *corev1.Pod) bool {
+	switch pod.Status.Phase {
+	case corev1.PodSucceeded, corev1.PodFailed:
+		return false
+	default:
+		return true
+	}
+}
+
+// liveExecutorCount returns the executor count to size the executor PodSet with, caching
+// the result on j for the lifetime of this *SparkApplication instance.
+//
+// PodSets() is called multiple times per Reconcile() (equivalence checks against the
+// existing Workload, then workload construction). Without caching, two calls could observe
+// different live executor Pod counts if Dynamic Allocation churns pods between them —
+// producing a spurious "not equivalent" verdict and self-inflicted workload-slice churn.
+// Since NewJob() allocates a fresh *SparkApplication per reconcile, caching here is
+// automatically scoped to one reconcile pass and never goes stale across reconciles.
+func (j *SparkApplication) liveExecutorCount(ctx context.Context, c client.Client) (int32, error) {
+	if j.cachedLiveExecutorCount != nil {
+		return *j.cachedLiveExecutorCount, nil
+	}
+	count, err := j.computeLiveExecutorCount(ctx, c)
+	if err != nil {
+		return 0, err
+	}
+	j.cachedLiveExecutorCount = ptr.To(count)
+	return count, nil
+}
+
+// computeLiveExecutorCount is the uncached implementation of liveExecutorCount.
+//
+// Spark's own Dynamic Allocation (ExecutorAllocationManager, driven by the driver's
+// KubernetesClusterSchedulerBackend) creates and deletes executor Pods directly against
+// the Kubernetes API, without ever going through the SparkApplication CR — so
+// spec.executor.instances goes stale the moment Dynamic Allocation scales up or down.
+// When Dynamic Allocation is enabled, this lists the live executor Pods and returns the
+// verified-live count instead of trusting that field.
+//
+// This intentionally never writes anything back to the SparkApplication CR: the Spark
+// Operator's own reconciler treats any change to spec (including spec.executor.instances)
+// on a running application as a full spec update, tearing down and resubmitting the
+// job. Deriving the count here, read-only, keeps Kueue's accounting correct without
+// ever triggering that.
+//
+// The derived count is clamped to Dynamic Allocation's own minExecutors/maxExecutors bounds;
+// see clampToDynamicAllocationBounds for why the lower bound is load-bearing.
+func (j *SparkApplication) computeLiveExecutorCount(ctx context.Context, c client.Client) (int32, error) {
+	if !j.dynamicAllocationEnabled() {
+		return j.numInitialExecutors()
+	}
+
+	if c == nil {
+		// Called from a context that has no client available (e.g. webhook
+		// validation building a PodSet template solely to inspect its metadata).
+		// There's nothing to list against, so fall back to the same initial
+		// estimate used before any executor Pods exist.
+		return j.initialExecutorCount()
+	}
+
+	podList := &corev1.PodList{}
+	if err := c.List(ctx, podList,
+		client.InNamespace(j.Namespace),
+		client.MatchingLabels{
+			sparkcommon.LabelSparkAppName: j.Name,
+			sparkcommon.LabelSparkRole:    sparkcommon.SparkRoleExecutor,
+		},
+	); err != nil {
+		return 0, err
+	}
+
+	if len(podList.Items) == 0 {
+		// No executor Pods exist yet (e.g. the application was just submitted):
+		// fall back to whatever initial/minimum count Dynamic Allocation is
+		// configured to request at startup, so the very first PodSet reservation
+		// isn't sized at zero.
+		return j.initialExecutorCount()
+	}
+
+	var liveCount int32
+	for i := range podList.Items {
+		if isVerifiedLiveExecutor(&podList.Items[i]) {
+			liveCount++
+		}
+	}
+	return j.clampToDynamicAllocationBounds(liveCount), nil
+}
+
+// workloadSequenceNumber returns the number of Workloads ever created for this
+// SparkApplication (Finished or not), caching the result on j for the lifetime of this
+// *SparkApplication instance. GetWorkloadNameExtraPart folds this into the generated
+// workload name so a name is never reused across the SparkApplication's lifetime — see
+// its doc comment for why a raw live executor count isn't sufficient.
+func (j *SparkApplication) workloadSequenceNumber(ctx context.Context, c client.Client) (int32, error) {
+	if j.cachedWorkloadSequenceNumber != nil {
+		return *j.cachedWorkloadSequenceNumber, nil
+	}
+	if c == nil {
+		// No client available (e.g. webhook validation): there's nothing to list
+		// against, so this isn't cached and every call recomputes to 0. This only
+		// matters for building a PodSet template to inspect metadata, never for
+		// actually naming a workload that gets created.
+		return 0, nil
+	}
+
+	wlList := &kueue.WorkloadList{}
+	if err := c.List(ctx, wlList,
+		client.InNamespace(j.Namespace),
+		jobframework.OwnerReferenceIndexFieldMatcher(gvk, j.Name),
+	); err != nil {
+		return 0, err
+	}
+
+	count := int32(len(wlList.Items))
+	j.cachedWorkloadSequenceNumber = ptr.To(count)
+	return count, nil
+}
+
+// initialExecutorCount returns the executor count to assume for a Dynamic-Allocation-enabled
+// application before any executor Pods have been observed, bounded by Dynamic Allocation's
+// own limits.
+func (j *SparkApplication) initialExecutorCount() (int32, error) {
+	count, err := j.declaredInitialExecutors()
+	if err != nil {
+		return 0, err
+	}
+	return j.clampToDynamicAllocationBounds(count), nil
+}
+
+// declaredInitialExecutors resolves the initial executor count for a
+// Dynamic-Allocation-enabled application exactly as Spark's
+// Utils.getDynamicAllocationInitialExecutors does: the largest of minExecutors,
+// initialExecutors and the resolved spark.executor.instances.
+//
+// The instances term is resolved by precedence - the structured spec.executor.instances
+// field, else spark.executor.instances from sparkConf, else Spark's default of 2 - which is
+// the same ladder numInitialExecutors uses when Dynamic Allocation is off. So only the
+// three-way combination is a maximum; each individual property still prefers its structured
+// field over its sparkConf equivalent.
+//
+// Taking the maximum matters because Spark starts the largest of the three regardless of
+// which one the author considered authoritative. Resolving the combination by precedence
+// would let spec.executor.instances: 2 alongside initialExecutors: 7 reserve two executors
+// while Spark started seven.
+func (j *SparkApplication) declaredInitialExecutors() (int32, error) {
+	count, err := j.numInitialExecutors()
+	if err != nil {
+		return 0, err
+	}
+	if n, ok := j.dynamicAllocationExecutorCount("initialExecutors"); ok {
+		count = max(count, n)
+	}
+	if n, ok := j.dynamicAllocationExecutorCount("minExecutors"); ok {
+		count = max(count, n)
+	}
+	return count, nil
+}
+
+// clampToDynamicAllocationBounds constrains an executor count to the bounds Dynamic
+// Allocation itself promises to respect: it never sustains fewer than minExecutors, and
+// never requests more than maxExecutors.
+//
+// The lower bound is what keeps a freshly granted PodSet intact. computeLiveExecutorCount
+// stops using initialExecutorCount() as soon as a single executor Pod exists, so a reconcile
+// that lands while the driver is still creating its initial executors observes a transient
+// prefix of them. Without a floor that observation is indistinguishable from a real
+// scale-down: EnsureWorkloadSlices patches spec.podSets[].Count and the granted admission
+// down in place, dismantling the gang that was just admitted, and the executors Spark is
+// already asking for then need a replacement slice to come back. Observed on a real cluster
+// as an executor PodSet admitted at 3 and patched to 1 within seven seconds. The debounce on
+// the executor Pod watch does not prevent this, because reconciles triggered by the Spark
+// Operator's own SparkApplication status updates are not debounced.
+//
+// The upper bound stops the requested count growing past anything Dynamic Allocation could
+// legitimately want. Note it bounds the request by DA's own ceiling, not by what the
+// ClusterQueue can grant, so it narrows but does not close the gated-Pod feedback loop when
+// maxExecutors is set above the queue's capacity.
+//
+// maxExecutors is applied last so a configuration with minExecutors > maxExecutors can never
+// inflate the count above the declared maximum.
+func (j *SparkApplication) clampToDynamicAllocationBounds(count int32) int32 {
+	if n, ok := j.dynamicAllocationExecutorCount("minExecutors"); ok && count < n {
+		count = n
+	}
+	if n, ok := j.dynamicAllocationExecutorCount("maxExecutors"); ok && count > n {
+		count = n
+	}
+	return count
 }
 
 func (j *SparkApplication) buildDriverPodTemplateSpec() (*corev1.PodTemplateSpec, error) {
@@ -62,7 +372,7 @@ func (j *SparkApplication) buildDriverPodTemplateSpec() (*corev1.PodTemplateSpec
 		Spec: *emptyDriverPodTemplateSpec.Spec.DeepCopy(),
 	}
 
-	if err := mutateSparkPod((*sparkv1beta2.SparkApplication)(j), &pod); err != nil {
+	if err := mutateSparkPod(j.SparkApplication, &pod); err != nil {
 		return nil, err
 	}
 
@@ -81,7 +391,7 @@ func (j *SparkApplication) buildExecutorPodTemplateSpec() (*corev1.PodTemplateSp
 		Spec: *emptyExecutorPodTemplateSpec.Spec.DeepCopy(),
 	}
 
-	if err := mutateSparkPod((*sparkv1beta2.SparkApplication)(j), &pod); err != nil {
+	if err := mutateSparkPod(j.SparkApplication, &pod); err != nil {
 		return nil, err
 	}
 
@@ -432,6 +742,9 @@ func addMemoryRequests(pod *corev1.Pod, app *sparkv1beta2.SparkApplication) erro
 	return nil
 }
 
+// addMemoryLimit sets the memory limit from spec.{driver,executor}.memoryLimit. As in
+// addMemoryRequests, a limit declared on the pod template is not consulted: Spark overwrites
+// it with base+overhead when it builds the pod.
 func addMemoryLimit(pod *corev1.Pod, app *sparkv1beta2.SparkApplication) error {
 	i := findContainer(pod)
 	if i < 0 {

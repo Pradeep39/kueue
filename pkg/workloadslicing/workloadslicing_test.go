@@ -2304,3 +2304,164 @@ func TestFindLatestActiveWorkload(t *testing.T) {
 		})
 	}
 }
+
+func TestUpdatePodSetCountsWithRetry(t *testing.T) {
+	ctx, _ := utiltesting.ContextWithLog(t)
+
+	wl := utiltestingapi.MakeWorkload("wl", "ns").
+		ResourceVersion("1").
+		PodSets(*utiltestingapi.MakePodSet(kueue.DefaultPodSetName, 3).Request(corev1.ResourceCPU, "1").Obj()).
+		Obj()
+
+	var attempts int
+	clnt := utiltesting.NewClientBuilder().
+		WithObjects(wl).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Update: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.UpdateOption) error {
+				attempts++
+				if attempts == 1 {
+					// Simulate a second writer (e.g. another EnsureWorkloadSlices call
+					// racing on a Dynamic-Allocation-driven pod-count change) landing its
+					// update first, so this call's Update sees a stale ResourceVersion and
+					// gets a genuine optimistic-lock conflict from the fake client, exactly
+					// as a real API server would produce.
+					conflicting := &kueue.Workload{}
+					if err := c.Get(ctx, client.ObjectKeyFromObject(obj), conflicting); err != nil {
+						return err
+					}
+					conflicting.Labels = map[string]string{"raced-writer": "true"}
+					if err := c.Update(ctx, conflicting); err != nil {
+						return err
+					}
+				}
+				return c.Update(ctx, obj, opts...)
+			},
+		}).
+		Build()
+
+	got := wl.DeepCopy()
+	if err := updatePodSetCountsWithRetry(ctx, clnt, got, workload.PodSetsCounts{kueue.DefaultPodSetName: 1}); err != nil {
+		t.Fatalf("updatePodSetCountsWithRetry() returned an unexpected error: %v", err)
+	}
+	if attempts < 2 {
+		t.Fatalf("expected the conflict to force at least one retry, got %d Update call(s)", attempts)
+	}
+
+	gotWl := &kueue.Workload{}
+	if err := clnt.Get(ctx, client.ObjectKeyFromObject(wl), gotWl); err != nil {
+		t.Fatalf("Failed getting workload: %v", err)
+	}
+	wantCounts := workload.PodSetsCounts{kueue.DefaultPodSetName: 1}
+	if diff := cmp.Diff(wantCounts, workload.ExtractPodSetCountsFromWorkload(gotWl)); diff != "" {
+		t.Errorf("pod set counts after retry (-want,+got):\n%s", diff)
+	}
+	// The retried update must have carried forward the concurrent writer's change too,
+	// proving it re-fetched the latest object instead of blindly resubmitting the stale copy.
+	if gotWl.Labels["raced-writer"] != "true" {
+		t.Errorf("expected the retried update to preserve the concurrent writer's label, got labels: %v", gotWl.Labels)
+	}
+}
+
+func TestUpdatePodSetCountsWithRetryAbortsOnConcurrentAdmission(t *testing.T) {
+	ctx, _ := utiltesting.ContextWithLog(t)
+	now := time.Now()
+
+	wl := utiltestingapi.MakeWorkload("wl", "ns").
+		ResourceVersion("1").
+		PodSets(*utiltestingapi.MakePodSet(kueue.DefaultPodSetName, 2).Request(corev1.ResourceCPU, "1").Obj()).
+		Obj()
+
+	var attempts int
+	clnt := utiltesting.NewClientBuilder().
+		WithObjects(wl).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Update: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.UpdateOption) error {
+				attempts++
+				if attempts == 1 {
+					// Simulate Kueue's own scheduler concurrently admitting this workload
+					// at the count still on the API server (2), landing its status write
+					// first, so this call's Update sees a stale ResourceVersion.
+					admitted := &kueue.Workload{}
+					if err := c.Get(ctx, client.ObjectKeyFromObject(obj), admitted); err != nil {
+						return err
+					}
+					ww := &utiltestingapi.WorkloadWrapper{Workload: *admitted}
+					ww.SimpleReserveQuota("cq", "flavor", now)
+					if err := c.Update(ctx, ww.Obj()); err != nil {
+						return err
+					}
+				}
+				return c.Update(ctx, obj, opts...)
+			},
+		}).
+		Build()
+
+	got := wl.DeepCopy()
+	// Target counts request a scale-up (2 -> 3) on an object that, by the time of the
+	// retry, has been admitted at count 2 — no longer eligible for an in-place update.
+	err := updatePodSetCountsWithRetry(ctx, clnt, got, workload.PodSetsCounts{kueue.DefaultPodSetName: 3})
+	if !errors.Is(err, errWorkloadAdmittedConcurrently) {
+		t.Fatalf("updatePodSetCountsWithRetry() error = %v, want errWorkloadAdmittedConcurrently", err)
+	}
+
+	gotWl := &kueue.Workload{}
+	if err := clnt.Get(ctx, client.ObjectKeyFromObject(wl), gotWl); err != nil {
+		t.Fatalf("Failed getting workload: %v", err)
+	}
+	// The aborted update must not have overwritten spec.PodSets, leaving it desynced
+	// from the admission snapshot that Kueue's usage accounting relies on.
+	wantCounts := workload.PodSetsCounts{kueue.DefaultPodSetName: 2}
+	if diff := cmp.Diff(wantCounts, workload.ExtractPodSetCountsFromWorkload(gotWl)); diff != "" {
+		t.Errorf("pod set counts after aborted retry (-want,+got):\n%s", diff)
+	}
+	if !workload.HasQuotaReservation(gotWl) {
+		t.Error("expected the concurrently-admitted quota reservation to be preserved")
+	}
+}
+
+func TestEnsureWorkloadSlicesEvictedOriginWithReservedReplacement(t *testing.T) {
+	for name, admitted := range map[string]bool{
+		"waiting for admission checks": false,
+		"replacement admitted":         true,
+	} {
+		t.Run(name, func(t *testing.T) {
+			ctx, _ := utiltesting.ContextWithLog(t)
+			now := time.Now()
+
+			// The origin still reserves quota while eviction is pending.
+			origin := utiltestingapi.MakeWorkload("origin", testJobObject.Namespace).
+				OwnerReference(testJobGVK, testJobObject.Name, string(testJobObject.UID)).Creation(now.Add(-time.Minute)).
+				PodSets(*utiltestingapi.MakePodSet(kueue.DefaultPodSetName, 1).Obj()).
+				SimpleReserveQuota("cq", "default", now).AdmittedAt(true, now).EvictedAt(now).Obj()
+
+			replacement := utiltestingapi.MakeWorkload("replacement", testJobObject.Namespace).
+				OwnerReference(testJobGVK, testJobObject.Name, string(testJobObject.UID)).Creation(now).
+				Annotation(WorkloadSliceReplacementFor, string(workload.Key(origin))).
+				PodSets(*utiltestingapi.MakePodSet(kueue.DefaultPodSetName, 2).Obj()).
+				SimpleReserveQuota("cq", "default", now).AdmittedAt(admitted, now).Obj()
+
+			c := testWorkloadClientBuilder().WithObjects(origin, replacement).
+				WithStatusSubresource(&kueue.Workload{}).Build()
+
+			selected, compatible, err := EnsureWorkloadSlices(ctx, c, testingclock.NewFakeClock(now), replacement.Spec.PodSets, testJobObject, testJobGVK)
+			if err != nil || !compatible || selected == nil {
+				t.Fatalf("EnsureWorkloadSlices() = (%v, %v, %v)", selected, compatible, err)
+			}
+			if err := c.Get(ctx, client.ObjectKeyFromObject(origin), origin); err != nil {
+				t.Fatal(err)
+			}
+
+			// Admission determines whether the replacement can take over.
+			wantName := origin.Name
+			if admitted {
+				wantName = replacement.Name
+			}
+			if selected.Name != wantName {
+				t.Errorf("selected %q, want %q", selected.Name, wantName)
+			}
+			if workloadfinish.IsFinished(origin) != admitted {
+				t.Errorf("origin finished = %v, want %v", workloadfinish.IsFinished(origin), admitted)
+			}
+		})
+	}
+}

@@ -131,7 +131,12 @@ func collectSameQueueCandidates(ctx *HierarchicalPreemptionCtx) []*candidateElem
 
 func getCandidatesFromCQ(cq *schdcache.ClusterQueueSnapshot, lca *schdcache.CohortSnapshot, ctx *HierarchicalPreemptionCtx, hasHiearchicalAdvantage bool) []*candidateElem {
 	candidates := []*candidateElem{}
-	for _, candidateWl := range cq.Workloads {
+	for key, candidateWl := range cq.Workloads {
+		// A workload slice superseded by a cached replacement contributes no usage, so
+		// preempting it would free nothing while wrongly reducing the recorded usage.
+		if cq.SliceSuperseded(key) {
+			continue
+		}
 		preemptionVariant := classifyPreemptionVariant(ctx, candidateWl, hasHiearchicalAdvantage)
 		if preemptionVariant == Never {
 			continue
