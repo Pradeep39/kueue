@@ -23,13 +23,14 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
-	"k8s.io/client-go/util/retry"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/util/retry"
 	"k8s.io/klog/v2"
 	"k8s.io/utils/clock"
 	"k8s.io/utils/ptr"
@@ -260,10 +261,17 @@ func EnsureWorkloadSlices(
 	// An evicted slice can still own running Pods. Return it to the job
 	// reconciler until its reservation is released, unless an admitted
 	// replacement has already taken ownership of those Pods.
+	//
+	// The "an admitted replacement took over" shortcut is only safe when the
+	// eviction is a handover between slices. It is NOT safe when the eviction is
+	// an instruction to stop the job — see evictionRequiresJobStop.
 	for i := range workloads {
 		wl := &workloads[i]
 		if !workloadevict.IsEvicted(wl) || !workload.HasQuotaReservation(wl) {
 			continue
+		}
+		if evictionRequiresJobStop(wl) {
+			return wl, true, nil
 		}
 		replaced := slices.ContainsFunc(workloads, func(candidate kueue.Workload) bool {
 			key := ReplacementForKey(&candidate)
@@ -362,6 +370,68 @@ func EnsureWorkloadSlices(
 // spec.PodSets desynced from the frozen status.admission.podSetAssignments snapshot that drives
 // ClusterQueue usage accounting.
 var errWorkloadAdmittedConcurrently = errors.New("workload was admitted concurrently and no longer qualifies for an in-place slice update")
+
+// evictionRequiresJobStop reports whether wl's Evicted condition means the owning
+// job must be stopped, rather than merely handed over to a successor slice.
+//
+// # Why this exists
+//
+// EnsureWorkloadSlices returns exactly one slice to the job reconciler, and the
+// reconciler's "handle eviction" step (jobframework.JobReconciler step 6) only runs
+// stopJob when *that* slice carries an Evicted condition. For an elastic job the
+// selected slice is normally the newest one: under Dynamic Allocation a pending
+// scale-up probe slice is almost always present, and NormalizeActiveSlices prefers
+// it (pendingReplacement). So the quota-holding slice — the one the scheduler
+// actually preempts — is not the slice the reconciler inspects. The drain loop
+// above is the only path that surfaces it.
+//
+// That loop used to skip an evicted slice whenever an *admitted* replacement
+// existed, on the assumption that the replacement had taken ownership of the Pods.
+// That assumption holds for a scale-up handover, where the predecessor is
+// deliberately superseded and Finished (Scheduler.replaceWorkloadSlice uses
+// Finish(WorkloadSliceReplaced) — never an Evicted condition, so a handover never
+// reaches this code at all). It does not hold for preemption:
+//
+//  1. The preemptor evicts the quota-holding slice, which keeps its reservation
+//     until the job reconciler releases it.
+//  2. The already-queued scale-up probe is then admitted, because slice
+//     replacements are admitted on the *delta* against the predecessor's
+//     still-charged usage (flavorassigner.Assignment.append).
+//  3. With an admitted replacement now present, the drain loop skipped the evicted
+//     slice, so step 6 never ran and stopJob never suspended the job.
+//  4. Unsuspended, the job's driver kept scaling executors, each new slice was
+//     admitted on another small delta, and the preemptee *recaptured* the quota it
+//     was supposed to yield. The preemptor starved until unrelated capacity freed
+//     up. Step 6's clearAdmissionAfterEviction could not rescue this either: it is
+//     gated on !job.IsActive(), and the job stayed Running precisely because it was
+//     never suspended.
+//
+// Returning the evicted slice for these reasons restores the invariant that a
+// genuine eviction always reaches stopJob. Non-elastic jobs were never affected,
+// having no replacement slices for the shortcut to match.
+//
+// The set is an explicit allow-list rather than "anything but a handover" because
+// Evicted is also used for elastic bookkeeping that must not stop the job — e.g.
+// the concurrent-admission controller's "VariantEvicted"/"ConcurrentAdmission"
+// reasons, which retire one admission variant while another keeps running.
+func evictionRequiresJobStop(wl *kueue.Workload) bool {
+	cond := apimeta.FindStatusCondition(wl.Status.Conditions, kueue.WorkloadEvicted)
+	if cond == nil || cond.Status != metav1.ConditionTrue {
+		return false
+	}
+	switch cond.Reason {
+	case kueue.WorkloadEvictedByPreemption,
+		kueue.WorkloadEvictedByFlavorMigration,
+		kueue.WorkloadEvictedByPodsReadyTimeout,
+		kueue.WorkloadEvictedByAdmissionCheck,
+		kueue.WorkloadEvictedByClusterQueueStopped,
+		kueue.WorkloadEvictedByLocalQueueStopped,
+		kueue.WorkloadEvictedDueToNodeFailures:
+		return true
+	}
+	// Deactivation reasons carry an appended cause, e.g. "Deactivated<Cause>".
+	return strings.HasPrefix(cond.Reason, kueue.WorkloadDeactivated)
+}
 
 // scaleDownAdmission lowers wl's granted PodSetAssignments to counts, returning whether
 // anything changed.

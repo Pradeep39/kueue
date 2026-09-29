@@ -2203,3 +2203,92 @@ func TestFindLatestActiveWorkload(t *testing.T) {
 		})
 	}
 }
+
+// TestEnsureWorkloadSlicesEvictedOriginRequiringJobStop covers the elastic-preemption
+// deadlock: an evicted slice whose eviction means "stop the job" must be returned to the
+// job reconciler even when an admitted replacement exists, so that step 6 of
+// JobReconciler.ReconcileGenericJob runs stopJob.
+//
+// Under Dynamic Allocation a pending scale-up probe slice is essentially always present.
+// When the preemptor evicts the quota-holding slice, that probe is then admitted on a
+// delta against the evicted slice's still-charged usage. Before the fix, the presence of
+// that admitted replacement made the drain loop skip the evicted slice, so the job was
+// never suspended, kept scaling, and recaptured the quota it was meant to yield.
+//
+// Negative control: drop the evictionRequiresJobStop check from the drain loop in
+// EnsureWorkloadSlices and the "Preempted" cases below fail with
+// `selected "replacement", want "origin"`.
+func TestEnsureWorkloadSlicesEvictedOriginRequiringJobStop(t *testing.T) {
+	cases := map[string]struct {
+		reason string
+		// wantOrigin is true when the evicted slice must be handed back to the job
+		// reconciler despite the admitted replacement.
+		wantOrigin bool
+	}{
+		"preempted":             {reason: kueue.WorkloadEvictedByPreemption, wantOrigin: true},
+		"deactivated":           {reason: kueue.WorkloadDeactivated, wantOrigin: true},
+		"deactivated w/ cause":  {reason: kueue.WorkloadDeactivated + "DueToMaxExecutionTimeExceeded", wantOrigin: true},
+		"cluster queue stopped": {reason: kueue.WorkloadEvictedByClusterQueueStopped, wantOrigin: true},
+		"pods ready timeout":    {reason: kueue.WorkloadEvictedByPodsReadyTimeout, wantOrigin: true},
+		"node failures":         {reason: kueue.WorkloadEvictedDueToNodeFailures, wantOrigin: true},
+		// Concurrent-admission bookkeeping retires one admission variant while another
+		// keeps running; it must NOT stop the job, so the replacement still takes over.
+		"concurrent admission variant": {reason: "VariantEvicted", wantOrigin: false},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			ctx, _ := utiltesting.ContextWithLog(t)
+			now := time.Now()
+
+			origin := utiltestingapi.MakeWorkload("origin", testJobObject.Namespace).
+				OwnerReference(testJobGVK, testJobObject.Name, string(testJobObject.UID)).Creation(now.Add(-time.Minute)).
+				PodSets(*utiltestingapi.MakePodSet(kueue.DefaultPodSetName, 1).Obj()).
+				SimpleReserveQuota("cq", "default", now).AdmittedAt(true, now).
+				Condition(metav1.Condition{
+					Type:               kueue.WorkloadEvicted,
+					Status:             metav1.ConditionTrue,
+					LastTransitionTime: metav1.NewTime(now),
+					Reason:             tc.reason,
+					Message:            "evicted for test",
+				}).Obj()
+
+			// The scale-up probe, already admitted on a delta against origin's usage.
+			replacement := utiltestingapi.MakeWorkload("replacement", testJobObject.Namespace).
+				OwnerReference(testJobGVK, testJobObject.Name, string(testJobObject.UID)).Creation(now).
+				Annotation(WorkloadSliceReplacementFor, string(workload.Key(origin))).
+				PodSets(*utiltestingapi.MakePodSet(kueue.DefaultPodSetName, 2).Obj()).
+				SimpleReserveQuota("cq", "default", now).AdmittedAt(true, now).Obj()
+
+			c := testWorkloadClientBuilder().WithObjects(origin, replacement).
+				WithStatusSubresource(&kueue.Workload{}).Build()
+
+			selected, compatible, err := EnsureWorkloadSlices(ctx, c, testingclock.NewFakeClock(now), replacement.Spec.PodSets, testJobObject, testJobGVK)
+			if err != nil || !compatible || selected == nil {
+				t.Fatalf("EnsureWorkloadSlices() = (%v, %v, %v)", selected, compatible, err)
+			}
+
+			wantName := replacement.Name
+			if tc.wantOrigin {
+				wantName = origin.Name
+			}
+			if selected.Name != wantName {
+				t.Errorf("selected %q, want %q", selected.Name, wantName)
+			}
+
+			if !tc.wantOrigin {
+				return
+			}
+			// The evicted slice must still hold its reservation when handed back: the job
+			// reconciler is what releases it, via stopJob then clearAdmissionAfterEviction.
+			if err := c.Get(ctx, client.ObjectKeyFromObject(origin), origin); err != nil {
+				t.Fatal(err)
+			}
+			if workloadfinish.IsFinished(origin) {
+				t.Errorf("origin was finished; it must survive so the reconciler can stop the job")
+			}
+			if !workload.HasQuotaReservation(origin) {
+				t.Errorf("origin lost its quota reservation before the job was stopped")
+			}
+		})
+	}
+}
