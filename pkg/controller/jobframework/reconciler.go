@@ -538,7 +538,7 @@ func (r *JobReconciler) ReconcileGenericJob(ctx context.Context, req ctrl.Reques
 
 	// 3. handle workload is nil.
 	if wl == nil {
-		log.V(3).Info("The workload is nil, handle job with no workload")
+		log.V(2).Info("DEBUG-v2: STEP3 workload is nil -> will create a new slice")
 		err := r.handleJobWithNoWorkload(ctx, job, object)
 		if err != nil {
 			if apierrors.IsAlreadyExists(err) {
@@ -580,7 +580,7 @@ func (r *JobReconciler) ReconcileGenericJob(ctx context.Context, req ctrl.Reques
 		log.V(3).Info("Handling a job when waitForPodsReady is enabled")
 		condition := generatePodsReadyCondition(ctx, r.client, job, wl, r.clock, r.podsScheduledTrackingEnabled())
 		if !workload.HasConditionWithTypeAndReason(wl, &condition) {
-			log.V(3).Info("Updating the PodsReady condition", "reason", condition.Reason, "status", condition.Status)
+			log.V(2).Info("DEBUG-v2: STEP5 waitForPodsReady is updating PodsReady and WILL RETURN before step 6", "reason", condition.Reason, "status", condition.Status)
 			var prevPodsReadyReason string
 			var prevPodsReadyTransitionTime time.Time
 			if prevCond := apimeta.FindStatusCondition(wl.Status.Conditions, kueue.WorkloadPodsReady); prevCond != nil {
@@ -630,10 +630,12 @@ func (r *JobReconciler) ReconcileGenericJob(ctx context.Context, req ctrl.Reques
 
 	// 6. handle eviction
 	if evCond := apimeta.FindStatusCondition(wl.Status.Conditions, kueue.WorkloadEvicted); evCond != nil && evCond.Status == metav1.ConditionTrue {
-		log.V(3).Info("Handling a job with evicted condition")
+		log.V(2).Info("DEBUG-v2: STEP6 handling evicted workload -> calling stopJob", "workload", workload.Key(wl), "evictReason", evCond.Reason, "jobSuspended", job.IsSuspended(), "jobActive", job.IsActive())
 		if err := r.stopJob(ctx, job, wl, StopReasonWorkloadEvicted, evCond.Message); err != nil {
+			log.V(2).Info("DEBUG-v2: STEP6 stopJob FAILED", "err", err.Error())
 			return ctrl.Result{}, err
 		}
+		log.V(2).Info("DEBUG-v2: STEP6 stopJob returned OK", "jobSuspendedNow", job.IsSuspended(), "jobActive", job.IsActive())
 		if !job.IsActive() {
 			log.V(6).Info("The job is no longer active, clear the workloads admission")
 			if err := r.clearAdmissionAfterEviction(ctx, wl); err != nil {
@@ -672,7 +674,7 @@ func (r *JobReconciler) ReconcileGenericJob(ctx context.Context, req ctrl.Reques
 			return ctrl.Result{}, err
 		}
 
-		log.V(3).Info("Job is suspended and workload not yet admitted by a clusterQueue, nothing to do")
+		log.V(2).Info("DEBUG-v2: STEP7 job suspended, workload not admitted, nothing to do")
 		return ctrl.Result{}, nil
 	}
 
@@ -682,6 +684,7 @@ func (r *JobReconciler) ReconcileGenericJob(ctx context.Context, req ctrl.Reques
 		// unless this job is workload-slicing enabled. In workload-slicing we rely
 		// on pod-scheduling gate(s) to pause workload slice pods during the workload admission process.
 		if WorkloadSliceEnabled(job) {
+			log.V(2).Info("DEBUG-v2: STEP8 workload not admitted + slicing enabled -> SILENT RETURN (no stopJob)", "workload", workload.Key(wl))
 			return ctrl.Result{}, nil
 		}
 		log.V(2).Info("Running job is not admitted by a cluster queue, suspending")
@@ -694,7 +697,7 @@ func (r *JobReconciler) ReconcileGenericJob(ctx context.Context, req ctrl.Reques
 
 	// Workload is admitted and job is running, nothing to do. For elastic jobs,
 	// pod ungating is handled by the ElasticJobUngater controller.
-	log.V(3).Info("Job running with admitted workload, nothing to do")
+	log.V(2).Info("DEBUG-v2: STEP8 job running with admitted workload, nothing to do")
 	return ctrl.Result{}, nil
 }
 
@@ -1166,6 +1169,10 @@ func (r *JobReconciler) ensureOneWorkload(ctx context.Context, job GenericJob, o
 				if err := UpdateWaitForPodsReady(ctx, r.client, r.record, job.Object(), wl); err != nil {
 					return nil, err
 				}
+				log.V(2).Info("DEBUG-v2: slice path returned a workload", "workload", workload.Key(wl),
+					"evicted", workloadevict.IsEvicted(wl), "admitted", workload.IsAdmitted(wl), "qr", workload.HasQuotaReservation(wl))
+			} else {
+				log.V(2).Info("DEBUG-v2: slice path returned NIL")
 			}
 			return wl, nil
 		}

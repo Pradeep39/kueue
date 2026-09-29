@@ -322,6 +322,27 @@ func EnsureWorkloadSlices(
 		return nil, true, fmt.Errorf("failed to find active workload slices: %w", err)
 	}
 
+	// DEBUG-v2: what does the slice set look like on entry?
+	{
+		dbg := ctrl.LoggerFrom(ctx)
+		desc := make([]string, 0, len(workloads))
+		for i := range workloads {
+			w := &workloads[i]
+			reason := "-"
+			if c := apimeta.FindStatusCondition(w.Status.Conditions, kueue.WorkloadEvicted); c != nil {
+				reason = fmt.Sprintf("%s/%s", c.Status, c.Reason)
+			}
+			repl := "-"
+			if k := ReplacementForKey(w); k != nil {
+				repl = string(*k)
+			}
+			desc = append(desc, fmt.Sprintf("%s{ev=%v evCond=%s qr=%v adm=%v fin=%v stop=%v replaces=%s}",
+				w.Name, workloadevict.IsEvicted(w), reason, workload.HasQuotaReservation(w),
+				workload.IsAdmitted(w), workloadfinish.IsFinished(w), evictionRequiresJobStop(w), repl))
+		}
+		dbg.V(2).Info("DEBUG-v2: EnsureWorkloadSlices entered", "notFinishedCount", len(workloads), "slices", desc)
+	}
+
 	// An evicted slice can still own running Pods. Return it to the job
 	// reconciler until its reservation is released, unless an admitted
 	// replacement has already taken ownership of those Pods.
@@ -335,6 +356,7 @@ func EnsureWorkloadSlices(
 			continue
 		}
 		if evictionRequiresJobStop(wl) {
+			ctrl.LoggerFrom(ctx).V(2).Info("DEBUG-v2: drain returning evicted slice (eviction requires job stop)", "workload", workload.Key(wl))
 			return wl, true, nil
 		}
 		replaced := slices.ContainsFunc(workloads, func(candidate kueue.Workload) bool {
@@ -342,8 +364,10 @@ func EnsureWorkloadSlices(
 			return key != nil && *key == workload.Key(wl) && workload.IsAdmitted(&candidate) && !workloadevict.IsEvicted(&candidate)
 		})
 		if !replaced {
+			ctrl.LoggerFrom(ctx).V(2).Info("DEBUG-v2: drain returning evicted slice (no admitted replacement)", "workload", workload.Key(wl))
 			return wl, true, nil
 		}
+		ctrl.LoggerFrom(ctx).V(2).Info("DEBUG-v2: drain SKIPPED evicted slice (admitted replacement exists)", "workload", workload.Key(wl))
 	}
 
 	switch len(workloads) {
