@@ -1149,11 +1149,15 @@ func TestEnsureWorkloadSlices(t *testing.T) {
 			},
 			want: want{
 				compatible: true,
+				// scaleDownAdmission lowers the granted count alongside the spec patch and
+				// rescales ResourceUsage proportionally (it is the podSet total, not per-pod):
+				// 3 pods at a 1 cpu total -> 1 pod at 333m. That second write is why the
+				// ResourceVersion advances to 3 rather than 2.
 				workload: utiltestingapi.MakeWorkload(testJobObject.Name+"-1", testJobObject.Namespace).
 					OwnerReference(testJobGVK, testJobObject.Name, string(testJobObject.UID)).
-					ResourceVersion("2").
+					ResourceVersion("3").
 					PodSets(*utiltestingapi.MakePodSet(kueue.DefaultPodSetName, 1).Request(corev1.ResourceCPU, "1").Obj()).
-					ReserveQuotaAt(utiltestingapi.MakeAdmission("default").PodSets(utiltestingapi.MakePodSetAssignment(kueue.DefaultPodSetName).Assignment(corev1.ResourceCPU, "default", "1").Count(3).Obj()).Obj(), now).
+					ReserveQuotaAt(utiltestingapi.MakeAdmission("default").PodSets(utiltestingapi.MakePodSetAssignment(kueue.DefaultPodSetName).Assignment(corev1.ResourceCPU, "default", "333m").Count(1).Obj()).Obj(), now).
 					Obj(),
 			},
 		},
@@ -1182,15 +1186,17 @@ func TestEnsureWorkloadSlices(t *testing.T) {
 			},
 			want: want{
 				compatible: true,
+				// Only the scaled-down podSet's grant is lowered and rescaled (3 pods at a
+				// 1 cpu total -> 1 pod at 333m); "stay-the-same" keeps its original grant.
 				workload: utiltestingapi.MakeWorkload(testJobObject.Name+"-1", testJobObject.Namespace).
 					OwnerReference(testJobGVK, testJobObject.Name, string(testJobObject.UID)).
-					ResourceVersion("2").
+					ResourceVersion("3").
 					PodSets(
 						*utiltestingapi.MakePodSet("scale-down", 1).Request(corev1.ResourceCPU, "1").Obj(),
 						*utiltestingapi.MakePodSet("stay-the-same", 3).Request(corev1.ResourceCPU, "1").Obj()).
 					ReserveQuotaAt(utiltestingapi.MakeAdmission("default").
 						PodSets(
-							utiltestingapi.MakePodSetAssignment("scale-down").Assignment(corev1.ResourceCPU, "default", "1").Count(3).Obj(),
+							utiltestingapi.MakePodSetAssignment("scale-down").Assignment(corev1.ResourceCPU, "default", "333m").Count(1).Obj(),
 							utiltestingapi.MakePodSetAssignment("stay-the-same").Assignment(corev1.ResourceCPU, "default", "1").Count(3).Obj(),
 						).
 						Obj(), now).
@@ -1960,16 +1966,16 @@ func TestNormalizeActiveSlices(t *testing.T) {
 				WithObjects(objs...).
 				Build()
 
-			survivor, err := normalizeActiveSlices(ctx, clnt, fakeClock, tc.workloads)
+			survivor, err := NormalizeActiveSlices(ctx, clnt, fakeClock, tc.workloads)
 			if diff := cmp.Diff(tc.want.error, err, cmpopts.EquateErrors()); diff != "" {
-				t.Fatalf("normalizeActiveSlices() error (-want,+got):\n%s", diff)
+				t.Fatalf("NormalizeActiveSlices() error (-want,+got):\n%s", diff)
 			}
 			gotName := ""
 			if survivor != nil {
 				gotName = survivor.Name
 			}
 			if gotName != tc.want.survivor {
-				t.Errorf("normalizeActiveSlices() survivor = %q, want %q", gotName, tc.want.survivor)
+				t.Errorf("NormalizeActiveSlices() survivor = %q, want %q", gotName, tc.want.survivor)
 			}
 
 			for i := range tc.workloads {
