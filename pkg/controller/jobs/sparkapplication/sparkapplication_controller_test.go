@@ -1149,7 +1149,6 @@ func TestGlobalNodeSelectorSurvivesRunRestoreRoundTrip(t *testing.T) {
 		NodeSelector(maps.Clone(globalNodeSelector)).
 		ExecutorInstances(3).
 		Obj()
-	kSparkApp := (*SparkApplication)(sparkApp)
 	// This package wraps the CRD type rather than aliasing it, so the upstream conversion does
 	// not apply; fromObject is the constructor.
 	kSparkApp := fromObject(sparkApp)

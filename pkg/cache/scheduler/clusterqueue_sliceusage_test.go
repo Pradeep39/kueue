@@ -206,7 +206,7 @@ func TestClusterQueueSliceReplacementUsageAccounting(t *testing.T) {
 			for i, o := range tc.ops {
 				switch {
 				case o.add != nil:
-					if added := cache.AddOrUpdateWorkload(log, o.add); !added {
+					if added := cache.AddOrUpdateWorkload(ctx, log, o.add); !added {
 						t.Fatalf("op %d: workload %s was not added", i, workload.Key(o.add))
 					}
 				case o.delete != "":
@@ -261,7 +261,7 @@ func TestClusterQueueSliceReplacementDisabledFeatureGate(t *testing.T) {
 		sliceWorkload("slice-old", "slice-old", 0, 8, "4Gi", ""),
 		sliceWorkload("slice-new", "slice-old", 1, 10, "5Gi", "slice-old"),
 	} {
-		if added := cache.AddOrUpdateWorkload(log, wl); !added {
+		if added := cache.AddOrUpdateWorkload(ctx, log, wl); !added {
 			t.Fatalf("Workload %s was not added", workload.Key(wl))
 		}
 	}
@@ -353,7 +353,7 @@ func TestClusterQueueUsageFrozenAdmissionCountDoesNotOvercommit(t *testing.T) {
 				newSlice("als-1-b99b3", "als-1-7005f", "job-als-1", 3, tc.als1Granted),
 				newSlice("als-2-2011a", "als-2-ae646", "job-als-2", 3, tc.als2Granted),
 			} {
-				if added := cache.AddOrUpdateWorkload(log, wl); !added {
+				if added := cache.AddOrUpdateWorkload(ctx, log, wl); !added {
 					t.Fatalf("Workload %s was not added", workload.Key(wl))
 				}
 			}
