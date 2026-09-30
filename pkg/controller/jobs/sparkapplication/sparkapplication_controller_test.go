@@ -581,7 +581,6 @@ func TestRestorePodSetsInfo(t *testing.T) {
 				DriverTolerations([]corev1.Toleration{*toleration.DeepCopy()}).
 				DriverTemplate(&corev1.PodTemplateSpec{
 					Spec: corev1.PodSpec{
-						SchedulingGates: []corev1.PodSchedulingGate{*schedulingGate.DeepCopy()},
 						Containers: []corev1.Container{
 							{Name: sparkcommon.SparkDriverContainerName},
 						},
@@ -591,7 +590,6 @@ func TestRestorePodSetsInfo(t *testing.T) {
 				ExecutorTolerations([]corev1.Toleration{*toleration.DeepCopy()}).
 				ExecutorTemplate(&corev1.PodTemplateSpec{
 					Spec: corev1.PodSpec{
-						SchedulingGates: []corev1.PodSchedulingGate{*schedulingGate.DeepCopy()},
 						Containers: []corev1.Container{
 							{Name: sparkcommon.Spark3DefaultExecutorContainerName},
 						},
@@ -1177,5 +1175,54 @@ func TestGlobalNodeSelectorSurvivesRunRestoreRoundTrip(t *testing.T) {
 	}
 	if sparkApp.Spec.NodeSelector != nil {
 		t.Errorf("spec.nodeSelector should stay cleared, got %v", sparkApp.Spec.NodeSelector)
+	}
+}
+
+// TestRestorePodSetsInfoPreservesElasticSchedulingGate pins the elastic-preemption
+// deadlock.
+//
+// stopJob applies Suspend() and RestorePodSetsInfo() in a single patch. PodSets() builds
+// a synthetic template for quota math that does not carry the ElasticJobSchedulingGate,
+// so GetPodSetsInfoFromWorkload -> podset.FromPodSet always yields an empty
+// SchedulingGates list. Restoring that list wiped the gate from the SparkApplication and
+// the validating webhook rejected the whole update:
+//
+//	admission webhook "vsparkapplication.kb.io" denied the request:
+//	spec.executor.template.spec.schedulingGates: Invalid value: null:
+//	an elastic job must have the ElasticJobSchedulingGate on its executor pod template
+//
+// Nothing re-added it, since the mutating webhook is registered for CREATE only while the
+// validating webhook runs on CREATE and UPDATE. The suspend therefore never landed, the
+// evicted slice kept its quota reservation, and the preemptor starved.
+//
+// Negative control: restore the SchedulingGates assignment in RestorePodSetsInfo and this
+// test fails with the gate wiped to nil.
+func TestRestorePodSetsInfoPreservesElasticSchedulingGate(t *testing.T) {
+	elasticGate := corev1.PodSchedulingGate{Name: kueue.ElasticJobSchedulingGate}
+
+	sparkApp := sparkapplicationtesting.MakeSparkApplication("test-sparkapp", "ns").
+		ExecutorTemplate(&corev1.PodTemplateSpec{
+			Spec: corev1.PodSpec{
+				SchedulingGates: []corev1.PodSchedulingGate{*elasticGate.DeepCopy()},
+				Containers: []corev1.Container{
+					{Name: sparkcommon.Spark3DefaultExecutorContainerName},
+				},
+			},
+		}).Obj()
+
+	// What stopJob actually passes: derived from the Workload's PodSets, which carry no gates.
+	podSetsInfo := []podset.PodSetInfo{
+		{Name: "driver", Count: 1},
+		{Name: "executor", Count: 3},
+	}
+
+	kSparkApp := fromObject(sparkApp)
+	kSparkApp.RestorePodSetsInfo(t.Context(), podSetsInfo)
+
+	got := kSparkApp.Spec.Executor.Template.Spec.SchedulingGates
+	want := []corev1.PodSchedulingGate{*elasticGate.DeepCopy()}
+	if diff := cmp.Diff(want, got, cmpopts.EquateEmpty()); diff != "" {
+		t.Errorf("executor SchedulingGates after restore (-want,+got):\n%s\n"+
+			"the gate must survive, or the webhook rejects the suspend patch and preemption deadlocks", diff)
 	}
 }

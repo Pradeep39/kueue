@@ -345,10 +345,31 @@ func (j *SparkApplication) RestorePodSetsInfo(ctx context.Context, podSetsInfo [
 		if sparkPodSpec.Template == nil {
 			sparkPodSpec.Template = emptyPodTemplate.DeepCopy()
 		}
-		if !slices.Equal(sparkPodSpec.Template.Spec.SchedulingGates, podSetInfo.SchedulingGates) {
-			sparkPodSpec.Template.Spec.SchedulingGates = slices.Clone(podSetInfo.SchedulingGates)
-			changed = true
-		}
+		// Deliberately NOT restoring SchedulingGates.
+		//
+		// RunWithPodSetsInfo never sets them, so there is nothing admission-side to undo,
+		// and podSetInfo.SchedulingGates is always empty here: PodSets() builds a synthetic
+		// template for quota math only and does not carry the gate, so
+		// GetPodSetsInfoFromWorkload -> podset.FromPodSet reads an empty list off the
+		// Workload's PodSet template.
+		//
+		// Restoring that empty list wiped spec.executor.template.spec.schedulingGates on
+		// the SparkApplication, and the validating webhook requires an elastic job to keep
+		// the ElasticJobSchedulingGate (see sparkapplication_webhook.go). Because stopJob
+		// applies Suspend() and RestorePodSetsInfo() in a single patch, the webhook rejected
+		// the whole update -- so preemption could never suspend the job:
+		//
+		//   stopJob FAILED: admission webhook "vsparkapplication.kb.io" denied the request:
+		//   spec.executor.template.spec.schedulingGates: Invalid value: null:
+		//   an elastic job must have the ElasticJobSchedulingGate on its executor pod template
+		//
+		// Nothing re-added the gate either: the mutating webhook is registered for CREATE
+		// only, while the validating webhook runs on CREATE and UPDATE. The reconciler then
+		// retried forever, the evicted slice kept its quota reservation, and the preemptor
+		// starved.
+		//
+		// The gate is owned by the webhook for the lifetime of the object, so the correct
+		// behaviour is to leave whatever is on the CR untouched.
 
 		return changed
 	}
