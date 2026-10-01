@@ -359,10 +359,25 @@ func (j *SparkApplication) RestorePodSetsInfo(ctx context.Context, podSetsInfo [
 			template.Spec.Tolerations = slices.Clone(info.Tolerations)
 			changed = true
 		}
-		if !slices.Equal(template.Spec.SchedulingGates, info.SchedulingGates) {
-			template.Spec.SchedulingGates = slices.Clone(info.SchedulingGates)
-			changed = true
-		}
+		// Deliberately NOT restoring SchedulingGates -- same defect as the Kubeflow
+		// SparkApplication integration, and it deadlocks preemption identically.
+		//
+		// RunWithPodSetsInfo never sets them, so there is nothing admission-side to undo,
+		// and info.SchedulingGates is always empty here: PodSets() builds a template for
+		// quota math that does not carry the gate, so GetPodSetsInfoFromWorkload ->
+		// podset.FromPodSet reads an empty list off the Workload's PodSet template.
+		//
+		// Restoring that empty list wipes the executor template's schedulingGates, and
+		// validateElasticJob requires an elastic job to keep the ElasticJobSchedulingGate.
+		// Since stopJob applies Suspend() and RestorePodSetsInfo() in a single patch, the
+		// webhook rejects the whole update -- so preemption can never suspend the job, the
+		// evicted slice keeps its quota reservation and the preemptor starves.
+		//
+		// Nothing re-adds the gate either: mapachesparkapplication is registered for CREATE
+		// only, while vapachesparkapplication runs on CREATE and UPDATE.
+		//
+		// The gate is owned by the webhook for the lifetime of the object, so leave whatever
+		// is on the object untouched.
 		if !maps.Equal(template.Labels, info.Labels) {
 			template.Labels = maps.Clone(info.Labels)
 			changed = true

@@ -27,7 +27,9 @@ import (
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	kueue "sigs.k8s.io/kueue/apis/kueue/v1beta2"
 	sparkv1 "sigs.k8s.io/kueue/pkg/controller/jobs/apachesparkapplication/api/v1"
+	"sigs.k8s.io/kueue/pkg/podset"
 	utiltesting "sigs.k8s.io/kueue/pkg/util/testing"
 )
 
@@ -427,5 +429,44 @@ func TestEnsureTemplateSpecNeverMarshalsNullContainers(t *testing.T) {
 				t.Errorf("marshalled application contains a null containers list:\n%s", encoded)
 			}
 		})
+	}
+}
+
+// TestRestorePodSetsInfoPreservesElasticSchedulingGate pins the elastic-preemption
+// deadlock for this integration. It is the same defect the Kubeflow SparkApplication
+// integration had, and it deadlocks preemption identically.
+//
+// stopJob applies Suspend() and RestorePodSetsInfo() in a single patch. PodSets() builds
+// a template for quota math that does not carry the ElasticJobSchedulingGate, so
+// GetPodSetsInfoFromWorkload -> podset.FromPodSet always yields an empty SchedulingGates
+// list. Restoring that list wipes the gate from the executor template, and
+// validateElasticJob rejects the resulting update:
+//
+//	an elastic job must carry the kueue.x-k8s.io/elastic-job scheduling gate on its
+//	executor pod template
+//
+// Nothing re-adds it, since mapachesparkapplication is registered for CREATE only while
+// vapachesparkapplication runs on CREATE and UPDATE. The suspend therefore never lands,
+// the evicted slice keeps its quota reservation, and the preemptor starves.
+//
+// Negative control: restore the SchedulingGates assignment in RestorePodSetsInfo and this
+// test fails with the gate wiped to empty.
+func TestRestorePodSetsInfoPreservesElasticSchedulingGate(t *testing.T) {
+	elasticGate := corev1.PodSchedulingGate{Name: kueue.ElasticJobSchedulingGate}
+
+	job := wrap(daSpec(nil))
+	// Mirror what the mutating webhook does at CREATE.
+	executor := job.ensureTemplateSpec(roleExecutor)
+	executor.Spec.SchedulingGates = []corev1.PodSchedulingGate{elasticGate}
+	job.ensureTemplateSpec(roleDriver)
+
+	// What stopJob actually passes: derived from the Workload's PodSets, which carry no gates.
+	job.RestorePodSetsInfo(context.Background(), []podset.PodSetInfo{{}, {}})
+
+	got := templateSpec(job.SparkApplication, roleExecutor).Spec.SchedulingGates
+	if len(got) != 1 || got[0].Name != kueue.ElasticJobSchedulingGate {
+		t.Errorf("executor SchedulingGates after restore = %v, want [%s]\n"+
+			"the gate must survive, or the webhook rejects the suspend patch and preemption deadlocks",
+			got, kueue.ElasticJobSchedulingGate)
 	}
 }
