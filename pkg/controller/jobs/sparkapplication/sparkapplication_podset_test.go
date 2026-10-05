@@ -55,10 +55,8 @@ func elasticExecutorPod(name string, phase corev1.PodPhase, deleting bool) *core
 
 func driverPod(containerName string) *corev1.Pod {
 	return &corev1.Pod{
-		ObjectMeta: metav1.ObjectMeta{
-			Labels: map[string]string{
-				sparkcommon.LabelSparkRole: sparkcommon.SparkRoleDriver,
-			},
+		Labels: map[string]string{
+			sparkcommon.LabelSparkRole: sparkcommon.SparkRoleDriver,
 		},
 		Spec: corev1.PodSpec{
 			Containers: []corev1.Container{

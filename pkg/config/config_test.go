@@ -66,6 +66,9 @@ var defaultWaitForPodsReady = &configapi.WaitForPodsReady{
 	RecoveryTimeout: &metav1.Duration{
 		Duration: 30 * time.Minute,
 	},
+	MaxTimeoutOnWorkload: &metav1.Duration{
+		Duration: configapi.DefaultMaxTimeoutOnWorkload,
+	},
 	RequeuingStrategy: &configapi.RequeuingStrategy{
 		Timestamp:          new(configapi.EvictionTimestamp),
 		BackoffBaseSeconds: new(int32(configapi.DefaultRequeuingBackoffBaseSeconds)),
@@ -665,10 +668,11 @@ objectRetentionPolicies:
 				ManageJobsWithoutQueueName: false,
 				InternalCertManagement:     enableDefaultInternalCertManagement,
 				WaitForPodsReady: &configapi.WaitForPodsReady{
-					BlockAdmission:     new(true),
-					Timeout:            metav1.Duration{Duration: 50 * time.Second},
-					RecoveryTimeout:    &metav1.Duration{Duration: 3 * time.Minute},
-					UnscheduledTimeout: &metav1.Duration{Duration: 30 * time.Second},
+					BlockAdmission:       new(true),
+					Timeout:              metav1.Duration{Duration: 50 * time.Second},
+					RecoveryTimeout:      &metav1.Duration{Duration: 3 * time.Minute},
+					UnscheduledTimeout:   &metav1.Duration{Duration: 30 * time.Second},
+					MaxTimeoutOnWorkload: &metav1.Duration{Duration: configapi.DefaultMaxTimeoutOnWorkload},
 					RequeuingStrategy: &configapi.RequeuingStrategy{
 						Timestamp:          new(configapi.CreationTimestamp),
 						BackoffLimitCount:  new(int32(10)),
@@ -1261,8 +1265,9 @@ func TestEncode(t *testing.T) {
 					"bindPort": int64(8082),
 				},
 				"waitForPodsReady": map[string]any{
-					"blockAdmission":  false,
-					"recoveryTimeout": "30m0s",
+					"blockAdmission":       false,
+					"recoveryTimeout":      "30m0s",
+					"maxTimeoutOnWorkload": "2h0m0s",
 					"requeuingStrategy": map[string]any{
 						"backoffBaseSeconds": int64(60),
 						"backoffMaxSeconds":  int64(3600),
@@ -1338,9 +1343,7 @@ func TestWaitForPodsReadyIsEnabled(t *testing.T) {
 
 func TestConfigureClusterProfileCacheWithClient(t *testing.T) {
 	multiclusterCRD := &apiextensionsv1.CustomResourceDefinition{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: "clusterprofiles.multicluster.x-k8s.io",
-		},
+		Name: "clusterprofiles.multicluster.x-k8s.io",
 	}
 
 	testCases := map[string]struct {
@@ -1426,9 +1429,7 @@ func TestConfigureClusterProfileCache(t *testing.T) {
 			kubeConfig: &rest.Config{
 				Host:        "https://127.0.0.1:6443",
 				BearerToken: "fake-token",
-				TLSClientConfig: rest.TLSClientConfig{
-					Insecure: true,
-				},
+				Insecure:    true,
 			},
 		},
 	}
@@ -1479,22 +1480,20 @@ namespace: kueue-system
 	}{
 		"strips managedFields and preserves object data": {
 			pod: &corev1.Pod{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-pod",
-					Namespace: "default",
-					Labels:    map[string]string{"app": "test"},
-					Annotations: map[string]string{
-						"note": "keep-me",
+				Name:      "test-pod",
+				Namespace: "default",
+				Labels:    map[string]string{"app": "test"},
+				Annotations: map[string]string{
+					"note": "keep-me",
+				},
+				ManagedFields: []metav1.ManagedFieldsEntry{
+					{
+						Manager:   "kubectl",
+						Operation: metav1.ManagedFieldsOperationApply,
 					},
-					ManagedFields: []metav1.ManagedFieldsEntry{
-						{
-							Manager:   "kubectl",
-							Operation: metav1.ManagedFieldsOperationApply,
-						},
-						{
-							Manager:   "kube-controller-manager",
-							Operation: metav1.ManagedFieldsOperationUpdate,
-						},
+					{
+						Manager:   "kube-controller-manager",
+						Operation: metav1.ManagedFieldsOperationUpdate,
 					},
 				},
 				Spec: corev1.PodSpec{
@@ -1502,12 +1501,10 @@ namespace: kueue-system
 				},
 			},
 			wantPod: &corev1.Pod{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:        "test-pod",
-					Namespace:   "default",
-					Labels:      map[string]string{"app": "test"},
-					Annotations: map[string]string{"note": "keep-me"},
-				},
+				Name:        "test-pod",
+				Namespace:   "default",
+				Labels:      map[string]string{"app": "test"},
+				Annotations: map[string]string{"note": "keep-me"},
 				Spec: corev1.PodSpec{
 					NodeName: "node-1",
 				},
@@ -1515,14 +1512,10 @@ namespace: kueue-system
 		},
 		"no-op when managedFields already nil": {
 			pod: &corev1.Pod{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: "test-pod",
-				},
+				Name: "test-pod",
 			},
 			wantPod: &corev1.Pod{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: "test-pod",
-				},
+				Name: "test-pod",
 			},
 		},
 	}
@@ -1545,30 +1538,27 @@ namespace: kueue-system
 }
 
 func TestSetLeaderElectionConfig(t *testing.T) {
-	testcases := []struct {
-		name      string
+	testCases := map[string]struct {
 		qps       float32
 		burst     int32
 		wantQPS   float32
 		wantBurst int
 	}{
-		{
-			name:      "configured qps and burst are kept in a dedicated bucket",
+		"configured qps and burst are kept in a dedicated bucket": {
 			qps:       20,
 			burst:     30,
 			wantQPS:   20,
 			wantBurst: 30,
 		},
-		{
-			name:    "negative qps disables client-side throttling for the lease client too",
+		"negative qps disables client-side throttling for the lease client too": {
 			qps:     -1,
 			burst:   30,
 			wantQPS: -1,
 		},
 	}
 
-	for _, tc := range testcases {
-		t.Run(tc.name, func(t *testing.T) {
+	for name, tc := range testCases {
+		t.Run(name, func(t *testing.T) {
 			// Mirror cmd/kueue/main.go: one explicit RateLimiter shared by every controller client.
 			sharedLimiter := flowcontrol.NewTokenBucketRateLimiter(tc.qps, int(tc.burst))
 			kubeConfig := &rest.Config{

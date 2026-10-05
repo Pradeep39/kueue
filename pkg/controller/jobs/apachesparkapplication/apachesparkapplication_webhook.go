@@ -22,6 +22,7 @@ import (
 	"slices"
 
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -57,6 +58,7 @@ type SparkApplicationWebhook struct {
 	manageJobsWithoutQueueName   bool
 	managedJobsNamespaceSelector labels.Selector
 	cache                        *schdcache.Cache
+	maxTimeoutOnWorkload         *metav1.Duration
 }
 
 func SetupWebhook(mgr ctrl.Manager, opts ...jobframework.Option) error {
@@ -68,6 +70,7 @@ func SetupWebhook(mgr ctrl.Manager, opts ...jobframework.Option) error {
 		manageJobsWithoutQueueName:   options.ManageJobsWithoutQueueName,
 		managedJobsNamespaceSelector: options.ManagedJobsNamespaceSelector,
 		cache:                        options.Cache,
+		maxTimeoutOnWorkload:         options.MaxTimeoutOnWorkload,
 	}
 	obj := &sparkv1.SparkApplication{}
 	if options.NoopWebhook {
@@ -94,7 +97,7 @@ func (w *SparkApplicationWebhook) Default(ctx context.Context, obj *sparkv1.Spar
 	if err := w.integrationManager.ApplyDefaultLocalQueue(ctx, w.client, job.Object(), w.queues.DefaultLocalQueueExist, w.managedJobsNamespaceSelector); err != nil {
 		return err
 	}
-	w.integrationManager.ApplyDefaultWorkloadPriorityClass(ctx, w.client, job.Object())
+	w.integrationManager.ApplyDefaultWorkloadPriorityClass(ctx, w.client, job.Object(), w.managedJobsNamespaceSelector)
 	if err := w.integrationManager.ApplyDefaultForSuspend(ctx, job, w.client, w.manageJobsWithoutQueueName, w.managedJobsNamespaceSelector); err != nil {
 		return err
 	}
@@ -166,7 +169,7 @@ func (w *SparkApplicationWebhook) validateCreate(ctx context.Context, obj *spark
 		}
 	}
 
-	allErrors = append(allErrors, jobframework.ValidateJobOnCreate(job)...)
+	allErrors = append(allErrors, jobframework.ValidateJobOnCreate(job, w.maxTimeoutOnWorkload)...)
 	if features.Enabled(features.TopologyAwareScheduling) {
 		validationErrs, err := w.validateTopologyRequest(ctx, job)
 		if err != nil {
@@ -225,7 +228,7 @@ func (w *SparkApplicationWebhook) ValidateUpdate(ctx context.Context, oldObj, ne
 	log := ctrl.LoggerFrom(ctx).WithName(webhookName)
 	if w.manageJobsWithoutQueueName || jobframework.QueueName(fromObject(newObj)) != "" {
 		log.V(5).Info("Validating update")
-		allErrors := jobframework.ValidateJobOnUpdate(fromObject(oldObj), fromObject(newObj), w.queues.DefaultLocalQueueExist)
+		allErrors := jobframework.ValidateJobOnUpdate(fromObject(oldObj), fromObject(newObj), w.queues.DefaultLocalQueueExist, w.maxTimeoutOnWorkload)
 		validationErrs, err := w.validateCreate(ctx, newObj)
 		if err != nil {
 			return nil, err
