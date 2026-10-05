@@ -36,14 +36,38 @@ and patched `spec.executor.instances` on the `SparkApplication` to track the liv
 so that the generic `PodSets()` → spec diff → workload slice pipeline would "just work"
 unmodified.
 
-This is fundamentally incompatible with the upstream Spark Operator. Its
-`event_filter.go` runs an unconditional `reflect.DeepEqual` between the old and new
-`.Spec` on every `Update` event, and treats **any** difference as a request to
-resubmit the application: it kills the running driver Pod and restarts the whole
-application under a new `SubmissionID`. There is no field-level allowlist and no
-opt-out. Every patch to `spec.executor.instances` — no matter how well debounced —
-was therefore observed as a spec change and killed the very job it was trying to keep
+This is fundamentally incompatible with the upstream Spark Operator. Its `EventFilter.Update`
+([`event_filter.go#L180-L209`](https://github.com/kubeflow/spark-operator/blob/v2.5.1/internal/controller/sparkapplication/event_filter.go#L180-L209))
+runs `equality.Semantic.DeepEqual` between the old and new `.Spec` on every `Update` event.
+Any difference outside a narrow exemption list is treated as a request to resubmit: the
+operator force-sets `status.applicationState.state` to `INVALIDATING`, which dispatches to
+`reconcileInvalidatingSparkApplication`
+([`controller.go#L534-L554`](https://github.com/kubeflow/spark-operator/blob/v2.5.1/internal/controller/sparkapplication/controller.go#L534-L554)).
+That calls `deleteSparkResources`, resets the status, and moves the application to
+`PENDING_RERUN` — i.e. it tears down the running driver and re-runs the whole application.
+
+The exemptions matter, because they are the reason this design works at all, and they do
+**not** include executor counts:
+
+| Exempt from resubmission | Condition |
+|---|---|
+| `spec.suspend` | always — this is what makes Kueue's suspend-based admission and `stopJob` viable |
+| `spec.timeToLiveSeconds` | always |
+| `spec.executor.{priorityClassName,nodeSelector,tolerations,affinity,schedulerName}` | only behind the operator's `PartialRestart` feature gate |
+
+`spec.executor.instances` is in none of them, so every patch to it — no matter how well
+debounced — landed in the `INVALIDATING` branch and killed the very job it was trying to keep
 running. This was confirmed by direct testing and is why that line of work was reverted.
+
+The operator's own documentation states the same behaviour, and names incremental executor
+scaling as unimplemented future work:
+[Updating a SparkApplication](https://spark.kubeflow.org/en/latest/user-guide/working-with-sparkapplication.html)
+
+> If the application is currently running, the operator kills the running application before
+> submitting a new run with the updated specification. There is planned work to enhance the way
+> `SparkApplication` updates are handled. For example, if the change was to increase the number
+> of executor instances, instead of killing the currently running application and starting a new
+> run, it is a much better user experience to incrementally launch the additional executor pods.
 
 ### 2.3 The fix: derive, don't write
 

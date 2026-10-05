@@ -104,9 +104,10 @@ template-mutation pattern transfers directly.
 
 PR #16's design doc (§2.2 there) documents why an earlier design that patched
 `spec.executor.instances` on every DA scale event was fully reverted: the Spark
-Operator's `event_filter.go` runs an unconditional `reflect.DeepEqual` on `.Spec` on
-every `Update` and kills + resubmits the running application on *any* spec change. Since
-this design also mutates `spec.executor.template` — a `.Spec` field — it had to be
+Operator's `EventFilter.Update` compares `.Spec` with `equality.Semantic.DeepEqual` on
+every `Update` and kills + resubmits the running application on any difference outside a
+narrow exemption list that does not cover executor counts. Since this design also mutates
+`spec.executor.template` — a `.Spec` field, and likewise not exempt — it had to be
 verified that this write is safe.
 
 It is, because it happens exactly once, and only before the application starts running:
