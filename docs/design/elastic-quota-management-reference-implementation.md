@@ -40,11 +40,13 @@ the `SparkApplication` CR when it scales. Everything in this design follows from
 
 ## 2.2 Two hard constraints discovered during implementation
 
-**C-1: Kueue must never write to `SparkApplication.Spec`.** The Spark Operator's `event_filter.go`
-performs an unconditional `DeepEqual` on `.Spec` and force-kills and resubmits a running
-application on any difference. An earlier design that patched `spec.executor.instances` to the
-observed count was implemented, then reverted, because it restarted the very jobs it was
-accounting for.
+**C-1: Kueue must never write a count to `SparkApplication.Spec`.** The Spark Operator's
+`EventFilter.Update` compares `.Spec` with `equality.Semantic.DeepEqual` and force-kills and
+resubmits a running application on any difference outside a narrow exemption list —
+`spec.suspend`, `spec.timeToLiveSeconds`, and (behind its `PartialRestart` feature gate) a few
+executor scheduling fields. Executor counts are not exempt. An earlier design that patched
+`spec.executor.instances` to the observed count was implemented, then reverted, because it
+restarted the very jobs it was accounting for.
 
 **C-2: A scheduling gate can only be applied through the Pod template.** The gate is injected into
 `spec.executor.template` at CR-creation time. Spark's driver loads that template file **once at

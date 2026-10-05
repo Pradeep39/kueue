@@ -35,10 +35,13 @@ count, only to *observe* Dynamic Allocation's actual current state, and Pods car
 more fidelity and no propagation delay than any field on the CR can.
 
 Writing such a field would also have been actively harmful. The Spark Operator's
-`event_filter.go` does an unconditional `DeepEqual` on the entire `.Spec` on every `Update`
-and treats any difference — including a change to an otherwise-inert field — as a request to
-kill and resubmit the running application (§2.2 of the design doc). A field that exists only
-to be written by an external controller would have walked straight into that.
+`EventFilter.Update` compares the whole `.Spec` with `equality.Semantic.DeepEqual` on every
+`Update`, and any difference outside a narrow exemption list is treated as a request to kill
+and resubmit the running application (§2.2 of the design doc has the citations and the full
+exemption list). The exemptions cover `spec.suspend`, `spec.timeToLiveSeconds`, and — only
+behind the operator's `PartialRestart` feature gate — a handful of executor scheduling fields.
+A new count field would not have been among them, so a field that exists only to be written by
+an external controller would have walked straight into a teardown on every write.
 
 ## 3. The dependency is zero — how to confirm it
 
