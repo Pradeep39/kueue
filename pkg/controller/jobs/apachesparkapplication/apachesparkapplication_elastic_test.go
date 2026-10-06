@@ -470,3 +470,105 @@ func TestRestorePodSetsInfoPreservesElasticSchedulingGate(t *testing.T) {
 			got, kueue.ElasticJobSchedulingGate)
 	}
 }
+
+// TestStopJobAndReadmitPatchesPassElasticValidation closes the loop that the existing
+// gate test leaves open.
+//
+// TestRestorePodSetsInfoPreservesElasticSchedulingGate asserts the gate survives in
+// memory. That is necessary but not what actually failed in production: the failure was
+// the *API server* rejecting the patch stopJob produces, because validateElasticJob
+// requires the ElasticJobSchedulingGate on the executor template. So assert the real
+// invariant — the object each mutation leaves behind must still pass that validator.
+//
+// This matters most for this integration. The Kubeflow path has end-to-end cluster
+// evidence; the Apache integration is not deployed anywhere, so these unit assertions are
+// the only evidence its equivalent fix is correct.
+//
+// The PodSetInfos are derived from the job's own PodSets() rather than written by hand,
+// because that is where the production staleness comes from: PodSets() reads the CR, so
+// once an admission has written the Workload name onto the CR, every later slice's
+// recorded template carries it, and the merge sees that stale value against the current
+// slice's. A fixture that restores from empty maps wipes the CR and cannot reproduce it.
+//
+// Negative control, verified: reinstate the SchedulingGates assignment in
+// RestorePodSetsInfo and the suspend subtest fails with the real validator error
+// ("an elastic job must carry the kueue.x-k8s.io/elastic-job scheduling gate ...").
+//
+// The re-admission subtest has NO verified negative control. Bypassing podset.Merge in
+// RunWithPodSetsInfo — the mutation that broke the Kubeflow integration the same way —
+// does not make it fail, so on this path it is a barrier against future drift rather than
+// a demonstrated regression guard. Do not read it as proof that this integration is
+// susceptible to that bug; the evidence is that it is not.
+func TestStopJobAndReadmitPatchesPassElasticValidation(t *testing.T) {
+	elasticGate := corev1.PodSchedulingGate{Name: kueue.ElasticJobSchedulingGate}
+	clnt := utiltesting.NewClientBuilder().Build()
+
+	// newGatedApp mirrors what the mutating webhook leaves on the object at CREATE.
+	newGatedApp := func() *SparkApplication {
+		job := wrap(daSpec(nil))
+		job.ensureTemplateSpec(roleDriver)
+		job.ensureTemplateSpec(roleExecutor).Spec.SchedulingGates = []corev1.PodSchedulingGate{elasticGate}
+		if errs := validateElasticJob(job.SparkApplication); len(errs) > 0 {
+			t.Fatalf("fixture is already invalid before any mutation: %v", errs)
+		}
+		return job
+	}
+
+	// fromPodSets reproduces getPodSetsInfoFromStatus: the Workload's recorded PodSet
+	// templates, plus the annotations Kueue stamps for the admission in progress.
+	fromPodSets := func(job *SparkApplication, sliceName string) []podset.PodSetInfo {
+		podSets, err := job.PodSets(t.Context(), clnt)
+		if err != nil {
+			t.Fatalf("PodSets() = %v", err)
+		}
+		info := make([]podset.PodSetInfo, 0, len(podSets))
+		for i := range podSets {
+			psi := podset.FromPodSet(&podSets[i])
+			if psi.Annotations == nil {
+				psi.Annotations = map[string]string{}
+			}
+			if sliceName != "" {
+				psi.Annotations[kueue.WorkloadAnnotation] = sliceName
+				psi.Annotations[kueue.WorkloadSliceNameAnnotation] = "app-root-slice"
+			}
+			info = append(info, psi)
+		}
+		return info
+	}
+
+	t.Run("the patch stopJob produces still validates", func(t *testing.T) {
+		job := newGatedApp()
+
+		// stopJob: RestorePodSetsInfo from the Workload's PodSets, then Suspend, in one patch.
+		job.RestorePodSetsInfo(t.Context(), fromPodSets(job, ""))
+		job.Suspend()
+
+		if errs := validateElasticJob(job.SparkApplication); len(errs) > 0 {
+			t.Errorf("validateElasticJob() after stopJob = %v, want no errors\n"+
+				"the API server would reject the suspend patch and preemption would never stop the job", errs)
+		}
+	})
+
+	t.Run("the patch re-admission produces still validates", func(t *testing.T) {
+		job := newGatedApp()
+
+		// First admission bakes the current Workload name onto the CR.
+		if err := job.RunWithPodSetsInfo(t.Context(), clnt, fromPodSets(job, "app-slice-1")); err != nil {
+			t.Fatalf("first admission: RunWithPodSetsInfo() = %v, want nil", err)
+		}
+
+		// Preemption. The restore carries the CR's own annotations back, stale name included.
+		job.RestorePodSetsInfo(t.Context(), fromPodSets(job, ""))
+		job.Suspend()
+
+		// Resume under a NEW slice. The stale name must not conflict with the current one.
+		if err := job.RunWithPodSetsInfo(t.Context(), clnt, fromPodSets(job, "app-slice-2")); err != nil {
+			t.Fatalf("re-admission under a new slice: RunWithPodSetsInfo() = %v, want nil\n"+
+				"a permanent error here leaves the job suspended for ever", err)
+		}
+
+		if errs := validateElasticJob(job.SparkApplication); len(errs) > 0 {
+			t.Errorf("validateElasticJob() after re-admission = %v, want no errors", errs)
+		}
+	})
+}
