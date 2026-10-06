@@ -1279,3 +1279,76 @@ func TestRestorePodSetsInfoPreservesElasticSchedulingGate(t *testing.T) {
 			"the gate must survive, or the webhook rejects the suspend patch and preemption deadlocks", diff)
 	}
 }
+
+// TestRunWithPodSetsInfoIsIdempotentAcrossSlices pins the "suspended for ever after
+// preemption" bug.
+//
+// getPodSetsInfoFromStatus stamps kueue.x-k8s.io/workload with the *current* Workload's
+// name, and RunWithPodSetsInfo writes the merged annotations back onto
+// spec.{driver,executor}.annotations. The first admission therefore bakes that name onto
+// the CR. An elastic job is re-admitted under a NEW slice name, so the second admission
+// merged two different values for one key, which PodSetInfo.Merge rejects as a conflict:
+//
+//	invalid admission check PodSetUpdate: conflict for annotations: conflict for
+//	key=kueue.x-k8s.io/workload, value1=<first slice>, value2=<current slice>
+//
+// podset.IsPermanent reports that as permanent, so the job reconciler marked the Workload
+// Finished/FailedToStart and never unsuspended the job -- for ever, even with an empty
+// ClusterQueue.
+//
+// Negative control: drop the kueueOwnedAnnotationsRemoved call in RunWithPodSetsInfo and
+// the second admission below fails with exactly that conflict error.
+func TestRunWithPodSetsInfoIsIdempotentAcrossSlices(t *testing.T) {
+	sparkApp := sparkapplicationtesting.MakeSparkApplication("test-sparkapp", "ns").Obj()
+	job := fromObject(sparkApp)
+
+	admit := func(sliceName string) error {
+		info := []podset.PodSetInfo{
+			{
+				Name: "driver", Count: 1,
+				Annotations: map[string]string{
+					kueue.WorkloadAnnotation:          sliceName,
+					kueue.WorkloadSliceNameAnnotation: "test-sparkapp-root",
+					"user-annotation":                 "must-survive",
+				},
+			},
+			{
+				Name: "executor", Count: 3,
+				Annotations: map[string]string{
+					kueue.WorkloadAnnotation:          sliceName,
+					kueue.WorkloadSliceNameAnnotation: "test-sparkapp-root",
+				},
+			},
+		}
+		return job.RunWithPodSetsInfo(t.Context(), nil, info)
+	}
+
+	// First admission: bakes the slice name onto the CR, as it always has.
+	if err := admit("test-sparkapp-slice1"); err != nil {
+		t.Fatalf("first admission: RunWithPodSetsInfo() = %v, want nil", err)
+	}
+	if got := job.Spec.Driver.Annotations[kueue.WorkloadAnnotation]; got != "test-sparkapp-slice1" {
+		t.Errorf("after first admission, driver %s = %q, want %q", kueue.WorkloadAnnotation, got, "test-sparkapp-slice1")
+	}
+
+	// Re-admission after a preemption/suspend cycle uses a new slice. This must not
+	// conflict with the name the first admission left behind.
+	if err := admit("test-sparkapp-slice2"); err != nil {
+		t.Fatalf("re-admission under a new slice: RunWithPodSetsInfo() = %v, want nil\n"+
+			"the job can never unsuspend if this returns a permanent error", err)
+	}
+
+	// The CR must now carry the current slice, not the stale one.
+	for role, annotations := range map[string]map[string]string{
+		"driver":   job.Spec.Driver.Annotations,
+		"executor": job.Spec.Executor.Annotations,
+	} {
+		if got := annotations[kueue.WorkloadAnnotation]; got != "test-sparkapp-slice2" {
+			t.Errorf("%s %s = %q, want %q", role, kueue.WorkloadAnnotation, got, "test-sparkapp-slice2")
+		}
+	}
+	// User annotations must not be collateral damage.
+	if got := job.Spec.Driver.Annotations["user-annotation"]; got != "must-survive" {
+		t.Errorf("driver user-annotation = %q, want %q", got, "must-survive")
+	}
+}

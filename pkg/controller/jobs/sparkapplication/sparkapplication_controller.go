@@ -26,6 +26,7 @@ import (
 	sparkv1beta2 "github.com/kubeflow/spark-operator/v2/api/v1beta2"
 	sparkcommon "github.com/kubeflow/spark-operator/v2/pkg/common"
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
@@ -262,21 +263,37 @@ func (j *SparkApplication) RunWithPodSetsInfo(ctx context.Context, _ client.Clie
 			return fmt.Errorf("unknown Spark role: %s", role)
 		}
 
-		sparkPodSetInfo := &podset.PodSetInfo{
-			Annotations:     sparkPodSpec.Annotations,
-			Labels:          sparkPodSpec.Labels,
+		// Merge through podset.Merge rather than PodSetInfo.Merge directly, so this
+		// integration inherits the stale-Kueue-annotation handling every other
+		// integration gets (overrideableAnnotations).
+		//
+		// getPodSetsInfoFromStatus stamps kueue.x-k8s.io/workload with the *current*
+		// Workload's name and, for elastic jobs, kueue.x-k8s.io/workload-slice-name, and
+		// the merged result is written back to spec.{driver,executor}.annotations below.
+		// The first admission therefore bakes that Workload name onto the CR. An elastic
+		// job is re-admitted under a NEW slice, so a plain PodSetInfo.Merge then saw two
+		// different values for one key and failed with a permanent
+		// BadPodSetsUpdateError; the job reconciler marked the Workload
+		// Finished/FailedToStart and the job never unsuspended, even with an empty
+		// ClusterQueue. podset.Merge deletes the stale value first, so the current
+		// admission's value wins and re-admission is idempotent across slices.
+		meta := metav1.ObjectMeta{
+			Annotations: sparkPodSpec.Annotations,
+			Labels:      sparkPodSpec.Labels,
+		}
+		spec := corev1.PodSpec{
 			NodeSelector:    nodeSelector,
 			Tolerations:     sparkPodSpec.Tolerations,
 			SchedulingGates: sparkPodSpec.Template.Spec.SchedulingGates,
 		}
-		if err := sparkPodSetInfo.Merge(podSetInfo); err != nil {
+		if err := podset.Merge(ctrl.LoggerFrom(ctx), &meta, &spec, podSetInfo); err != nil {
 			return err
 		}
-		sparkPodSpec.Annotations = sparkPodSetInfo.Annotations
-		sparkPodSpec.Labels = sparkPodSetInfo.Labels
-		sparkPodSpec.NodeSelector = sparkPodSetInfo.NodeSelector
-		sparkPodSpec.Tolerations = sparkPodSetInfo.Tolerations
-		sparkPodSpec.Template.Spec.SchedulingGates = sparkPodSetInfo.SchedulingGates
+		sparkPodSpec.Annotations = meta.Annotations
+		sparkPodSpec.Labels = meta.Labels
+		sparkPodSpec.NodeSelector = spec.NodeSelector
+		sparkPodSpec.Tolerations = spec.Tolerations
+		sparkPodSpec.Template.Spec.SchedulingGates = spec.SchedulingGates
 		return nil
 	}
 
