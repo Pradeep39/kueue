@@ -133,9 +133,12 @@ func (j *SparkApplication) PodLabelSelector() string {
 // object.GetGeneration(), which only changes when SparkApplication.Spec changes.
 // Dynamic Allocation scales executors by creating/deleting live Pods directly
 // against the API server without ever touching Spec (the whole point of
-// liveExecutorCount() is to avoid that, since any Spec write makes the Spark
-// Operator kill and resubmit the running app) — so generation alone stays frozen
-// across every scale-up after the first.
+// liveExecutorCount() is to avoid that: a Spec write outside the Spark Operator's
+// narrow exemption list — spec.suspend, spec.timeToLiveSeconds, and behind its
+// PartialRestart feature gate a few executor scheduling fields — force-sets the
+// application to INVALIDATING, which deletes its resources and re-runs it from
+// scratch, and spec.executor.instances is not exempt) — so generation alone stays
+// frozen across every scale-up after the first.
 //
 // Folding in the live executor count (as this used to do) isn't enough either:
 // once a superseded slice is Finished it's never deleted (absent a configured

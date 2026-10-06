@@ -719,7 +719,8 @@ this area.
 Two designs were built and rejected:
 
 - **Writing the observed count back to `spec.executor.instances`.** Implemented, then reverted: the
-  Spark Operator force-kills and resubmits the application on any `.Spec` change (C-1).
+  Spark Operator tears down and re-runs the application on any `.Spec` change outside its
+  narrow exemption list, and executor counts are not exempt (C-1).
 - **Keying chain membership off the replacement-pointer graph.** Rejected: with chain `a → b → c`
   all cached, deleting the middle slice left `a` with no cached replacement, so `a` resumed being
   charged and the overcommit returned (§6.1).
