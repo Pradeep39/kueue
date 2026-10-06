@@ -139,7 +139,7 @@ func TestClusterQueueUsageWorkloadSliceScaleUpDoubleCount(t *testing.T) {
 	// state Scheduler.admit leaves behind between assumeWorkload (synchronous) and the old
 	// slice's Finish propagating back (asynchronous, unretried on failure).
 	for _, wl := range []*kueue.Workload{oldSlice, newSlice} {
-		if added := cache.AddOrUpdateWorkload(log, wl); !added {
+		if added := cache.AddOrUpdateWorkload(ctx, log, wl); !added {
 			t.Fatalf("Workload %s was not added to the cache", workload.Key(wl))
 		}
 	}

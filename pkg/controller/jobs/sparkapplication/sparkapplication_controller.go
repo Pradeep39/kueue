@@ -370,6 +370,13 @@ func (j *SparkApplication) RestorePodSetsInfo(ctx context.Context, podSetsInfo [
 		//
 		// The gate is owned by the webhook for the lifetime of the object, so the correct
 		// behaviour is to leave whatever is on the CR untouched.
+		//
+		// Upstream additionally restores spec.executor.instances here. This fork deliberately
+		// does not: the field is CRD-validated Minimum=1, a derived live count of 0 cannot be
+		// written back, and spec.executor.instances is not on the Spark Operator's exemption
+		// list -- so writing it turns a clean suspend into an INVALIDATING teardown and re-run.
+		// See docs/design/spark-operator-parallelism-dependency.md and the "should never write
+		// spec.executor.instances" case in sparkapplication_controller_test.go.
 
 		return changed
 	}
@@ -388,11 +395,13 @@ func (j *SparkApplication) RestorePodSetsInfo(ctx context.Context, podSetsInfo [
 }
 
 func (j *SparkApplication) Finished(ctx context.Context) (message string, success, finished bool) {
+	// SUBMISSION_FAILED is not terminal: depending on the restartPolicy, the
+	// operator resubmits the application, and it moves the application to
+	// FAILED once no retries are left.
 	return j.Status.AppState.ErrorMessage,
 		j.Status.AppState.State == sparkv1beta2.ApplicationStateCompleted,
 		j.Status.AppState.State == sparkv1beta2.ApplicationStateCompleted ||
-			j.Status.AppState.State == sparkv1beta2.ApplicationStateFailed ||
-			j.Status.AppState.State == sparkv1beta2.ApplicationStateFailedSubmission
+			j.Status.AppState.State == sparkv1beta2.ApplicationStateFailed
 }
 
 func (j *SparkApplication) PodsReady(ctx context.Context, c client.Client) bool {

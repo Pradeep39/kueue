@@ -111,7 +111,7 @@ func TestWorkloadSliceAssignmentUsageIsDeltaButAPICountIsFull(t *testing.T) {
 		resources.NewResourceFormatter(),
 		0,
 	)
-	assignment := assigner.Assign(ctx, nil)
+	assignment := assigner.AssignFlavors(ctx, log, nil)
 
 	if mode := assignment.RepresentativeMode(); mode != Fit {
 		t.Fatalf("RepresentativeMode() = %v, want %v", mode, Fit)

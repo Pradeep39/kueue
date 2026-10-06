@@ -50,6 +50,14 @@ The parallelism can be adjusted (increased or decreased) as long as the job rema
 
 See [Run A RayJob](/docs/tasks/run/rayjobs)
 
+## RayCluster
+
+See [Run A RayCluster](/docs/tasks/run/rayclusters)
+
+## RayService
+
+See [Run A RayService](/docs/tasks/run/rayservices)
+
 ## Feature Gate
 
 Elastic Workloads via Workload Slices are gated by the following feature flag:
@@ -75,7 +83,9 @@ The admission webhook validates this annotation only when the `ElasticJobsViaWor
    * `batch/v1.Job`
    * `ray.io/v1.RayJob`
    * `ray.io/v1.RayCluster`
+   * `ray.io/v1.RayService`
    * `sparkoperator.k8s.io/v1beta2.SparkApplication`
+   * `spark.apache.org/v1.SparkApplication`
 * Elastic workloads are not supported for jobs with partial admission enabled.
 
     * Attempting to scale jobs with partial admission enabled will result in an admission validation error similar to the following:
@@ -85,5 +95,5 @@ The admission webhook validates this annotation only when the `ElasticJobsViaWor
       error when patching "job.yaml": admission webhook "vjob.kb.io" denied the request: spec.parallelism: Forbidden: cannot change when partial admission is enabled and the job is not suspended
       ```
 * When scaling up a previously admitted job the new workload must reuse the originally assigned flavor, even if other eligible flavors have available capacity.
-* No Multikueue support.
+* MultiKueue support for elastic workloads is currently available only for `batch/v1.Job` and `ray.io/v1.RayCluster` (not supported for `ray.io/v1.RayJob` or `ray.io/v1.RayService`).
 * No Topology-Aware Scheduling (TAS) support. 
