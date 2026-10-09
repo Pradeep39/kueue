@@ -14,11 +14,11 @@ date: "2026-10-09"
   (`spark.apache.org/v1`), which shares all the elastic machinery and differs in its
   prerequisites, charging surfaces and lifecycle mapping.
 
-Reading order for a reviewer short on time: §2.2 (why gang scheduling is the wrong tool), §11.1
-(the central asymmetry), §11.2 (chain-scoped accounting).
+Reading order for a reviewer short on time: §2.2 (why gang scheduling is the wrong tool), §10.1
+(the central asymmetry), §10.2 (chain-scoped accounting).
 
 Code references are paths relative to the repository root. This describes a working implementation
-validated on a live cluster. Known gaps are stated as such — §6, §15, §A9.
+validated on a live cluster. Known gaps are stated as such — §6, §14, §A9.
 
 Diagrams: [`diagrams/`](./diagrams/README.md).
 
@@ -117,7 +117,7 @@ until quota has been granted for it. Three capabilities follow:
 
 **Observed sizing.** The workload's size is determined by observing what it is actually running,
 not by reading a declared value from its resource. Necessary because DA changes the footprint
-without updating the resource, and because modifying that resource is not safe (§8.2, C-1).
+without updating the resource, and because modifying that resource is not safe (§7.2, C-1).
 
 **Granted-capacity enforcement.** Workers created by the framework do not begin consuming capacity
 until Kueue has granted quota for them. The framework may ask for more at any time; it receives
@@ -145,9 +145,9 @@ usable by another (US-4); no behaviour change for existing elastic `batch/v1.Job
 | **R-8** | A workload MUST be able to start below its configured maximum, and MUST NOT be rejected merely because its maximum exceeds available quota. | Met |
 | **R-9** | Behaviour for non-elastic workloads MUST be unchanged, including the immutability guarantees they rely on. | Met |
 | **R-10** | Existing elastic integrations MUST be unaffected. | Met |
-| **R-11** | The number of workers awaiting quota SHOULD remain proportionate to the quota available. | **Not met** — §15.2 |
-| **R-12** | Time-to-admission under a saturated queue SHOULD remain bounded. | **Not met** — §15.2 |
-| **R-13** | The per-worker cost used for accounting MUST match what the framework actually requests of Kubernetes, for every resource the queue governs. | Met for CPU and memory — upstream for Kubeflow, this contribution for Apache (§9.5, §A5); the general risk remains — §6.3 |
+| **R-11** | The number of workers awaiting quota SHOULD remain proportionate to the quota available. | **Not met** — §14.2 |
+| **R-12** | Time-to-admission under a saturated queue SHOULD remain bounded. | **Not met** — §14.2 |
+| **R-13** | The per-worker cost used for accounting MUST match what the framework actually requests of Kubernetes, for every resource the queue governs. | Met for CPU and memory — upstream for Kubeflow, this contribution for Apache (§8.5, §A5); the general risk remains — §6.3 |
 
 Two invariants define correctness. Both are checked continuously by an automated harness, and both
 are necessary — neither implies the other.
@@ -163,7 +163,7 @@ SC-1 fails loudly. SC-2 fails silently, and is the more dangerous of the two. A 
 elastic quota management should be judged against both.
 
 **SC-2 is only as strong as the per-worker cost it is measured against.** If that cost is taken
-from the same value the queue charges, the check is circular and passes regardless — see §14.
+from the same value the queue charges, the check is circular and passes regardless — see §13.
 
 # 5. Risks
 
@@ -172,7 +172,7 @@ from the same value the queue charges, the check is circular and passes regardle
 | Accounting for a workload requires modifying it, restarting it. | R-5: size is observed, never written back. |
 | Quota released on scale-down is not actually reusable. | R-4 is stated as an outcome and validated, not assumed. |
 | Elasticity weakens guarantees non-elastic users depend on. | R-9; every relaxation is confined to elastic workloads. |
-| A workload is admitted, then starved of the growth it needs. | R-8; §15.2 records where this is currently imperfect. |
+| A workload is admitted, then starved of the growth it needs. | R-8; §14.2 records where this is currently imperfect. |
 | Silent oversubscription. | SC-2 is a first-class success criterion, not an implementation detail. |
 | The predicted worker Pod diverges from the one the framework actually creates. | R-13 holds for CPU and memory; the structural risk remains — §6.3. |
 
@@ -200,7 +200,7 @@ the framework's own configuration. Nothing reconciles the two and Kueue never re
 back. When the two derivations disagree, **the cluster follows reality and the ledger follows the
 prediction**, silently.
 
-Two such divergences existed in the Kubeflow integration and were fixed upstream (§9.5), which is
+Two such divergences existed in the Kubeflow integration and were fixed upstream (§8.5), which is
 why R-13 is marked met. **The general risk is not closed by fixing two instances.** Any integration that predicts a
 worker Pod from a custom resource inherits this failure mode, and elasticity makes it worse: a
 static workload's divergence is a fixed error found once, whereas an autoscaling workload
@@ -209,41 +209,13 @@ would say how the predicted cost is kept faithful — validating it against obse
 it from the framework's own logic rather than re-implementing it, or reporting a discrepancy rather
 than absorbing it. This proposal guarantees only the two resources Kueue governs here.
 
-# 7. Alternatives considered
-
-**Gang scheduling at a static size.** Rejected for these workloads — §2.2.
-
-**Size at the floor and accept the throughput cap.** What these workloads do today. Leaves idle
-capacity unused and makes compaction jobs take substantially longer than the infrastructure allows.
-
-**Size at the peak.** Reserves capacity idle most of the time; for interactive sessions the peak is
-not knowable in advance, so this is not merely wasteful but impossible to do correctly.
-
-**Manual resizing by an operator.** Requires a human in a loop operating on the timescale of
-notebook cells.
-
-**Let the framework autoscale without quota awareness.** The status quo outside Kueue — §2.3.
-
-**Per-integration elastic accounting.** Rejected: the hard problems are in the generic slicing
-machinery, and solving them once benefits every integration. Three of the four bodies of work here
-fix defects in **generic** `ElasticJobsViaWorkloadSlices` code, not in the Spark integration, and
-two were only reachable under sustained autoscaling churn. Spark workloads exercise slice
-replacement far harder than a `batch/v1.Job` resize does; any future elastic integration would have
-hit the same issues.
-
-**Writing the observed count back to the job's spec**, so the generic spec-diff pipeline works
-unmodified. Implemented and reverted — it is incompatible with the operator (§8.2, C-1).
-
-**Adding a declared count field to the Spark Operator API.** Dropped; the integration needs no
-operator change at all (§16.1).
-
 ---
 
 # Part II — Design
 
-# 8. Context
+# 7. Context
 
-## 8.1 The actors
+## 7.1 The actors
 
 | Actor | Role | Controlled by us? |
 |---|---|---|
@@ -258,7 +230,7 @@ The defining constraint is the first row. DA is an autonomous control loop Kueue
 It cannot be asked to stop creating Pods, and it does not consult or update the CR when it scales.
 Everything here follows from having to *observe* that loop rather than *drive* it.
 
-## 8.2 Two hard constraints
+## 7.2 Two hard constraints
 
 **C-1: Kueue must never write a count to `SparkApplication.Spec`.** The operator's
 `EventFilter.Update` compares `.Spec` with `equality.Semantic.DeepEqual` and force-kills and
@@ -289,7 +261,7 @@ application's lifetime. This is what makes a template-level gate reach Pods DA c
 It also means gating is all-or-nothing per application: there is no per-Pod decision point at
 creation time, only the later decision of whether to *remove* the gate.
 
-## 8.3 Why the existing feature does not fit
+## 7.3 Why the existing feature does not fit
 
 `ElasticJobsViaWorkloadSlices` assumes a job's desired PodSet counts are visible on the job object
 (e.g. `batch/v1.Job.Spec.Parallelism`), and that changing that field is how a user or autoscaler
@@ -306,7 +278,7 @@ desired counts — it does not require them to originate from `.Spec`. `PodSets(
 application runs. Nothing in `EnsureWorkloadSlices` needed to change: it already takes desired
 counts as an opaque input and does not care where they came from.
 
-# 9. Sizing the workload
+# 8. Sizing the workload
 
 ```
 Spark driver creates/deletes executor Pod
@@ -329,7 +301,7 @@ Pod event ──> executorPodPredicate ──> executorPodHandler (debounce)
 
 Nothing in this path writes to the CR (C-1).
 
-## 9.1 What counts as live
+## 8.1 What counts as live
 
 `isVerifiedLiveExecutor` excludes only terminal phases:
 
@@ -351,13 +323,13 @@ Three deliberate consequences:
   it reaches a terminal phase. Excluding it the instant a delete is issued would undercount live
   consumption and manufacture spurious intermediate counts as DA works through a batch of
   deletions.
-- **Gate-blocked Pods count.** Load-bearing, and the origin of §15.2. A gated Pod consumes no node
+- **Gate-blocked Pods count.** Load-bearing, and the origin of §14.2. A gated Pod consumes no node
   capacity, so counting it overstates consumption — but it is the *only* signal that DA wants more.
   Excluding gated Pods would mean the count never grows, no replacement slice is created, no quota
   is granted, the gate is never removed, and the job cannot scale at all. **The count is "what DA
   wants", not "what is consuming".**
 
-## 9.2 Reconcile-scoped memoisation
+## 8.2 Reconcile-scoped memoisation
 
 `PodSets()` is called several times per reconcile — `ensureOneWorkload`, `EquivalentToWorkload`,
 `ConstructWorkload` — all backed by the same informer cache, which can observe a new Pod event
@@ -368,7 +340,7 @@ The count is memoised on the `*SparkApplication` wrapper. Because `NewJob()` all
 wrapper per reconcile, the cache is scoped to one reconcile pass by construction and can never go
 stale across passes. The same pattern carries the workload sequence number.
 
-## 9.3 Resolving a declared count
+## 8.3 Resolving a declared count
 
 Both the structured field and `sparkConf` declare executor counts, and the operator accepts both,
 so Kueue must read both. Reading only the structured field is a **quota-evasion path**: an
@@ -413,7 +385,7 @@ Enabled bool `json:"enabled,omitempty"`
 
 a **non-pointer `bool` with `omitempty`**, making an explicit `false` indistinguishable from an
 omitted field. Honouring "explicit false" would need an upstream API change to `*bool`, which this
-integration deliberately avoids depending on (§16.1). Letting the structured surface win regardless
+integration deliberately avoids depending on (§15.1). Letting the structured surface win regardless
 would misread an ordinary manifest that sets bounds structurally and enablement through
 `sparkConf`: `dynamicAllocation` is non-nil but `Enabled` reads false, so the application would be
 classified **static** and sized from `spec.executor.instances` while DA actually scaled the Pods.
@@ -423,13 +395,13 @@ routes accounting through the live-Pod derivation, which tracks reality, and the
 positive is bounded. `TestDynamicAllocationEnabled` pins this as a tripwire so a future
 "consistency" cleanup fails a named test with the reasoning attached.
 
-## 9.4 Clamping to Dynamic Allocation's own bounds
+## 8.4 Clamping to Dynamic Allocation's own bounds
 
 The declared estimate applies only while **zero** executor Pods exist; the instant one appears the
 live count takes over. But the driver creates its initial executors one API call at a time, so
 there is a window where the live count is a strictly smaller prefix of the intended initial count.
 A reconcile landing in that window reads a scale-down and patches the slice — and the grant — down,
-dismantling a gang that was just admitted. The Pod-event debounce (§9.6) does not help, because the
+dismantling a gang that was just admitted. The Pod-event debounce (§8.6) does not help, because the
 reconciler also watches the `SparkApplication` itself and the operator updates its status
 repeatedly during startup; those reconciles are not debounced, and a transient prefix observed
 through a foreign trigger is indistinguishable from a real scale-down.
@@ -451,7 +423,7 @@ an executor dying and being replaced. `maxExecutors` is applied last, so a confi
 The same clamp applies to the initial estimate, so `instances: 1` with `minExecutors: 5` reserves
 the floor rather than admitting the driver without its initial executors.
 
-The upper clamp **narrows but does not close** the gated-Pod loop (§15.2): it converts an unbounded
+The upper clamp **narrows but does not close** the gated-Pod loop (§14.2): it converts an unbounded
 climb into a bounded over-request, but when `maxExecutors` exceeds what the queue can grant the
 over-request still cannot be admitted. Closing it properly needs a bound derived from the queue's
 capacity, which the `PodSets(ctx, client)` signature does not expose.
@@ -462,9 +434,9 @@ bounds configured the clamp is the identity function.
 **Operational consequence.** With `initialExecutors: 1` and `minExecutors: 3` the first Workload
 is driver 1 + executor 1 and the floor of 3 is reached by two further slice replacements, each
 needing fresh quota. Omitting `initialExecutors` makes both Kueue and Spark start at
-`minExecutors`, so the floor is admitted atomically. This is the cheapest lever on §15.2.
+`minExecutors`, so the floor is admitted atomically. This is the cheapest lever on §14.2.
 
-## 9.5 What Kueue charges — upstream behaviour this design depends on
+## 8.5 What Kueue charges — upstream behaviour this design depends on
 
 **Attribution.** For the Kubeflow integration the charging rules below are implemented in
 `pkg/controller/jobs/sparkapplication/sparkapplication_resources.go`, which is **upstream code
@@ -546,7 +518,7 @@ the old under-charge will admit fewer workloads. That is the point: the new numb
 actually request, so the previous behaviour was over-admitting against real node capacity. Anyone
 upgrading should expect to re-size per-queue `nominalQuota`.
 
-## 9.6 Event handling and debouncing
+## 8.6 Event handling and debouncing
 
 Executor Pods are owned by the **driver Pod**, not the CR, so there is no OwnerReference chain to
 key an `Owns()` watch off. `isTrackedExecutorPod` filters on the `sparkoperator.k8s.io/app-name`
@@ -561,7 +533,7 @@ Per-key timers guarded by a mutex are used rather than the workqueue's own `AddA
 because staggered `AddAfter` calls from a burst each fire independently and defeat the coalescing.
 The clock is injected so the behaviour is unit-testable.
 
-## 9.7 Slice naming
+## 8.7 Slice naming
 
 `GetWorkloadNameExtraPart` must produce a name never reused for the lifetime of the application.
 Two obvious inputs both fail:
@@ -578,7 +550,7 @@ owned by this job, Finished or not, via the existing owner-reference index. It o
 is computed in `PodSets()` (which has a client) and cached for `GetWorkloadNameExtraPart()` (which
 does not).
 
-## 9.8 Registration
+## 8.8 Registration
 
 The GVK is added to `supportedElasticJobGVKs` in `pkg/controller/jobframework/validation.go` and to
 the supported-integration list in the site docs, so the `kueue.x-k8s.io/elastic-job: "true"`
@@ -589,9 +561,9 @@ Note also what was **removed**: `RestorePodSetsInfo` previously wrote the admitt
 unsound on its own terms — a scaled-to-zero PodSet count is legal for a Workload (`Minimum=0`) but
 not for `spec.executor.instances` (`Minimum=1`), so it could produce a validation-rejected patch.
 
-# 10. Admission control
+# 9. Admission control
 
-## 10.1 Why accurate sizing is not enough
+## 9.1 Why accurate sizing is not enough
 
 Deriving the count accurately is purely descriptive. Nothing in it stops a DA-created executor Pod
 from running. DA creates Pods directly against the API, outside any Kueue-mediated admission step,
@@ -599,7 +571,7 @@ so by the time the reconciler learns a new executor exists the Pod is already `P
 `Running` and already consuming real node resources. If the cohort has no spare quota the new slice
 simply sits un-admitted while the running Pod keeps consuming ungoverned.
 
-## 10.2 The pattern that already exists
+## 9.2 The pattern that already exists
 
 `ElasticJobsViaWorkloadSlices` solves this for `Job` and `RayCluster` with a scheduling gate:
 
@@ -616,7 +588,7 @@ simply sits un-admitted while the running Pod keeps consuming ungoverned.
 Extending this was the only design considered: it reuses machinery already hardened for two
 integrations rather than inventing a parallel capacity-check subsystem.
 
-## 10.3 Why the gate reaches Dynamic-Allocation Pods
+## 9.3 Why the gate reaches Dynamic-Allocation Pods
 
 Non-obvious, and traced across three codebases before implementing. `Job` and `RayCluster` gate
 Pods that the *same controller* which read the gated template instantiates on every scale event.
@@ -639,7 +611,7 @@ So a gate baked into the template at CR-creation time reaches every DA-created e
 application's whole lifetime, with no time-window or generation cutoff. No new Kueue-owned Pod
 webhook is needed.
 
-## 10.4 Why the one spec write is safe
+## 9.4 Why the one spec write is safe
 
 Gating mutates `spec.executor.template` — a `.Spec` field, not exempt under C-1 — so the write had
 to be verified safe. It is, because it happens exactly once, before the application runs:
@@ -652,7 +624,7 @@ to be verified safe. It is, because it happens exactly once, before the applicat
   creates a new slice for an already-unsuspended application and never re-enters that branch —
   `EnsureWorkloadSlices` operates purely on `Workload` objects.
 
-## 10.5 Injection, validation and ungating
+## 9.5 Injection, validation and ungating
 
 ```go
 if isAnElasticJob(obj) {
@@ -677,7 +649,7 @@ Consequence worth knowing when reading metrics: drivers never appear in a gated-
 — `RunWithPodSetsInfo`'s pre-existing merge writes them from the same `PodSetInfo` the generic
 reconciler populates. These reach DA-created Pods too: the operator translates
 `spec.executor.Labels`/`.Annotations` into `spark.kubernetes.executor.label.*` confs at submission,
-which the driver applies by the same merge-not-replace mechanism as §10.3.
+which the driver applies by the same merge-not-replace mechanism as §9.3.
 
 **The cap must be the grant, not the request.** `podsToUngate` originally read
 `ExtractPodSetCountsFromWorkload`, which returns `spec.podSets[].Count` — the **request**. For an
@@ -703,10 +675,10 @@ legacy or hand-written admission is not read as a grant of zero, which would dea
 entirely. `ExtractPodSetCountsFromWorkload` gained a doc note pointing at the new function: the
 naming is what made this easy to get wrong, so part of the mitigation is documentary.
 
-With the cap correct, surplus executors stay `Pending` rather than running, which makes §15.2 more
+With the cap correct, surplus executors stay `Pending` rather than running, which makes §14.2 more
 visible. The two want addressing together.
 
-## 10.6 Why sizing and gating are both needed
+## 9.6 Why sizing and gating are both needed
 
 They look alike — both watch executor Pods — but answer different questions:
 
@@ -725,16 +697,16 @@ gate/ungate mechanism for admission; only SparkApplication additionally needs li
 *sizing*, because only its spec field goes stale.
 
 **Alternatives considered.** A SparkApplication-specific Pod-admission webhook intercepting raw
-executor Pod `CREATE`s: rejected once §10.3 confirmed the template approach already reaches every
+executor Pod `CREATE`s: rejected once §9.3 confirmed the template approach already reaches every
 DA-created Pod — a new webhook would duplicate the ungater-matching machinery for no added
 coverage and add a second failure-mode surface (`failurePolicy`, ordering against the operator's
 own pod webhook). A SparkApplication-specific ungate controller doing a live scheduler-cache query:
 rejected as duplicate admission logic that could disagree with the scheduler and would be
 significantly harder to review upstream. Gating the driver template: rejected per above.
 
-# 11. Accounting correctness
+# 10. Accounting correctness
 
-## 11.1 The central asymmetry
+## 10.1 The central asymmetry
 
 On a scale-up, three structures legitimately hold three different numbers. An elastic job expresses
 growth by creating a **replacement slice** — a new `Workload` annotated
@@ -766,12 +738,12 @@ if countAfterReclaim := currentCounts[psa.Name]; countAfterReclaim < setRes.Coun
 ```
 
 The effective charge is **`min(spec, granted)`**. This matters twice over: a stale-high grant never
-inflates usage, which is why §11.3 is hygiene rather than a correctness fix; and a grant *lower*
-than the spec is not corrected by the ledger, which is the hole §10.5's grant-aware cap closes. **A
+inflates usage, which is why §10.3 is hygiene rather than a correctness fix; and a grant *lower*
+than the spec is not corrected by the ledger, which is the hole §9.5's grant-aware cap closes. **A
 reviewer should verify this before reasoning about any of the accounting below** — it is the most
 misread behaviour in this area.
 
-## 11.2 Charge the chain, not the slice
+## 10.2 Charge the chain, not the slice
 
 The predecessor leaves the cache only when its `Finish` propagates back, which is asynchronous. It
 is also deliberately excluded from preemption targets (it is "evicted rather than preempted"), so
@@ -833,13 +805,13 @@ reachable. No other snapshot change was needed: `snapshotClusterQueue` clones th
 resumes being charged and the overcommit returns. Chain grouping has no equivalent hole, because
 membership does not depend on surviving intermediate links.
 
-## 11.3 Lowering the grant on scale-down
+## 10.3 Lowering the grant on scale-down
 
 `EnsureWorkloadSlices` handles scale-down by patching the slice in place, which writes
 `spec.podSets[].Count` only; `status.admission.podSetAssignments[].Count` keeps the value granted at
 admission.
 
-Per §11.1 the ledger charges `min(spec, granted)`, so **a stale-high grant does not inflate
+Per §10.1 the ledger charges `min(spec, granted)`, so **a stale-high grant does not inflate
 usage** — this is hygiene, not a correctness fix, and a regression test pins that specifically
 because the opposite is a tempting inference from "usage is derived from `status.admission`". It is
 fixed anyway because the stale value forced two validation workarounds, the replacement delta in
@@ -868,7 +840,7 @@ mirrors the exception `validateImmutablePodSet` already makes for `spec.podSets[
 jobs, which is the precedent that made this shape acceptable. **Non-elastic workloads, including
 plain `batch/v1.Job`, keep a fully immutable admission.**
 
-# 12. Generic hardening of workload slicing
+# 11. Generic hardening of workload slicing
 
 Two fixes general to any elastic-job integration, not specific to Spark:
 
@@ -885,20 +857,20 @@ Two fixes general to any elastic-job integration, not specific to Spark:
    now reuses the exported `NormalizeActiveSlices` — the same deterministic algorithm
    `EnsureWorkloadSlices` already uses — to resolve the ambiguity into a single answer.
 
-# 13. Concurrency, failure modes and observability
+# 12. Concurrency, failure modes and observability
 
 | Concern | Handling |
 |---|---|
 | Cache mutation | `Cache.AddOrUpdateWorkload`/`DeleteWorkload` take the write lock; `addOrUpdateWorkload`/`deleteWorkload`/`reconcileSliceGroup` run under it. |
 | Snapshot reads | `Cache.Snapshot` holds the read lock; `supersededSliceKeys()` allocates a fresh set and mutates nothing. |
 | Race verification | `go test -race` across the cache, scheduler, workload and elasticjobs packages. |
-| Optimistic-lock conflicts | Re-fetch and re-validate before every retry attempt (§12). |
-| Watch-cache lag | More than one not-finished slice is legitimate; converge via `NormalizeActiveSlices` (§12). |
+| Optimistic-lock conflicts | Re-fetch and re-validate before every retry attempt (§11). |
+| Watch-cache lag | More than one not-finished slice is legitimate; converge via `NormalizeActiveSlices` (§11). |
 | Debounce state | Per-key timers and burst-start times guarded by a mutex. |
 
 | Failure | Behaviour | Rationale |
 |---|---|---|
-| Predecessor's `Finish` never lands | Accounting stays correct; the superseded slice contributes zero. | §11.2 is declarative, not event-driven. |
+| Predecessor's `Finish` never lands | Accounting stays correct; the superseded slice contributes zero. | §10.2 is declarative, not event-driven. |
 | `scaleDownAdmission` patch fails | Falls back to spec-low/grant-high; retried next reconcile. | The ledger charges `min(spec, granted)`. |
 | `PodSetAssignment.Count` absent | Falls back to the PodSet count. | Prevents a grant of zero deadlocking ungating. |
 | Executor Pod list fails | `PodSets()` returns the error; reconcile retries. | No partial accounting is written. |
@@ -914,7 +886,7 @@ Two fixes general to any elastic-job integration, not specific to Spark:
 
 The two chain-accounting lines are at V(3), so `--v=3` is required to observe them.
 
-# 14. Validation
+# 13. Validation
 
 **Unit tests are organised around the invariants** rather than the functions: each states the
 invariant it protects. Coverage includes both slice arrival orders, in-place update, re-add after
@@ -950,17 +922,17 @@ own assumption. It verifies that the ledger tracks Pod *count* correctly; it can
 systematic per-Pod under-charge. Summing actual `resources.requests` from the Pod snapshot removes
 the circularity and is a prerequisite for the next validation round.
 
-# 15. Known gaps
+# 14. Known gaps
 
-## 15.1 Gate-blocked Pods inflate the requested count
+## 14.1 Gate-blocked Pods inflate the requested count
 
-Per §9.1 a gated Pod counts as live. When the queue is saturated the replacement slice cannot be
+Per §8.1 a gated Pod counts as live. When the queue is saturated the replacement slice cannot be
 admitted, so nothing raises the grant, so the Pods stay gated and keep being counted, so the
 requested count grows. Observed: 68 gate-blocked Pods against a twelve-slot quota, a 24s admission
-wait, and sustained reconcile-conflict churn. Correcting the ungating cap (§10.5) makes this more
+wait, and sustained reconcile-conflict churn. Correcting the ungating cap (§9.5) makes this more
 visible, because surplus executors now correctly remain `Pending`.
 
-The obvious fix is wrong, as §9.1 explains: excluding gated Pods removes the only scale-up signal. A
+The obvious fix is wrong, as §8.1 explains: excluding gated Pods removes the only scale-up signal. A
 correct fix must **bound** the request. Two candidates, both behaviour changes warranting their own
 proposal:
 
@@ -969,21 +941,21 @@ proposal:
 - **Incremental growth.** Cap the request at `granted + step`. Simpler, at the cost of slower
   scale-up.
 
-The `maxExecutors` clamp (§9.4) already converts an unbounded climb into a bounded over-request.
+The `maxExecutors` clamp (§8.4) already converts an unbounded climb into a bounded over-request.
 Configuration mitigations, pending measurement: size `maxExecutors` against available quota, and set
 `initialExecutors` equal to `minExecutors` so the floor is admitted atomically.
 
-## 15.2 Smaller items
+## 14.2 Smaller items
 
 - `Scheduler.replaceOldWorkloadSlice` does not retry a failed `Finish`. Harmless for accounting
-  after §11.2, but latent.
-- `scaledDownPodSetNames` and `isPreexistingStaleCount` are retirable once §11.3 has shipped long
+  after §10.2, but latent.
+- `scaledDownPodSetNames` and `isPreexistingStaleCount` are retirable once §10.3 has shipped long
   enough that no objects carry stale grants.
 - No envtest or live-cluster integration tests; the development environment cannot reach the
   kubebuilder-tools host.
 - Admission-latency instrumentation exists but the configuration comparison has not been run.
 
-# 16. Applying this pattern to another integration
+# 15. Applying this pattern to another integration
 
 The generic machinery is integration-agnostic. Adapting it requires:
 
@@ -1004,7 +976,7 @@ applied to Pods created after startup (determining whether template-level gating
 
 Part III is a worked example.
 
-## 16.1 No Spark Operator dependency
+## 15.1 No Spark Operator dependency
 
 **The integration requires no change to `kubeflow/spark-operator`.** It runs against the released,
 open-source operator and its unmodified `v1beta2` CRD, so a reviewer does not need to coordinate an
@@ -1037,7 +1009,7 @@ What plays the role `spec.parallelism` plays for a plain Job:
 | Detecting a scale event | `spec.parallelism` bumps `metadata.generation` | label-keyed Pod watch, debounced; sequence number for naming, since DA never bumps generation |
 | Preventing use of ungranted capacity | job stays suspended | scheduling gate on the executor pod template, released by the ungater |
 
-# 17. Implementation inventory
+# 16. Implementation inventory
 
 | Component | File | Contribution |
 |---|---|---|
@@ -1157,7 +1129,7 @@ For the operator to own DA Workloads it would need, in Java: live-Pod-derived co
 Pod watch, slice annotations and the replacement protocol, gate injection coordinated with Kueue's
 ungater, removal of the admitted early-return, and in-place scale-down instead of
 delete-and-recreate — i.e. Part II reimplemented. And that still would not suffice, because in-place
-scale-down depends on the decrease-only `validateAdmissionUpdate` relaxation (§11.3), which lives in
+scale-down depends on the decrease-only `validateAdmissionUpdate` relaxation (§10.3), which lives in
 Kueue rather than the operator.
 
 # A3. The two architectures
@@ -1218,13 +1190,13 @@ integration reads. That is safe **only** because jobframework *patches* the job 
 
 # A5. What Kueue charges
 
-Same rule as §9.5. `buildPodTemplateSpec` starts from the submitter's
+Same rule as §8.5. `buildPodTemplateSpec` starts from the submitter's
 `spec.{driverSpec,executorSpec}.podTemplateSpec` when present, then **overwrites the Spark
 container's cpu and memory** with values derived from `sparkConf`, because the operator passes the
 template to Spark as a `podTemplateFile` and Spark's feature steps replace those values before the
 pod is created. Upstream's own `KueueWorkloadFactory.decorateContainerResources` does the same.
 
-`totalMemoryBytes` reproduces Spark's formula identically to §9.5, including the truncation, the
+`totalMemoryBytes` reproduces Spark's formula identically to §8.5, including the truncation, the
 bare-value-is-MiB rule, the JVM/non-JVM factor and `minMemoryOverhead`. **The limit equals the
 request** — Spark intends heap+overhead to be the whole allocation. CPU reads
 `spark.kubernetes.{role}.request.cores` then `spark.{role}.cores`, with deliberately no fallback to
@@ -1254,7 +1226,7 @@ factory reads the conf key alone, for the same reason.
 
 `instanceConfig` is retained as the fallback rather than dropped: when the conf key is absent it is
 the only declaration of intent available, and for `minExecutors` it supplies the startup floor of
-§9.4.
+§8.4.
 
 The Kubeflow CRD is the opposite case, because there the operator maps the structured field onto a
 `--conf` at submission. **The rule is therefore not "structured first" or "conf first" but prefer
@@ -1263,18 +1235,18 @@ whichever surface Spark actually acts on.**
 `instanceConfig` fields are plain `int32`, so zero is treated as unset — harmless here because a
 zero bound would be meaningless. `dynamicAllocationEnabled` reads `sparkConf` only; no OR, because
 this CRD has no structured enablement field at all. `declaredInitialExecutors` takes a maximum, not
-a precedence, exactly as in §9.3.
+a precedence, exactly as in §8.3.
 
 # A7. Elastic scaling
 
 Mirrors Part II, and is the part with no upstream equivalent: counts **derived from live Pods**,
 never written back; a **label-keyed executor Pod watch** with a 5s debounce and 30s max wait; the
 **executor scheduling gate** baked into the template at CR-create time, required by
-`validateElasticJob`; **`clampToDynamicAllocationBounds`** (§9.4), whose upper bound is DA's ceiling
+`validateElasticJob`; **`clampToDynamicAllocationBounds`** (§8.4), whose upper bound is DA's ceiling
 and **not** grantable capacity, so it narrows but does not close the gated-Pod loop; and slice names
 from a **per-job sequence number**, since DA scaling never bumps `Generation`.
 
-The quota-evasion hole of §9.3 does not exist here: counts always read `spark.executor.instances`,
+The quota-evasion hole of §8.3 does not exist here: counts always read `spark.executor.instances`,
 error on a malformed value, and default to Spark's 2.
 
 # A8. Lifecycle mapping
@@ -1302,7 +1274,7 @@ advances to those once at least `minExecutors` are ready — so no Pod listing i
 - **The webhook does not reject a malformed `spark.executor.instances` at admission**, the way the
   Kubeflow one does. `staticExecutorCount()` still returns a proper error, so the failure surfaces
   during reconcile rather than at create time.
-- **The gated-Pod feedback loop is narrowed, not closed** (§15.1).
+- **The gated-Pod feedback loop is narrowed, not closed** (§14.1).
 - **No integration tests.** envtest binaries are unreachable in this environment, so coverage is
   unit-level only: pod-template construction, the memory and CPU arithmetic, static and DA counts,
   the elastic path, webhook validation, and setup/registration.
