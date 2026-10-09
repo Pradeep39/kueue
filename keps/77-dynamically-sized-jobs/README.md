@@ -10,6 +10,7 @@
     - [Story 1 - batchv1/Job scale-down](#story-1---batchv1job-scale-down)
     - [Story 2 - batchv1/Job scale-up](#story-2---batchv1job-scale-up)
     - [Story 3 – batch/v1.Job in Multi-Cluster Configuration](#story-3--batchv1job-in-multi-cluster-configuration)
+    - [Story 4 - SparkApplication with Spark Dynamic Allocation](#story-4---sparkapplication-with-spark-dynamic-allocation)
   - [Notes/Constraints/Caveats (Optional)](#notesconstraintscaveats-optional)
 - [Design Details](#design-details)
   - [Enablement](#enablement)
@@ -29,20 +30,24 @@
     - [Scale Down](#scale-down)
   - [Limitations and Incompatibilities](#limitations-and-incompatibilities)
     - [PartialAdmission](#partialadmission)
-- [Phases for MVP (alpha)](#phases-for-mvp-alpha)
-  - [Phase 1 - batchv1/Job WorkloadSlices Support in Single-Cluster Configuration.](#phase-1---batchv1job-workloadslices-support-in-single-cluster-configuration)
+- [Phases](#phases)
+  - [Alpha: Phase 1 - batchv1/Job WorkloadSlices Support in Single-Cluster Configuration.](#alpha-phase-1---batchv1job-workloadslices-support-in-single-cluster-configuration)
     - [Scale Down](#scale-down-1)
     - [Scale Up](#scale-up-1)
-  - [Phase 2 – RayCluster WorkloadSlice Support in Single-Cluster Configuration](#phase-2--raycluster-workloadslice-support-in-single-cluster-configuration)
+  - [Alpha: Phase 2 – RayCluster WorkloadSlice Support in Single-Cluster Configuration](#alpha-phase-2--raycluster-workloadslice-support-in-single-cluster-configuration)
     - [Scale Down](#scale-down-2)
     - [Scale Up](#scale-up-2)
-  - [Phase 3 – Enabling Workload Slicing for batch/v1.Job in Multi-Cluster Configuration](#phase-3--enabling-workload-slicing-for-batchv1job-in-multi-cluster-configuration)
+  - [Alpha: Phase 3 – Enabling Workload Slicing for batch/v1.Job in Multi-Cluster Configuration](#alpha-phase-3--enabling-workload-slicing-for-batchv1job-in-multi-cluster-configuration)
+  - [Beta: Phase 4 – SparkApplication WorkloadSlice Support with Spark Dynamic Allocation](#beta-phase-4--sparkapplication-workloadslice-support-with-spark-dynamic-allocation)
+    - [Scale Down](#scale-down-3)
+    - [Scale Up](#scale-up-3)
+    - [Scale Up Beyond Available Quota](#scale-up-beyond-available-quota)
 - [Additional Details](#additional-details)
   - [Test Plan](#test-plan)
     - [Unit Tests](#unit-tests)
     - [Integration tests](#integration-tests)
-    - [Scale-down](#scale-down-3)
-    - [Scale-Down](#scale-down-4)
+    - [Scale-down](#scale-down-4)
+    - [Scale-Down](#scale-down-5)
     - [Resource Flavor Handling](#resource-flavor-handling)
   - [Graduation Criteria](#graduation-criteria)
   - [PodScheduling Readiness and ResourceQuota](#podscheduling-readiness-and-resourcequota)
@@ -108,6 +113,38 @@ Additionally, WorkloadSlice will be supported in the multiKueue context as part 
 
 This story mirrors the behaviors in Stories 1 and 2 but applies them within a multi-cluster (MultiKueue) setup, 
 where WorkloadSlices are propagated, admitted, and scheduled across multiple clusters.
+
+#### Story 4 - SparkApplication with Spark Dynamic Allocation
+
+Stories 1-3 are all driven by a user editing the job: parallelism or replica count changes, and Kueue reacts to the
+spec update. Spark [Dynamic Allocation](https://spark.apache.org/docs/latest/job-scheduling.html#dynamic-resource-allocation)
+inverts that. The Spark driver's `ExecutorAllocationManager` decides on its own when to add or remove executors, and it
+creates and deletes executor Pods directly against the API server. It never updates the `SparkApplication`, and it never
+calls Kueue. There is therefore no spec change to observe, and the size a user declared is not the size that is running.
+
+1. The user creates a `SparkApplication` with workload-slice enablement explicitly opted in and
+   `spark.dynamicAllocation.enabled=true`.
+2. Kueue admits the application based on its declared initial executor count, creating the corresponding Workload. The
+   driver starts and creates its initial executor Pods.
+3. The driver's Dynamic Allocation decides more executors are needed and creates their Pods, triggering a scale-up
+   event that **no spec change accompanies**:
+   1. Kueue observes the new executor Pods and re-derives the executor count from the Pods that actually exist.
+   2. A new WorkloadSlice is created for the higher count, and the newly created Pods stay gated until it is admitted.
+   3. On admission the gates are removed on exactly as many Pods as the grant covers, and the previous slice is
+      finished.
+4. The driver's Dynamic Allocation later decides some executors are idle and deletes their Pods, triggering a
+   scale-down:
+   1. Kueue observes the deletions, re-derives the lower count, and lowers the existing slice in place - both its
+      requested count and its grant - returning the quota to the ClusterQueue and its cohort.
+   2. The remaining executors continue running uninterrupted, and the driver is never disturbed.
+
+Because the size is inferred rather than declared, an executor Pod is counted from the moment it exists until it
+reaches a terminal phase - including while it is still gated, and including while it is terminating but not yet gone.
+A Pod that is gated is precisely the evidence that Dynamic Allocation wants to grow; a Pod that is terminating still
+holds node resources. Counting either one differently would make the ClusterQueue disagree with the cluster.
+
+See [SparkApplication Dynamic Allocation: design](sparkapplication-dynamic-allocation.md) for how the count is derived
+and applied, including the sequence diagrams for both directions.
 
 ### Notes/Constraints/Caveats (Optional)
 
@@ -358,9 +395,9 @@ annotations:
   kueue.x-k8s.io/job-min-parallelism: "1"
 ```
 
-## Phases for MVP (alpha)
+## Phases
 
-### Phase 1 - batchv1/Job WorkloadSlices Support in Single-Cluster Configuration.
+### Alpha: Phase 1 - batchv1/Job WorkloadSlices Support in Single-Cluster Configuration.
 
 Scaling up and down for `batch/v1.Job` will be the initial phase of the MVP, as it builds on stable and well-understood Kubernetes components without requiring additional integration work.
 
@@ -380,7 +417,7 @@ Scaling up and down for `batch/v1.Job` will be the initial phase of the MVP, as 
 4. Confirm that a new `Workload` slice is created and admitted, reflecting the increased pod count, while the previous slice is marked as `Finished`.
 5. Observe that the total number of running pods increases to match the updated parallelism, with the original pods continuing to run without disruption.
 
-### Phase 2 – RayCluster WorkloadSlice Support in Single-Cluster Configuration
+### Alpha: Phase 2 – RayCluster WorkloadSlice Support in Single-Cluster Configuration
 This phase mirrors the steps from Phase 1 but is adapted specifically for RayCluster workloads, taking into account their autoscaling behavior and internal lifecycle management.
 
 
@@ -406,12 +443,82 @@ This phase mirrors the steps from Phase 1 but is adapted specifically for RayClu
 5. Observe that the total number of running pods increases to 3 to match the updated replica count, with the original pods continuing to run without disruption.
 6. Also observe that the ClusterQueue reflects the 3 CPUs that the RayCluster uses.
 
-### Phase 3 – Enabling Workload Slicing for batch/v1.Job in Multi-Cluster Configuration
+### Alpha: Phase 3 – Enabling Workload Slicing for batch/v1.Job in Multi-Cluster Configuration
 In this phase, Workload Slicing support for batch/v1.Job will be extended to multi-cluster environments using Kueue’s MultiKueue architecture. 
 When a job is scaled in the management cluster, its corresponding WorkloadSlice will be propagated to the appropriate workload cluster(s), respecting existing cluster assignment and resource flavor constraints. 
 Each WorkloadSlice will be subject to independent admission in the target cluster, and only after successful admission will scheduling gates be lifted to allow pod execution. 
 Slice preemption, quota accounting, and garbage collection must be coordinated across clusters to ensure consistency and avoid orphaned resources. 
 This phase will validate correctness and stability of the slicing mechanism in a federated deployment model.
+
+### Beta: Phase 4 – SparkApplication WorkloadSlice Support with Spark Dynamic Allocation
+
+This phase extends workload slicing to `SparkApplication` (`sparkoperator.k8s.io/v1beta2`) under Spark Dynamic
+Allocation. It differs from Phases 1-3 in kind, not just in CRD: there is no spec change to react to. The Spark driver
+creates and deletes executor Pods itself, so the desired size must be **inferred from the executor Pods that exist**
+rather than read from the object.
+
+That inversion drives four design consequences, each of which is a verification point below:
+
+- **The signal is a Pod watch, not a spec update.** Executor Pods carry the Spark Operator's owning-application label,
+  which is the only thing linking them to the `SparkApplication` - they are owned by the *driver Pod*, so there is no
+  OwnerReference chain and the standard ownership-based watch cannot be used.
+- **The count is re-derived, never accumulated.** Every reconcile lists the live executor Pods and counts them afresh.
+  An event is only a trigger to go and look, so a coalesced or missed event cannot corrupt the count.
+- **Gated and terminating Pods both count.** A gated Pod is the evidence that Dynamic Allocation wants to grow, so
+  excluding gated Pods would mean a scale-up is never detected. A terminating Pod still holds node resources until it
+  reaches a terminal phase.
+- **The derived count is clamped to Dynamic Allocation's own bounds.** The lower bound is load-bearing: a reconcile
+  landing while the driver is still creating its initial executors observes a transient prefix of them, which is
+  indistinguishable from a real scale-down, and acting on it would dismantle the gang that was just admitted.
+
+Slice names cannot be derived from `metadata.generation`, as they are for the earlier phases, because Dynamic
+Allocation scaling never modifies the `SparkApplication` and so never bumps it. A monotonic per-job sequence number is
+used instead.
+
+[SparkApplication Dynamic Allocation: design](sparkapplication-dynamic-allocation.md) covers the mechanism behind these
+points - the Pod watch and why `Owns()` cannot be used, the clamp, the slice-chain quota accounting that keeps
+overlapping slices from being double-counted, the decrease-only admission exception the scale-down path needs, and the
+one known limitation - with a sequence diagram for each direction.
+
+#### Scale Down
+
+1. Create a `SparkApplication` with workload-slice enablement, `spark.dynamicAllocation.enabled=true`, and bounds that
+   permit shrinking (for example `minExecutors: 1`, `initialExecutors: 3`). Set a short
+   `spark.dynamicAllocation.executorIdleTimeout` so idle executors are reclaimed promptly.
+2. Verify that a corresponding `Workload` is created and admitted with two `PodSets` - `driver` at count 1 and
+   `executor` at the initial count - and that the driver plus that many executor Pods reach `Running`.
+3. Let the application go idle so that Dynamic Allocation reclaims executors. Do **not** modify the
+   `SparkApplication`.
+4. Confirm that the existing `Workload` is updated in place rather than replaced:
+   - `WorkloadSpec.PodSets[executor].Count` drops to the new live count.
+   - The admitted count in `status.admission` drops to match, with its recorded resource usage rescaled
+     proportionally.
+5. Observe that the remaining executors continue running uninterrupted and the driver is not restarted.
+6. Also observe that the ClusterQueue's reported usage falls to reflect the smaller executor count, and that the freed
+   quota becomes lendable again within the cohort.
+
+#### Scale Up
+
+1. Create a `SparkApplication` as above, with `maxExecutors` set above the initial count and enough ClusterQueue quota
+   to satisfy it.
+2. Verify that a corresponding `Workload` is created and admitted, and that the driver plus the initial executors reach
+   `Running`.
+3. Submit work that makes Dynamic Allocation request more executors. Again, do **not** modify the `SparkApplication`.
+4. Confirm that the newly created executor Pods are held by the elastic scheduling gate, and that a new `Workload`
+   slice is created for the higher count while the previous slice remains until the new one is admitted.
+5. Confirm that on admission the gate is removed from exactly as many Pods as the new grant covers - not from every
+   Pod the driver created - and that the previous slice is then marked `Finished`.
+6. Observe that the ClusterQueue is charged the higher count exactly once: while both slices exist, only the latest is
+   counted, so the queue never reports usage for the superseded slice as well.
+7. Observe that the original executors continue running without disruption throughout.
+
+#### Scale Up Beyond Available Quota
+
+1. With the same setup, constrain the ClusterQueue so that Dynamic Allocation's `maxExecutors` cannot be satisfied.
+2. Submit work that makes Dynamic Allocation request more executors than the quota allows.
+3. Confirm that the replacement slice is not admitted, the surplus executor Pods remain gated, and the application
+   continues running at its currently granted size rather than failing.
+4. Confirm that the ClusterQueue never reports usage above its nominal quota at any point.
 
 ## Additional Details
 

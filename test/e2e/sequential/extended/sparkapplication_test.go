@@ -203,8 +203,32 @@ var _ = ginkgo.Describe("SparkApplication integration", ginkgo.Label("feature:sp
 				}
 			})
 
+			ginkgo.By("Check the workload reserves the resources Spark requests for its Pods", func() {
+				for _, ps := range createdWorkload.Spec.PodSets {
+					pods := &corev1.PodList{}
+					// The driver creates the executor Pods only once it is running, so
+					// they may not exist yet when the SparkApplication becomes Running.
+					gomega.Eventually(func(g gomega.Gomega) {
+						g.Expect(k8sClient.List(ctx, pods, client.InNamespace(ns.Name), client.MatchingLabels{
+							sparkcommon.LabelSparkAppName: sparkApp.Name,
+							sparkcommon.LabelSparkRole:    string(ps.Name),
+						})).To(gomega.Succeed())
+						g.Expect(pods.Items).To(gomega.HaveLen(int(ps.Count)), "unexpected number of %s pods", ps.Name)
+					}, behavioral.LongTimeout, behavioral.Interval).Should(gomega.Succeed())
+					want := ps.Template.Spec.Containers[0].Resources.Requests
+					for _, pod := range pods.Items {
+						got := pod.Spec.Containers[0].Resources.Requests
+						for _, res := range []corev1.ResourceName{corev1.ResourceCPU, corev1.ResourceMemory} {
+							gotQuantity, wantQuantity := got[res], want[res]
+							gomega.Expect(gotQuantity.Equal(wantQuantity)).To(gomega.BeTrueBecause(
+								"%s pod %s requests %s of %s, workload reserved %s", ps.Name, pod.Name, gotQuantity.String(), res, wantQuantity.String()))
+						}
+					}
+				}
+			})
+
 			ginkgo.By("Check workload is finished", func() {
-				// Using longer timeout instead of util.ExpectWorkloadToFinish
+				// Using longer timeout instead of behavioral.ExpectWorkloadToFinish
 				// because SparkApplication may take longer time to finish
 				gomega.EventuallyWithOffset(1, func(g gomega.Gomega) {
 					var wl kueue.Workload
