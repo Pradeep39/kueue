@@ -119,7 +119,7 @@ func (j *SparkApplication) numInitialExecutors() (int32, error) {
 // omitempty, so an explicit "enabled: false" cannot be told from an omitted one, and letting
 // the structured surface win would read a bounds-here-enablement-in-sparkConf manifest as
 // static and under-reserve. TestDynamicAllocationEnabled pins this; see
-// docs/design/sparkapplication-sparkconf-executor-instances-design.md section 5 for why the
+// docs/design/spark-elastic-quota-management.md section 9.3 for why the
 // apparent inconsistency is not fixable without an upstream CRD change.
 func (j *SparkApplication) dynamicAllocationEnabled() bool {
 	if da := j.Spec.DynamicAllocation; da != nil && da.Enabled {

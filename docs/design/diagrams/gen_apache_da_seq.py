@@ -6,7 +6,7 @@ Unlike gen_seq.py this describes code that does not exist yet, so nothing here i
 from source. Every lane is annotated with where it is physically deployed and whether it is
 NEW Java to write, an existing component that must CHANGE, or usable as-is.
 
-See docs/design/apache-sparkapplication-integration-design.md sections 2b-2d.
+See docs/design/spark-elastic-quota-management.md sections A2.1-A3.1.
 """
 
 from gen_seq import call, event, note, render, self_, seq

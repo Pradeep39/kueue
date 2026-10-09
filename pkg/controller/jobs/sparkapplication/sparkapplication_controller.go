@@ -395,7 +395,7 @@ func (j *SparkApplication) RestorePodSetsInfo(ctx context.Context, podSetsInfo [
 		// does not: the field is CRD-validated Minimum=1, a derived live count of 0 cannot be
 		// written back, and spec.executor.instances is not on the Spark Operator's exemption
 		// list -- so writing it turns a clean suspend into an INVALIDATING teardown and re-run.
-		// See docs/design/spark-operator-parallelism-dependency.md and the "should never write
+		// See docs/design/spark-elastic-quota-management.md section 16.1 and the "should never write
 		// spec.executor.instances" case in sparkapplication_controller_test.go.
 
 		return changed

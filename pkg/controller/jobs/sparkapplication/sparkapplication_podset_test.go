@@ -312,7 +312,7 @@ func TestAddMemoryIgnoresThePodTemplate(t *testing.T) {
 // prefer their structured field over the sparkConf equivalent; this one cannot, because
 // DynamicAllocation.Enabled is a non-pointer bool and an explicit false is indistinguishable
 // from an omitted one. Honouring either surface over-reads enablement on purpose: see
-// sparkapplication-sparkconf-executor-instances-design.md section 5 for why the alternative
+// spark-elastic-quota-management.md section 9.3 for why the alternative
 // under-reserves.
 func TestDynamicAllocationEnabled(t *testing.T) {
 	cases := map[string]struct {
