@@ -7,9 +7,6 @@ date: "2026-10-09"
 
 # 0. About this document
 
-The single design record for elastic quota management of Spark workloads in Kueue. It replaces
-eleven documents that accreted one per pull request.
-
 - **Part I — Proposal.** What should be built and why.
 - **Part II — Design.** How it works, for the Kubeflow Spark Operator
   (`sparkoperator.k8s.io/v1beta2`).
