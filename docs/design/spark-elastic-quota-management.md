@@ -17,7 +17,7 @@ date: "2026-10-09"
 Reading order for a reviewer short on time: §2.2 (why gang scheduling is the wrong tool), §11.1
 (the central asymmetry), §11.2 (chain-scoped accounting).
 
-Code references are to `github.com/Pradeep39/kueue`. This describes a working implementation
+Code references are paths relative to the repository root. This describes a working implementation
 validated on a live cluster. Known gaps are stated as such — §6, §15, §A9.
 
 Diagrams: [`diagrams/`](./diagrams/README.md).
