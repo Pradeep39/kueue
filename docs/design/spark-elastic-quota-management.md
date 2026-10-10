@@ -142,11 +142,10 @@ released capacity is promptly available to other tenants.
 
 **The corrections belong in the shared machinery.** Three of the four bodies of work here fix
 `ElasticJobsViaWorkloadSlices` code common to every elastic integration — slice accounting, the
-ungating cap, and lowering a grant on scale-down — rather than anything Spark-specific. Two of
-those defects were only reachable under sustained autoscaling churn, and Spark workloads exercise
-slice replacement far harder than a `batch/v1.Job` resize does, which is what surfaced them.
-Keeping the fixes in the shared layer means any future elastic integration inherits them instead
-of rediscovering them.
+ungating cap, and lowering a grant on scale-down — rather than anything Spark-specific. Spark
+workloads exercise slice replacement far harder than a `batch/v1.Job` resize does, which is what
+surfaced them. Keeping the fixes in the shared layer means any future elastic integration inherits
+them instead of rediscovering them.
 
 User stories, briefly: compaction jobs sharing a fixed namespace quota rather than one job
 reserving it (US-1); an interactive session that grows and shrinks without restarting (US-2);
