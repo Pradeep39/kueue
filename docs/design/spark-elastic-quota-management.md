@@ -59,11 +59,20 @@ Both share three properties:
 
 ## 2.2 Gang scheduling belongs at the floor, not the peak
 
+Everything below concerns Spark **with Dynamic Allocation**. Without it the executor count is
+fixed by `spark.executor.instances`, the workload's PodSet counts never change, and one static
+reservation is exactly right — nothing in this proposal applies. Dynamic Allocation is what makes
+the count oscillate during the application's own life, and that turns a settled question into the
+one this design answers: *which* count should quota be reserved for?
+
 Gang admission — all-or-nothing admission of a fixed set of workers — is the right tool where a
-workload cannot make progress without some minimum complement. Spark has exactly such a minimum:
-the driver plus the executors it starts with, the larger of `minExecutors` and `initialExecutors`.
-Admitting less than that leaves a half-formed application holding quota it cannot use, so the
-floor genuinely needs to be atomic.
+workload cannot make progress without some minimum complement. A Dynamic Allocation application
+has exactly such a minimum: the driver plus **`max(minExecutors, initialExecutors)`** executors,
+the count Spark starts with. (`spark.executor.instances`, where it is also set, joins that
+maximum — Spark takes the largest of the three; §8.3.) Admitting less leaves a half-formed
+application holding quota it cannot use, so the floor is admitted atomically: both PodSets go in
+the first workload slice, which is granted whole or not at all, and partial admission is rejected
+outright for elastic jobs.
 
 The mistake is extending it to the *peak*. A reservation sized for peak demand is held for the
 workload's entire lifetime whether the capacity is used or not: for an interactive session idle
@@ -102,16 +111,10 @@ may have, and keeps its accounting honest as that changes.**
 - **G4.** Return capacity to the queue promptly on scale-down.
 - **G5.** Never require the workload's own resource to be modified in order to account for it.
 - **G6.** Leave existing elastic integrations and all non-elastic admission behaviour unchanged.
-- **G7.** Admit the driver together with the application's starting executors, or not at all. An
-  application must never be admitted into quota that cannot hold the floor it will immediately ask
-  for.
-
-**Gang admission is confined to that floor.** The floor is the driver plus the largest of
-`minExecutors`, `initialExecutors` and the resolved `spark.executor.instances` (§8.3) — the count
-Spark will actually start with. `initialExecutors` can only raise it, never lower it: it defaults
-to `minExecutors`, and Spark ignores a smaller value as invalid. Both PodSets ride in the first
-workload slice, which is admitted whole or not at all, and partial admission is rejected outright
-for elastic jobs. Everything above the floor is elastic.
+- **G7.** Admit the driver together with the floor the application will immediately ask for —
+  `max(minExecutors, initialExecutors)` executors — or not at all. A workload must never be
+  admitted into quota that cannot hold that floor. Gang admission is confined to it; everything
+  above is elastic (§2.2).
 
 **Non-goals.** Node-level co-scheduling — the guarantee that a workload's Pods are *placed on
 nodes* together. Admission is atomic per G7, but once a slice is admitted and its Pods ungated,
