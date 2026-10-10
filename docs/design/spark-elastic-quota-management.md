@@ -101,7 +101,7 @@ and reported usage cannot be trusted for capacity decisions.
 The value is the combination: **the framework decides how much it wants; Kueue decides how much it
 may have, and keeps its accounting honest as that changes.**
 
-## 2.4 Goals and non-goals
+## 2.4 Goals
 
 - **G1.** Admit a Spark application, then let it grow and shrink within quota while it runs,
   without requeueing it.
@@ -116,12 +116,17 @@ may have, and keeps its accounting honest as that changes.**
   admitted into quota that cannot hold that floor. Gang admission is confined to it; everything
   above is elastic (§2.2).
 
-**Non-goals.** Node-level co-scheduling — the guarantee that a workload's Pods are *placed on
-nodes* together. Admission is atomic per G7, but once a slice is admitted and its Pods ungated,
-placement is the kube-scheduler's concern and Pods may bind at different times; nothing here
-provides a PodGroup or gang-placement plugin. Also out of scope: changing or overriding the
-framework's autoscaling policy; guaranteeing a workload can reach its configured *maximum*, which
-is a limit rather than a reservation; and MultiKueue support in the first iteration.
+## 2.5 Non-goals
+
+- **NG1.** Node-level co-scheduling — the guarantee that a workload's Pods are *placed on nodes*
+  together. Admission is atomic per G7, but once a slice is admitted and its Pods ungated,
+  placement is the kube-scheduler's concern and Pods may bind at different times; nothing here
+  provides a PodGroup or gang-placement plugin.
+- **NG2.** Changing or overriding the framework's autoscaling policy. Kueue should bound what a
+  workload may consume, not decide how much it wants.
+- **NG3.** Guaranteeing a workload can reach its configured *maximum*, which is a limit rather
+  than a reservation.
+- **NG4.** MultiKueue support in the first iteration.
 
 # 3. Proposal
 
