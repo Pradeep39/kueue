@@ -1,0 +1,561 @@
+#!/usr/bin/env python3
+"""Generate SVG sequence diagrams for Kueue's inference of Spark Dynamic Allocation scaling."""
+
+import html
+import re
+import subprocess
+from pathlib import Path
+
+# docs/design/diagrams/gen_seq.py -> repo root
+REPO_ROOT = Path(__file__).resolve().parents[3]
+
+LANE_W = 268
+MARGIN = 34
+HEAD_TOP = 96
+HEAD_H = 68
+STEP = 50
+FIRST_Y = HEAD_TOP + HEAD_H + 52
+
+INK = "#1f2933"
+MUTED = "#6b7785"
+LIFELINE = "#c3cbd5"
+CALL = "#25506e"
+EVENT = "#9c5a1c"
+SELF = "#3f6d52"
+ACCENT_BG = "#fdf6e3"
+ACCENT_BD = "#d9bc7a"
+HEAD_BG = "#eef2f6"
+HEAD_BD = "#b9c3cf"
+
+
+def wrap(text, width):
+    words, lines, cur = [], [], ""
+    for w in text.split():
+        while len(w) > width:  # hard-split tokens with no spaces (file paths)
+            words.append(w[:width])
+            w = w[width:]
+        words.append(w)
+    for w in words:
+        cand = f"{cur} {w}".strip()
+        if len(cand) > width and cur:
+            lines.append(cur)
+            cur = w
+        else:
+            cur = cand
+    if cur:
+        lines.append(cur)
+    return lines
+
+
+SELF_WRAP = 46
+
+
+def self_extent(text, ref):
+    lines = wrap(text, SELF_WRAP)
+    longest = max([len(l) for l in lines] + [len(ref or "")])
+    return lines, 6.3 * longest
+
+
+def esc(s):
+    return html.escape(s, quote=False)
+
+
+def build(title, subtitle, lanes, msgs, out, extra_legend=None):
+    n = len(lanes)
+    width = MARGIN * 2 + LANE_W * n
+    centers = [MARGIN + LANE_W // 2 + i * LANE_W for i in range(n)]
+
+    rows, y = [], FIRST_Y
+    for m in msgs:
+        rows.append((m, y))
+        extra = 0
+        if m["kind"] == "note":
+            extra = 22 + 15 * (len(wrap(m["text"], 116)) - 1)
+        elif m["kind"] == "self":
+            extra = 20 + 14 * (len(wrap(m["text"], SELF_WRAP)) - 1) + (12 if m.get("ref") else 0)
+        else:
+            # The ref line is drawn above the arrow like the text is, so it needs its own
+            # 12px reserved here too - the self_ branch above already does this. Without it,
+            # consecutive multi-line arrows that both carry refs overlap.
+            extra = 15 * (len(wrap(m["text"], 42)) - 1) + (12 if m.get("ref") else 0)
+        y += STEP + extra
+    height = y + 40
+
+    p = []
+    p.append(
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" '
+        f'viewBox="0 0 {width} {height}" font-family="Helvetica Neue, Helvetica, Arial, sans-serif">'
+    )
+    p.append(
+        '<defs>'
+        f'<marker id="ac" viewBox="0 0 10 8" refX="9" refY="4" markerWidth="9" markerHeight="7" orient="auto">'
+        f'<path d="M0 0 L10 4 L0 8 z" fill="{CALL}"/></marker>'
+        f'<marker id="ae" viewBox="0 0 10 8" refX="9" refY="4" markerWidth="9" markerHeight="7" orient="auto">'
+        f'<path d="M0 0 L10 4 L0 8 z" fill="{EVENT}"/></marker>'
+        f'<marker id="as" viewBox="0 0 10 8" refX="9" refY="4" markerWidth="8" markerHeight="6" orient="auto">'
+        f'<path d="M0 0 L10 4 L0 8 z" fill="{SELF}"/></marker>'
+        '</defs>'
+    )
+    p.append(f'<rect width="{width}" height="{height}" fill="#ffffff"/>')
+
+    p.append(
+        f'<text x="{MARGIN}" y="38" font-size="21" font-weight="600" fill="{INK}">{esc(title)}</text>'
+    )
+    p.append(f'<text x="{MARGIN}" y="60" font-size="12.5" fill="{MUTED}">{esc(subtitle)}</text>')
+
+    lx = width - MARGIN - 356
+    p.append(f'<g font-size="10.5" fill="{MUTED}">')
+    for i, (col, mk, lab, dash) in enumerate(
+        [(CALL, "ac", "call / API write", ""),
+         (EVENT, "ae", "watch event", ' stroke-dasharray="5 3"'),
+         (SELF, "as", "internal computation", "")]
+    ):
+        yy = 30 + i * 15
+        p.append(
+            f'<line x1="{lx}" y1="{yy}" x2="{lx + 26}" y2="{yy}" stroke="{col}" stroke-width="1.6"'
+            f' marker-end="url(#{mk})"{dash}/>'
+            f'<text x="{lx + 33}" y="{yy + 3.5}">{esc(lab)}</text>'
+        )
+    p.append('</g>')
+
+    # Optional second legend, for diagrams that tint lane headers to mean something -
+    # e.g. which process a component is physically deployed in. List of (bg, bd, label).
+    # Sits immediately left of the arrow legend, in the same band, to stay clear of the title.
+    if extra_legend:
+        ex = lx - 348
+        p.append(f'<g font-size="10.5" fill="{MUTED}">')
+        for i, (bg, bd, lab) in enumerate(extra_legend):
+            yy = 24 + i * 15
+            p.append(
+                f'<rect x="{ex}" y="{yy}" width="22" height="11" rx="2.5" fill="{bg}" stroke="{bd}"/>'
+                f'<text x="{ex + 29}" y="{yy + 9}">{esc(lab)}</text>'
+            )
+        p.append('</g>')
+
+    for i, lane in enumerate(lanes):
+        name, file = lane[0], lane[1]
+        head_bg, head_bd = lane[2] if len(lane) > 2 else (HEAD_BG, HEAD_BD)
+        cx = centers[i]
+        x = cx - LANE_W // 2 + 8
+        w = LANE_W - 16
+        p.append(
+            f'<rect x="{x}" y="{HEAD_TOP}" width="{w}" height="{HEAD_H}" rx="5" '
+            f'fill="{head_bg}" stroke="{head_bd}"/>'
+        )
+        nl = wrap(name, 26)
+        ty = HEAD_TOP + 18 if len(nl) > 1 else HEAD_TOP + 22
+        for ln in nl:
+            p.append(
+                f'<text x="{cx}" y="{ty}" font-size="12.5" font-weight="600" '
+                f'text-anchor="middle" fill="{INK}">{esc(ln)}</text>'
+            )
+            ty += 14
+        ty += 2
+        for ln in wrap(file, 32):
+            p.append(
+                f'<text x="{cx}" y="{ty}" font-size="9.5" font-family="Menlo, monospace" '
+                f'text-anchor="middle" fill="{MUTED}">{esc(ln)}</text>'
+            )
+            ty += 11
+        p.append(
+            f'<line x1="{cx}" y1="{HEAD_TOP + HEAD_H}" x2="{cx}" y2="{height - 24}" '
+            f'stroke="{LIFELINE}" stroke-width="1.2" stroke-dasharray="4 5"/>'
+        )
+
+    for m, y in rows:
+        kind = m["kind"]
+        if kind == "note":
+            lines = wrap(m["text"], 116)
+            h = 20 + 15 * len(lines)
+            x0 = MARGIN + 10
+            p.append(
+                f'<rect x="{x0}" y="{y - 14}" width="{width - 2 * MARGIN - 20}" height="{h}" rx="4" '
+                f'fill="{ACCENT_BG}" stroke="{ACCENT_BD}"/>'
+            )
+            ty = y + 3
+            for ln in lines:
+                p.append(
+                    f'<text x="{x0 + 12}" y="{ty}" font-size="11" fill="#7a5a12">{esc(ln)}</text>'
+                )
+                ty += 15
+            continue
+
+        a = centers[m["frm"]]
+        num = m["n"]
+        if kind == "self":
+            lines, est = self_extent(m["text"], m.get("ref"))
+            mirror = a + 66 + 18 + est > width - MARGIN
+            sd = -1 if mirror else 1
+            b = a + sd * 66
+            p.append(
+                f'<path d="M{a} {y} L{b} {y} L{b} {y + 22} L{a + sd * 5} {y + 22}" fill="none" '
+                f'stroke="{SELF}" stroke-width="1.5" marker-end="url(#as)"/>'
+            )
+            tx = b + sd * 18
+            anchor = "end" if mirror else "start"
+            nrows = len(lines) + (1 if m.get("ref") else 0)
+            ty = y + 15 - 7 * (nrows - 1)
+            first = True
+            for ln in lines:
+                pre = (f'<tspan fill="{MUTED}" font-weight="600">{num}. </tspan>' if first else "")
+                p.append(
+                    f'<text x="{tx}" y="{ty}" font-size="11" text-anchor="{anchor}" '
+                    f'fill="{INK}">{pre}{esc(ln)}</text>'
+                )
+                ty += 14
+                first = False
+            if m.get("ref"):
+                p.append(
+                    f'<text x="{tx}" y="{ty}" font-size="9.5" font-family="Menlo, monospace" '
+                    f'text-anchor="{anchor}" fill="{SELF}">{esc(m["ref"])}</text>'
+                )
+            continue
+
+        b = centers[m["to"]]
+        col = CALL if kind == "call" else EVENT
+        mk = "ac" if kind == "call" else "ae"
+        dash = "" if kind == "call" else ' stroke-dasharray="6 4"'
+        sgn = 1 if b > a else -1
+        p.append(
+            f'<line x1="{a + sgn * 3}" y1="{y}" x2="{b - sgn * 4}" y2="{y}" stroke="{col}" '
+            f'stroke-width="1.7" marker-end="url(#{mk})"{dash}/>'
+        )
+        mid = (a + b) // 2
+        lines = wrap(m["text"], 42)
+        ty = y - 9 - 15 * (len(lines) - 1) - (12 if m.get("ref") else 0)
+        for ln in lines:
+            p.append(
+                f'<text x="{mid}" y="{ty}" font-size="11" text-anchor="middle" fill="{INK}">'
+                f'{esc(ln)}</text>'
+            )
+            ty += 15
+        if m.get("ref"):
+            p.append(
+                f'<text x="{mid}" y="{ty}" font-size="9.5" font-family="Menlo, monospace" '
+                f'text-anchor="middle" fill="{col}">{esc(m["ref"])}</text>'
+            )
+        p.append(
+            f'<circle cx="{a + sgn * 13}" cy="{y - 11}" r="8.5" fill="#ffffff" stroke="{col}" '
+            f'stroke-width="1.1"/>'
+            f'<text x="{a + sgn * 13}" y="{y - 7.5}" font-size="9.5" font-weight="600" '
+            f'text-anchor="middle" fill="{col}">{num}</text>'
+        )
+
+    p.append('</svg>')
+    out.write_text("\n".join(p))
+
+
+def seq(items):
+    n, out = 1, []
+    for it in items:
+        if it["kind"] == "note":
+            out.append(it)
+        else:
+            it["n"] = n
+            n += 1
+            out.append(it)
+    return out
+
+
+def call(f, t, text, ref=None):
+    return {"kind": "call", "frm": f, "to": t, "text": text, "ref": ref}
+
+
+def event(f, t, text, ref=None):
+    return {"kind": "event", "frm": f, "to": t, "text": text, "ref": ref}
+
+
+def self_(f, text, ref=None):
+    return {"kind": "self", "frm": f, "text": text, "ref": ref}
+
+
+def note(text):
+    return {"kind": "note", "text": text}
+
+
+# Every code reference on an arrow is resolved from the source at generation time.
+#
+# These were hardcoded until 2026-09-21, and 14 of 17 had rotted: PRs #26-#35 moved
+# isVerifiedLiveExecutor 119 -> 176, totalRequestsFromAdmission 674 -> 790, and so on. A
+# stale line number is worse than none, because it reads as precise. Anchoring on a symbol
+# pattern means the numbers are correct whenever the diagrams are regenerated, and an
+# unmatched pattern fails the build loudly instead of emitting a wrong number.
+#
+# key -> (repo-relative path, regex matching the definition, label shown on the diagram)
+SP = "pkg/controller/jobs/sparkapplication"
+SYMBOLS = {
+    # The watch wiring. controller-runtime lives in vendor/, so these resolve against the
+    # vendored copy - a dependency bump that moves them fails the build loudly, which is right.
+    "watchRegistration": (
+        f"{SP}/sparkapplication_controller.go",
+        r"b\.Watches\(&corev1\.Pod\{\}", "controller.go"),
+    "cr.GetInformer": (
+        "vendor/sigs.k8s.io/controller-runtime/pkg/internal/source/kind.go",
+        r"ks\.Cache\.GetInformer\(ctx, ks\.Type\)", "internal/source/kind.go"),
+    "cr.AddEventHandler": (
+        "vendor/sigs.k8s.io/controller-runtime/pkg/internal/source/kind.go",
+        r"i\.AddEventHandlerWithOptions\(", "internal/source/kind.go"),
+    "cr.OnAdd": (
+        "vendor/sigs.k8s.io/controller-runtime/pkg/internal/source/event_handler.go",
+        r"^func \(e \*EventHandler\[object, request\]\) OnAdd\(",
+        "internal/source/event_handler.go"),
+    "cr.OnUpdate": (
+        "vendor/sigs.k8s.io/controller-runtime/pkg/internal/source/event_handler.go",
+        r"^func \(e \*EventHandler\[object, request\]\) OnUpdate\(",
+        "internal/source/event_handler.go"),
+    "cr.OnDelete": (
+        "vendor/sigs.k8s.io/controller-runtime/pkg/internal/source/event_handler.go",
+        r"^func \(e \*EventHandler\[object, request\]\) OnDelete\(",
+        "internal/source/event_handler.go"),
+    "isTrackedExecutorPod": (
+        f"{SP}/sparkapplication_executor_pod_handler.go",
+        r"^func isTrackedExecutorPod", "pod_handler.go"),
+    "schedule": (
+        f"{SP}/sparkapplication_executor_pod_handler.go",
+        r"^func \(.*\) schedule\(", "pod_handler.go"),
+    "isVerifiedLiveExecutor": (
+        f"{SP}/sparkapplication_podset.go",
+        r"^func isVerifiedLiveExecutor", "podset.go"),
+    "liveExecutorCount": (
+        f"{SP}/sparkapplication_podset.go",
+        r"^func \(j \*SparkApplication\) liveExecutorCount\(", "podset.go"),
+    "clampToDynamicAllocationBounds": (
+        f"{SP}/sparkapplication_podset.go",
+        r"^func \(j \*SparkApplication\) clampToDynamicAllocationBounds\(", "podset.go"),
+    "PodSets": (
+        f"{SP}/sparkapplication_controller.go",
+        r"^func \(j \*SparkApplication\) PodSets\(", "controller.go"),
+    "GetWorkloadNameExtraPart": (
+        f"{SP}/sparkapplication_controller.go",
+        r"^func \(j \*SparkApplication\) GetWorkloadNameExtraPart\(", "controller.go"),
+    "ensureOneWorkload": (
+        "pkg/controller/jobframework/reconciler.go",
+        r"^func \(r \*JobReconciler\) ensureOneWorkload\(", "jobframework/reconciler.go"),
+    "EnsureWorkloadSlices": (
+        "pkg/workloadslicing/workloadslicing.go",
+        r"^func EnsureWorkloadSlices\(", "workloadslicing.go"),
+    "ScaledUp": (
+        "pkg/workloadslicing/workloadslicing.go",
+        r"^func ScaledUp\(", "workloadslicing.go"),
+    "ScaledDown": (
+        "pkg/workloadslicing/workloadslicing.go",
+        r"^func ScaledDown\(", "workloadslicing.go"),
+    "updatePodSetCountsWithRetry": (
+        "pkg/workloadslicing/workloadslicing.go",
+        r"^func updatePodSetCountsWithRetry\(", "workloadslicing.go"),
+    "scaleDownAdmission": (
+        "pkg/workloadslicing/workloadslicing.go",
+        r"^func scaleDownAdmission\(", "workloadslicing.go"),
+    "ReplacedWorkloadSlice_call": (
+        "pkg/scheduler/scheduler.go",
+        r"workloadslicing\.ReplacedWorkloadSlice\(", "scheduler.go"),
+    "FindReplacedSliceTarget_call": (
+        "pkg/scheduler/scheduler.go",
+        r"workloadslicing\.FindReplacedSliceTarget\(", "scheduler.go"),
+    "replaceOldWorkloadSlice": (
+        "pkg/scheduler/scheduler.go",
+        r"^func \(s \*Scheduler\) replaceOldWorkloadSlice\(", "scheduler.go"),
+    "Assignment.append": (
+        "pkg/scheduler/flavorassigner/flavorassigner.go",
+        r"^func \(a \*Assignment\) append\(", "flavorassigner.go"),
+    "Assignment.ToAPI": (
+        "pkg/scheduler/flavorassigner/flavorassigner.go",
+        r"^func \(a \*Assignment\) ToAPI\(", "flavorassigner.go"),
+    "AddOrUpdateWorkload": (
+        "pkg/cache/scheduler/cache.go",
+        r"^func \(c \*Cache\) AddOrUpdateWorkload\(", "cache.go"),
+    "reconcileSliceGroup": (
+        "pkg/cache/scheduler/clusterqueue.go",
+        r"^func \(c \*clusterQueue\) reconcileSliceGroup\(", "clusterqueue.go"),
+    "flavorsUsage": (
+        "pkg/controller/core/clusterqueue_controller.go",
+        r"Status\.FlavorsUsage = ", "clusterqueue_controller.go"),
+    "validateAdmissionUpdate": (
+        "pkg/webhooks/workload_webhook.go",
+        r"^func validateAdmissionUpdate\(", "workload_webhook.go"),
+    "totalRequestsFromAdmission": (
+        "pkg/workload/workload.go",
+        r"^func totalRequestsFromAdmission\(", "workload.go"),
+    "podsToUngate": (
+        "pkg/controller/elasticjobs/elastic_job_ungater.go",
+        r"^func \(r \*elasticJobUngater\) podsToUngate\(", "ungater.go"),
+}
+
+
+def line_of(key, table=None):
+    """First line matching the symbol's pattern. Raises if it no longer matches.
+
+    `table` lets a sibling generator resolve its own symbols through this machinery instead of
+    hardcoding line numbers; it defaults to this module's SYMBOLS.
+    """
+    path, pattern, _ = (table or SYMBOLS)[key]
+    src = REPO_ROOT / path
+    if not src.exists():
+        raise SystemExit(f"gen_seq.py: {path} does not exist (moved or renamed?)")
+    rx = re.compile(pattern)
+    for n, text in enumerate(src.read_text().splitlines(), 1):
+        if rx.search(text):
+            return n
+    raise SystemExit(
+        f"gen_seq.py: no line in {path} matches {pattern!r} for key {key!r}. "
+        "The symbol was renamed or removed - fix SYMBOLS rather than dropping the reference.")
+
+
+def ref(key, table=None):
+    """'label.go:NNN', resolved now."""
+    return f"{(table or SYMBOLS)[key][2]}:{line_of(key, table)}"
+
+
+def refs(*keys, table=None):
+    """Several references in one file: 'scheduler.go:518, :921'."""
+    first = ref(keys[0], table)
+    rest = [str(line_of(k, table)) for k in keys[1:]]
+    return ", :".join([first] + rest)
+
+
+UP_LANES = [
+    ("Spark driver (DA)", "ExecutorAllocationManager"),
+    ("kube-apiserver", "—"),
+    ("shared Pod informer", "controller-runtime cache · LIST then WATCH"),
+    ("executorPodHandler", "sparkapplication_executor_pod_handler.go"),
+    ("JobReconciler", ref("ensureOneWorkload")),
+    ("PodSets / count", "sparkapplication_podset.go"),
+    ("workloadslicing", "workloadslicing/workloadslicing.go"),
+    ("Scheduler + flavorassigner", "scheduler/scheduler.go"),
+    ("scheduler cache", "cache/scheduler/clusterqueue.go"),
+    ("elasticJobUngater", "controller/elasticjobs/elastic_job_ungater.go"),
+]
+
+UP = seq([
+    note("Precondition: the executor pod template already carries kueue.x-k8s.io/elastic-job as a "
+         "scheduling gate, injected once at CR create by sparkapplication_webhook.go Default(). "
+         "Every Pod the driver creates from it is born gated."),
+    note("How the watch is wired, once at manager start and not per application: NewReconciler calls "
+         "b.Watches(&corev1.Pod{}, newExecutorPodHandler(), WithPredicates(executorPodPredicate{})) "
+         f"({ref('watchRegistration')}), and only when ElasticJobsViaWorkloadSlices is on - otherwise "
+         "the cluster-wide Pod watch would be paid for and unused. controller-runtime's source.Kind "
+         f"then calls Cache.GetInformer(Pod) ({ref('cr.GetInformer')}), which returns the manager's "
+         "EXISTING shared Pod informer, so this adds a listener rather than a second watch "
+         f"connection, and registers on it with AddEventHandlerWithOptions ({ref('cr.AddEventHandler')})."),
+    call(0, 1, "create executor Pods (born gated)"),
+    event(1, 2, "watch stream: ADDED. The informer LISTs once at start "
+               "and then holds a long-lived WATCH"),
+    self_(2, "Reflector -> DeltaFIFO -> sharedIndexInformer fans the "
+             "delta out to every registered listener"),
+    self_(2, "predicate: isTrackedExecutorPod - label match on "
+             "sparkoperator.k8s.io/app-name + spark-role. Run by "
+             "controller-runtime INSIDE OnAdd, before the handler, so a "
+             "driver or non-Spark Pod never reaches it",
+          ref("isTrackedExecutorPod")),
+    call(2, 3, "predicates passed -> handler.Create(ctx, evt, queue)",
+         ref("cr.OnAdd")),
+    note("Two things that arrow hides. OnAdd also fires for every Pod in the informer's INITIAL "
+         "LIST (IsInInitialList), so on an operator restart a large application replays all its "
+         "existing executors as Creates - the debounce below absorbs that into one reconcile. And the "
+         "event carries no count: it is purely a trigger to go and look."),
+    self_(3, "schedule() — trailing-edge debounce 5s, maxWait 30s. Per-key "
+             "timers, NOT the workqueue's delay heap: staggered AddAfter "
+             "calls from one burst would each fire and defeat the coalescing",
+          ref("schedule")),
+    call(3, 4, "q.Add(req) — from inside the timer callback, naming the "
+               "SparkApplication and not the Pod"),
+    call(4, 5, "PodSets(ctx, client)", f'ensureOneWorkload -> {ref("PodSets")}'),
+    call(5, 1, "List Pods by app-name + spark-role label"),
+    self_(5, "isVerifiedLiveExecutor() — non-terminal Pods count, "
+             "INCLUDING still-gated ones (defect 3)", ref("isVerifiedLiveExecutor")),
+    note("This is the whole inference. There is no DA event and no call from Spark into Kueue: the "
+         "desired executor count is re-derived from live Pod objects on every debounced reconcile, "
+         f"and cached for the pass ({ref('liveExecutorCount')}). The derived count is then clamped "
+         f"to Dynamic Allocation's own minExecutors/maxExecutors ({ref('clampToDynamicAllocationBounds')})."),
+    call(5, 4, "executor PodSet Count = N_live"),
+    call(4, 6, "EnsureWorkloadSlices(podSets, ...)", ref("EnsureWorkloadSlices")),
+    self_(6, "ScaledUp() -> a NEW slice, never an in-place grow", ref("ScaledUp")),
+    call(6, 1, "create Workload slice + replacement-for annotation; "
+               "name from GetWorkloadNameExtraPart (sequence number)", ref("GetWorkloadNameExtraPart")),
+    event(1, 7, "pending Workload observed"),
+    self_(7, "ReplacedWorkloadSlice / FindReplacedSliceTarget — "
+             "predecessor becomes the preemption target", refs("FindReplacedSliceTarget_call", "ReplacedWorkloadSlice_call")),
+    self_(7, "Assignment.append — charges the snapshot only the "
+             "DELTA vs the replaced slice", ref("Assignment.append")),
+    call(7, 1, "Assignment.ToAPI — FULL count written to status.admission",
+         ref("Assignment.ToAPI")),
+    call(7, 8, "AddOrUpdateWorkload", ref("AddOrUpdateWorkload")),
+    self_(8, "sliceChainKey / reconcileSliceGroup — only the chain "
+             "tip is charged (ns + slice name + job UID)", ref("reconcileSliceGroup")),
+    call(7, 1, "replaceOldWorkloadSlice — Finish the predecessor", ref("replaceOldWorkloadSlice")),
+    event(1, 9, "Workload update event"),
+    self_(9, "podsToUngate — room = granted - alreadyUngated", ref("podsToUngate")),
+    call(9, 1, "remove the scheduling gate from exactly `room` Pods; "
+               "kube-scheduler then places them"),
+    call(8, 1, "Cache.Usage -> ClusterQueue.status.flavorsUsage",
+         ref("flavorsUsage")),
+])
+
+DOWN_LANES = [
+    ("Spark driver (DA)", "ExecutorAllocationManager"),
+    ("kube-apiserver", "—"),
+    ("shared Pod informer", "controller-runtime cache · LIST then WATCH"),
+    ("executorPodHandler", "sparkapplication_executor_pod_handler.go"),
+    ("JobReconciler", ref("ensureOneWorkload")),
+    ("PodSets / count", "sparkapplication_podset.go"),
+    ("workloadslicing", "workloadslicing/workloadslicing.go"),
+    ("Workload webhook", "webhooks/workload_webhook.go"),
+    ("scheduler cache", "cache/scheduler + workload/workload.go"),
+]
+
+DOWN = seq([
+    call(0, 1, "delete executor Pods (executorIdleTimeout elapsed)"),
+    event(1, 2, "watch stream: DELETED, or MODIFIED while terminating"),
+    self_(2, "OnDelete / OnUpdate. DeleteEvent.Object is the LAST-KNOWN "
+             "object from the informer cache, which is the only reason "
+             "label-based mapping still works on a delete",
+          refs("cr.OnDelete", "cr.OnUpdate")),
+    call(2, 3, "predicates passed -> handler.Delete / handler.Update",
+         ref("isTrackedExecutorPod")),
+    call(3, 4, "debounced enqueue — same timer map as scale-up, so a burst "
+               "of deletions is one reconcile", ref("schedule")),
+    call(4, 5, "PodSets(ctx, client)"),
+    self_(5, "isVerifiedLiveExecutor — a Pod with DeletionTimestamp "
+             "still counts until Succeeded/Failed", ref("isVerifiedLiveExecutor")),
+    call(5, 4, "executor PodSet Count = N_live (lower)"),
+    call(4, 6, "EnsureWorkloadSlices(podSets, ...)", ref("EnsureWorkloadSlices")),
+    self_(6, "ScaledDown() -> in-place patch. No new slice, and the "
+             "scheduler is never involved", ref("ScaledDown")),
+    call(6, 1, "updatePodSetCountsWithRetry — lower spec.podSets[].count",
+         ref("updatePodSetCountsWithRetry")),
+    call(6, 1, "scaleDownAdmission — lower the granted count, rescale "
+               "ResourceUsage, truncate TopologyAssignment", ref("scaleDownAdmission")),
+    call(1, 7, "admission mutation must pass validation"),
+    self_(7, "validateAdmissionUpdate — decrease-only, elastic-only "
+             "exception; batch/v1 Job admission stays immutable", ref("validateAdmissionUpdate")),
+    event(1, 8, "Workload update"),
+    self_(8, "totalRequestsFromAdmission — charges min(spec.count, granted)",
+          ref("totalRequestsFromAdmission")),
+    call(8, 1, "flavorsUsage drops"),
+    note("Asymmetry worth remembering: scale-up creates a Workload and traverses the full "
+         "scheduler + preemption path; scale-down is two in-place patches and never reaches the "
+         "scheduler. Both are driven by the same debounced Pod watch."),
+])
+
+# Write beside this script, so a regeneration updates the committed SVGs/PNGs in place.
+d = Path(__file__).resolve().parent
+
+
+def render(name, title, sub, lanes, msgs, out_dir=None, extra_legend=None):
+    """Emit one SVG beside this script and shell out to rsvg-convert for the PNG."""
+    out_dir = out_dir or d
+    svg = out_dir / f"{name}.svg"
+    build(title, sub, lanes, msgs, svg, extra_legend=extra_legend)
+    subprocess.run(["rsvg-convert", "-w", "2400", "-o", str(out_dir / f"{name}.png"), str(svg)],
+                   check=True)
+    print(f"{svg}  ->  {out_dir / (name + '.png')}")
+
+
+# Guarded so sibling generators can import build()/call()/event()/self_()/note()/seq()/render()
+# without regenerating these two.
+if __name__ == "__main__":
+    SUB = "Elastic SparkApplication + ElasticJobsViaWorkloadSlices — Pradeep39/kueue"
+    render("kueue-da-upscale",
+           "Kueue: how a Spark Dynamic Allocation scale-UP is inferred", SUB, UP_LANES, UP)
+    render("kueue-da-downscale",
+           "Kueue: how a Spark Dynamic Allocation scale-DOWN is inferred", SUB, DOWN_LANES, DOWN)

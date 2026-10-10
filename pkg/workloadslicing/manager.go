@@ -18,6 +18,7 @@ package workloadslicing
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 
@@ -64,10 +65,17 @@ func (r *Manager) EnsureWorkloadSlices(
 	// An evicted slice can still own running Pods. Return it to the job
 	// reconciler until its reservation is released, unless an admitted
 	// replacement has already taken ownership of those Pods.
+	//
+	// The "an admitted replacement took over" shortcut is only safe when the
+	// eviction is a handover between slices. It is NOT safe when the eviction is
+	// an instruction to stop the job — see evictionRequiresJobStop.
 	for i := range workloads {
 		wl := &workloads[i]
 		if !workloadevict.IsEvicted(wl) || !workload.HasQuotaReservation(wl) {
 			continue
+		}
+		if evictionRequiresJobStop(wl) {
+			return wl, true, nil
 		}
 		replaced := slices.ContainsFunc(workloads, func(candidate kueue.Workload) bool {
 			key := ReplacementForKey(&candidate)
@@ -110,8 +118,13 @@ func (r *Manager) EnsureWorkloadSlices(
 		// a. It hasn't been admitted (no quota reserved), or
 		// b. It's a scale-down event.
 		if !workload.HasQuotaReservation(wl) || ScaledDown(wlPodSetsCounts, jobPodSetsCounts) {
-			workload.ApplyPodSetCounts(wl, jobPodSetsCounts)
-			if err := r.Client.Update(ctx, wl); err != nil {
+			if err := updatePodSetCountsWithRetry(ctx, r.Client, wl, jobPodSetsCounts); err != nil {
+				if errors.Is(err, errWorkloadAdmittedConcurrently) {
+					// Kueue's scheduler admitted this workload while we were updating it, at
+					// a count that no longer qualifies for an in-place patch. Fall through to
+					// create a new slice instead of desyncing spec from the admission record.
+					return nil, true, nil
+				}
 				return nil, true, fmt.Errorf("failed to update workload's pod sets counts: %w", err)
 			}
 			return wl, true, nil
@@ -140,8 +153,10 @@ func (r *Manager) EnsureWorkloadSlices(
 		}
 
 		if !workload.HasQuotaReservation(selectedWorkload) || ScaledDown(selectedCounts, jobPodSetsCounts) {
-			workload.ApplyPodSetCounts(selectedWorkload, jobPodSetsCounts)
-			if err := r.Client.Update(ctx, selectedWorkload); err != nil {
+			if err := updatePodSetCountsWithRetry(ctx, r.Client, selectedWorkload, jobPodSetsCounts); err != nil {
+				if errors.Is(err, errWorkloadAdmittedConcurrently) {
+					return nil, true, nil
+				}
 				return nil, true, fmt.Errorf("failed to update workload pod set counts: %w", err)
 			}
 			return selectedWorkload, true, nil

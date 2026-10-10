@@ -84,6 +84,8 @@ The admission webhook validates this annotation only when the `ElasticJobsViaWor
    * `ray.io/v1.RayJob`
    * `ray.io/v1.RayCluster`
    * `ray.io/v1.RayService`
+   * `sparkoperator.k8s.io/v1beta2.SparkApplication`
+   * `spark.apache.org/v1.SparkApplication`
 * Elastic workloads are not supported for jobs with partial admission enabled.
 
     * Attempting to scale jobs with partial admission enabled will result in an admission validation error similar to the following:
