@@ -171,8 +171,8 @@ usable by another (US-4); no behaviour change for existing elastic `batch/v1.Job
 | **R-8** | A workload MUST be able to start below its configured maximum, and MUST NOT be rejected merely because its maximum exceeds available quota. | Met |
 | **R-9** | Behaviour for non-elastic workloads MUST be unchanged, including the immutability guarantees they rely on. | Met |
 | **R-10** | Existing elastic integrations MUST be unaffected. | Met |
-| **R-11** | The number of workers awaiting quota SHOULD remain proportionate to the quota available. | **Not met** — §14.2 |
-| **R-12** | Time-to-admission under a saturated queue SHOULD remain bounded. | **Not met** — §14.2 |
+| **R-11** | The number of workers awaiting quota SHOULD remain proportionate to the quota available. | **Not met** — §14.1 |
+| **R-12** | Time-to-admission under a saturated queue SHOULD remain bounded. | **Not met** — §14.1 |
 | **R-13** | The per-worker cost used for accounting MUST match what the framework actually requests of Kubernetes, for every resource the queue governs. | Met for CPU and memory — upstream for Kubeflow, this contribution for Apache (§8.5, §A5); the general risk remains — §6.3 |
 
 Two invariants define correctness. Both are checked continuously by an automated harness, and both
@@ -198,7 +198,7 @@ from the same value the queue charges, the check is circular and passes regardle
 | Accounting for a workload requires modifying it, restarting it. | R-5: size is observed, never written back. |
 | Quota released on scale-down is not actually reusable. | R-4 is stated as an outcome and validated, not assumed. |
 | Elasticity weakens guarantees non-elastic users depend on. | R-9; every relaxation is confined to elastic workloads. |
-| A workload is admitted, then starved of the growth it needs. | R-8; §14.2 records where this is currently imperfect. |
+| A workload is admitted, then starved of the growth it needs. | R-8; §14.1 records where this is currently imperfect. |
 | Silent oversubscription. | SC-2 is a first-class success criterion, not an implementation detail. |
 | The predicted worker Pod diverges from the one the framework actually creates. | R-13 holds for CPU and memory; the structural risk remains — §6.3. |
 
@@ -349,7 +349,7 @@ Three deliberate consequences:
   it reaches a terminal phase. Excluding it the instant a delete is issued would undercount live
   consumption and manufacture spurious intermediate counts as DA works through a batch of
   deletions.
-- **Gate-blocked Pods count.** Load-bearing, and the origin of §14.2. A gated Pod consumes no node
+- **Gate-blocked Pods count.** Load-bearing, and the origin of §14.1. A gated Pod consumes no node
   capacity, so counting it overstates consumption — but it is the *only* signal that DA wants more.
   Excluding gated Pods would mean the count never grows, no replacement slice is created, no quota
   is granted, the gate is never removed, and the job cannot scale at all. **The count is "what DA
@@ -449,7 +449,7 @@ an executor dying and being replaced. `maxExecutors` is applied last, so a confi
 The same clamp applies to the initial estimate, so `instances: 1` with `minExecutors: 5` reserves
 the floor rather than admitting the driver without its initial executors.
 
-The upper clamp **narrows but does not close** the gated-Pod loop (§14.2): it converts an unbounded
+The upper clamp **narrows but does not close** the gated-Pod loop (§14.1): it converts an unbounded
 climb into a bounded over-request, but when `maxExecutors` exceeds what the queue can grant the
 over-request still cannot be admitted. Closing it properly needs a bound derived from the queue's
 capacity, which the `PodSets(ctx, client)` signature does not expose.
@@ -460,7 +460,7 @@ bounds configured the clamp is the identity function.
 **Operational consequence.** With `initialExecutors: 1` and `minExecutors: 3` the first Workload
 is driver 1 + executor 1 and the floor of 3 is reached by two further slice replacements, each
 needing fresh quota. Omitting `initialExecutors` makes both Kueue and Spark start at
-`minExecutors`, so the floor is admitted atomically. This is the cheapest lever on §14.2.
+`minExecutors`, so the floor is admitted atomically. This is the cheapest lever on §14.1.
 
 ## 8.5 What Kueue charges — upstream behaviour this design depends on
 
@@ -701,7 +701,7 @@ legacy or hand-written admission is not read as a grant of zero, which would dea
 entirely. `ExtractPodSetCountsFromWorkload` gained a doc note pointing at the new function: the
 naming is what made this easy to get wrong, so part of the mitigation is documentary.
 
-With the cap correct, surplus executors stay `Pending` rather than running, which makes §14.2 more
+With the cap correct, surplus executors stay `Pending` rather than running, which makes §14.1 more
 visible. The two want addressing together.
 
 ## 9.6 Why sizing and gating are both needed
