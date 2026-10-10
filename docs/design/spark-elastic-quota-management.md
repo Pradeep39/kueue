@@ -57,30 +57,29 @@ Both share three properties:
 2. Peak demand is a poor predictor of average demand.
 3. The workload must not be interrupted in order to change size.
 
-## 2.2 Why gang scheduling is the wrong tool
+## 2.2 Gang scheduling belongs at the floor, not the peak
 
-Gang scheduling — equivalently, all-or-nothing admission of a statically sized workload — is
-appropriate when a workload cannot progress without its full complement of workers and that
-complement is known and stable. Neither holds here, and the reservation is sized for a peak that
-is rarely reached.
+Gang admission — all-or-nothing admission of a fixed set of workers — is the right tool where a
+workload cannot make progress without some minimum complement. Spark has exactly such a minimum:
+the driver plus the executors it starts with, the larger of `minExecutors` and `initialExecutors`.
+Admitting less than that leaves a half-formed application holding quota it cannot use, so the
+floor genuinely needs to be atomic.
 
-Applying it anyway forces one of two bad outcomes. **Size for peak** and the reservation is held
-for the workload's whole lifetime whether used or not — for an idle interactive session, hours of
-capacity paid for and not used. **Size for the floor** and the workload never uses genuinely
-available headroom, so jobs take longer and the infrastructure is under-used.
+The mistake is extending it to the *peak*. A reservation sized for peak demand is held for the
+workload's entire lifetime whether the capacity is used or not: for an interactive session idle
+between cells, that is hours of compute paid for and sitting idle; for a compaction job, it is
+peak capacity held through the long tail after the fan-out collapses. The gap between peak and
+average is the cost of the choice, and for these workloads that gap is most of the reservation.
 
-There is also a hard failure mode. With 512Mi executors, `minExecutors: 3` and `maxExecutors: 30`
-against a 6Gi `ClusterQueue` (twelve slots), gang-admitting at the maximum needs 1 driver + 30
-executors = **15.5Gi**, exceeding the entire quota: the workload would **never be admitted at
-all**, despite running comfortably within quota in practice. Gang-admitting at the floor gives 2Gi
-per application, so three applications consume the whole quota with no headroom.
+Sizing at peak also has a hard failure mode. With 512Mi executors, `minExecutors: 3` and
+`maxExecutors: 30` against a 6Gi `ClusterQueue` (twelve slots), gang-admitting at the maximum
+needs 1 driver + 30 executors = **15.5Gi**, exceeding the entire quota: the workload would
+**never be admitted at all**, despite running comfortably within quota in practice.
 
-Under elastic admission the same three applications ran between 2Gi and 6Gi of measured usage,
-tracking real demand, never exceeding quota.
-
-The point generalises: **for a workload whose demand varies during its life, a static reservation
-is either wasteful or restrictive, and the gap between peak and average is the cost of the
-choice.** Elasticity removes the choice.
+So the division this design draws: **gang-admit the floor, and let quota-aware elasticity govern
+everything above it.** Under that split the same three applications ran between 2Gi and 6Gi of
+measured usage, tracking real demand, and never exceeded quota — where a static reservation at the
+floor alone would have left the headroom unused, and one at the peak could not have been admitted.
 
 ## 2.3 Why quota-aware elasticity, not just autoscaling
 
@@ -107,21 +106,12 @@ may have, and keeps its accounting honest as that changes.**
   application must never be admitted into quota that cannot hold the floor it will immediately ask
   for.
 
-G7 needs stating because it is the one place this design *is* all-or-nothing, and §2.2 should not
-be read as rejecting that. The first workload slice carries both PodSets — driver at 1, and
-executors at the count Spark will actually start with: **the largest of `minExecutors`,
-`initialExecutors` and the resolved `spark.executor.instances`** (§8.3), which is what Spark's own
-`Utils.getDynamicAllocationInitialExecutors` computes. Note that `initialExecutors` cannot lower
-that floor: it *defaults* to `minExecutors` when unset, and Spark treats a value below
-`minExecutors` as a misconfiguration — logging that it `"is invalid, ignoring its setting"` before
-taking the maximum anyway. A Workload is then admitted as a unit:
-`Assignment.RepresentativeMode` takes the worst mode across all PodSets, so one PodSet that does
-not fit leaves the whole Workload unadmitted. Partial admission cannot weaken this
-either, since the webhook rejects it outright for elastic jobs (*"partial admission and elastic
-job cannot be used together"*). The clamp then keeps a reconcile that lands mid-startup, observing
-only part of the executor set, from patching that floor back down.
-
-So quota is granted atomically at the floor, and elasticity applies only *above* it.
+**Gang admission is confined to that floor.** The floor is the driver plus the largest of
+`minExecutors`, `initialExecutors` and the resolved `spark.executor.instances` (§8.3) — the count
+Spark will actually start with. `initialExecutors` can only raise it, never lower it: it defaults
+to `minExecutors`, and Spark ignores a smaller value as invalid. Both PodSets ride in the first
+workload slice, which is admitted whole or not at all, and partial admission is rejected outright
+for elastic jobs. Everything above the floor is elastic.
 
 **Non-goals.** Node-level co-scheduling — the guarantee that a workload's Pods are *placed on
 nodes* together. Admission is atomic per G7, but once a slice is admitted and its Pods ungated,
