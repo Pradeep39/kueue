@@ -103,11 +103,27 @@ may have, and keeps its accounting honest as that changes.**
 - **G4.** Return capacity to the queue promptly on scale-down.
 - **G5.** Never require the workload's own resource to be modified in order to account for it.
 - **G6.** Leave existing elastic integrations and all non-elastic admission behaviour unchanged.
+- **G7.** Admit the driver together with the application's starting executors, or not at all. An
+  application must never be admitted into quota that cannot hold the floor it will immediately ask
+  for.
 
-Non-goals: node-level gang or co-scheduling (placement remains the kube-scheduler's concern, and
-for these workloads gang placement is explicitly not wanted); changing or overriding the
-framework's autoscaling policy; guaranteeing a workload can always reach its configured maximum;
-and MultiKueue support in the first iteration.
+G7 needs stating because it is the one place this design *is* all-or-nothing, and §2.2 should not
+be read as rejecting that. The first workload slice carries both PodSets — driver at 1, executors
+at the resolved initial count, clamped up to `minExecutors` (§8.4) — and a Workload is admitted as
+a unit: `Assignment.RepresentativeMode` takes the worst mode across all PodSets, so one PodSet
+that does not fit leaves the whole Workload unadmitted. Partial admission cannot weaken this
+either, since the webhook rejects it outright for elastic jobs (*"partial admission and elastic
+job cannot be used together"*). The clamp then keeps a reconcile that lands mid-startup, observing
+only part of the executor set, from patching that floor back down.
+
+So quota is granted atomically at the floor, and elasticity applies only *above* it.
+
+**Non-goals.** Node-level co-scheduling — the guarantee that a workload's Pods are *placed on
+nodes* together. Admission is atomic per G7, but once a slice is admitted and its Pods ungated,
+placement is the kube-scheduler's concern and Pods may bind at different times; nothing here
+provides a PodGroup or gang-placement plugin. Also out of scope: changing or overriding the
+framework's autoscaling policy; guaranteeing a workload can reach its configured *maximum*, which
+is a limit rather than a reservation; and MultiKueue support in the first iteration.
 
 # 3. Proposal
 
