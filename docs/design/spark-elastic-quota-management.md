@@ -108,10 +108,15 @@ may have, and keeps its accounting honest as that changes.**
   for.
 
 G7 needs stating because it is the one place this design *is* all-or-nothing, and §2.2 should not
-be read as rejecting that. The first workload slice carries both PodSets — driver at 1, executors
-at the resolved initial count, clamped up to `minExecutors` (§8.4) — and a Workload is admitted as
-a unit: `Assignment.RepresentativeMode` takes the worst mode across all PodSets, so one PodSet
-that does not fit leaves the whole Workload unadmitted. Partial admission cannot weaken this
+be read as rejecting that. The first workload slice carries both PodSets — driver at 1, and
+executors at the count Spark will actually start with: **the largest of `minExecutors`,
+`initialExecutors` and the resolved `spark.executor.instances`** (§8.3), which is what Spark's own
+`Utils.getDynamicAllocationInitialExecutors` computes. Note that `initialExecutors` cannot lower
+that floor: it *defaults* to `minExecutors` when unset, and Spark treats a value below
+`minExecutors` as a misconfiguration — logging that it `"is invalid, ignoring its setting"` before
+taking the maximum anyway. A Workload is then admitted as a unit:
+`Assignment.RepresentativeMode` takes the worst mode across all PodSets, so one PodSet that does
+not fit leaves the whole Workload unadmitted. Partial admission cannot weaken this
 either, since the webhook rejects it outright for elastic jobs (*"partial admission and elastic
 job cannot be used together"*). The clamp then keeps a reconcile that lands mid-startup, observing
 only part of the executor set, from patching that floor back down.
