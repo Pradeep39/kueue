@@ -315,3 +315,30 @@ func TestExecutorPodHandlerScaleDownStaysDebounced(t *testing.T) {
 		t.Errorf("queue length after the debounce window = %d, want 1", got)
 	}
 }
+
+// TestExecutorPodHandlerStaleTimerDoesNotOrphanNewer: a callback from a superseded timer must
+// not delete the bookkeeping of the timer that replaced it.
+func TestExecutorPodHandlerStaleTimerDoesNotOrphanNewer(t *testing.T) {
+	fakeClock := testingclock.NewFakeClock(time.Now())
+	h := newExecutorPodHandler()
+	h.clock = fakeClock
+	q := workqueue.NewTypedRateLimitingQueue(workqueue.DefaultTypedControllerRateLimiter[reconcile.Request]())
+	defer q.ShutDown()
+	key := types.NamespacedName{Namespace: "ns", Name: "app"}
+	req := reconcile.Request{NamespacedName: key}
+
+	stale, current := fakeClock.NewTimer(time.Hour), fakeClock.NewTimer(time.Hour)
+	h.timers[key], h.burstStarts[key] = current, fakeClock.Now()
+
+	h.fire(key, stale, req, q)
+	if h.timers[key] != current {
+		t.Fatalf("a stale callback removed the current timer")
+	}
+	if q.Len() != 1 {
+		t.Errorf("a stale callback must still enqueue (queue length %d)", q.Len())
+	}
+	h.fire(key, current, req, q)
+	if _, ok := h.timers[key]; ok {
+		t.Errorf("the current timer's own callback left its entry behind")
+	}
+}
