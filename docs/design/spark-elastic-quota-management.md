@@ -933,10 +933,13 @@ driver and executors run for several more, so the quota went to the preemptor wh
 held it. Under preemption on a 12-slot cohort: three executors running with no grant for ~5s per
 eviction, and up to 15 live Pods — an SC-2 breach the ledger never showed.
 
-`IsActive()` now also holds while any driver or executor Pod is neither terminated nor being
-deleted. That is the jobframework contract ("returns true if there are any running pods") and
-`batch/v1.Job`'s `status.active`. Pods already being deleted are not counted, so a Pod stuck
-terminating on a lost node cannot pin its quota. `IsActive()` has no client, so `PodSets()` records
+`IsActive()` now also holds while any driver or executor Pod is neither terminated, nor being
+deleted, nor scheduling-gated. That is the jobframework contract ("returns true if there are any
+running pods") and `batch/v1.Job`'s `status.active`. Pods already being deleted are not counted, so
+a Pod stuck terminating on a lost node cannot pin its quota. Gated Pods are not counted either: one
+has never been bound, so it holds nothing, and after eviction no admitted slice grants it. Counting
+them pinned a preempted application's quota indefinitely, because the driver created one more
+executor in the second it was suspended and that Pod stayed gated for minutes. `IsActive()` has no client, so `PodSets()` records
 the observation; the eviction path always calls `PodSets()` first, because the evicted Workload is
 compared against the job before the release step runs. The Pod watch now admits driver Pods too:
 the driver can outlive every executor, and without its events nothing would reconcile the job again
