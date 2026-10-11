@@ -27,6 +27,7 @@ import (
 	sparkappv1beta2 "github.com/kubeflow/spark-operator/v2/api/v1beta2"
 	sparkcommon "github.com/kubeflow/spark-operator/v2/pkg/common"
 	corev1 "k8s.io/api/core/v1"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
@@ -1433,6 +1434,113 @@ func TestPodSetsPartialScaleUpMinCount(t *testing.T) {
 			}
 			if diff := cmp.Diff(tc.wantMinCount, podSets[1].MinCount); diff != "" {
 				t.Errorf("executor MinCount mismatch (-want +got):\n%s", diff)
+			}
+		})
+	}
+}
+
+// TestReconcilerKeepsEvictedQuotaWhilePodsRun pins the release point of an evicted
+// Workload's quota. The operator reports SUSPENDING, then SUSPENDED, within about a second of
+// spec.suspend, while the driver and executors keep running for several more. Releasing on
+// the state change handed the quota to the preemptor while the victim still held it:
+// observed 3 executors running with no grant for ~5s per preemption, and 15 live Pods
+// against a 12-slot cohort.
+func TestReconcilerKeepsEvictedQuotaWhilePodsRun(t *testing.T) {
+	now := time.Now().Truncate(time.Second)
+	running := func(name string) *corev1.Pod { return elasticExecutorPod(name, corev1.PodRunning, false) }
+	cases := map[string]struct {
+		state        sparkappv1beta2.ApplicationStateType
+		pods         []client.Object
+		wantReserved bool
+	}{
+		"suspending with executors still running keeps the reservation": {
+			state:        sparkappv1beta2.ApplicationStateSuspending,
+			pods:         []client.Object{running("e1"), running("e2")},
+			wantReserved: true,
+		},
+		"suspended but the driver is still running keeps the reservation": {
+			state: sparkappv1beta2.ApplicationStateSuspended,
+			pods: []client.Object{func() *corev1.Pod {
+				p := running("driver")
+				p.Labels[sparkcommon.LabelSparkRole] = sparkcommon.SparkRoleDriver
+				return p
+			}()},
+			wantReserved: true,
+		},
+		// Matches batch/Job's status.active: a Pod stuck terminating on a lost node must not
+		// pin the quota forever.
+		"pods already being deleted do not hold the reservation": {
+			state:        sparkappv1beta2.ApplicationStateSuspended,
+			pods:         []client.Object{elasticExecutorPod("e1", corev1.PodRunning, true)},
+			wantReserved: false,
+		},
+		"terminated pods do not hold the reservation": {
+			state:        sparkappv1beta2.ApplicationStateSuspended,
+			pods:         []client.Object{elasticExecutorPod("e1", corev1.PodSucceeded, false)},
+			wantReserved: false,
+		},
+		"no pods left releases the reservation": {
+			state:        sparkappv1beta2.ApplicationStateSuspended,
+			wantReserved: false,
+		},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			ctx, _ := utiltesting.ContextWithLog(t)
+			ns := utiltesting.MakeNamespaceWrapper("ns").Label(corev1.LabelMetadataName, "ns").Obj()
+			app := sparkapplicationtesting.MakeSparkApplication("app", "ns").Queue("lq").ExecutorInstances(2).Suspend(true).Obj()
+			app.UID = "app-uid"
+			app.Status.AppState.State = tc.state
+
+			clientBuilder := utiltesting.NewClientBuilder(sparkappv1beta2.AddToScheme).
+				WithInterceptorFuncs(interceptor.Funcs{SubResourceApply: utiltesting.TreatSSAAsStrategicMergeForApplyConfiguration})
+			kClient := clientBuilder.WithObjects(append([]client.Object{app, ns}, tc.pods...)...).
+				WithStatusSubresource(&kueue.Workload{}).Build()
+			indexer := utiltesting.AsIndexer(clientBuilder)
+			if err := SetupIndexes(ctx, indexer); err != nil {
+				t.Fatalf("Could not setup indexes: %v", err)
+			}
+
+			podSets, err := fromObject(app).PodSets(ctx, kClient)
+			if err != nil {
+				t.Fatalf("PodSets: %v", err)
+			}
+			psas := make([]kueue.PodSetAssignment, 0, len(podSets))
+			for i := range podSets {
+				psas = append(psas, utiltestingapi.MakePodSetAssignment(podSets[i].Name).Count(podSets[i].Count).Obj())
+			}
+			wl := utiltestingapi.MakeWorkload("wl", "ns").
+				Finalizers(kueue.ResourceInUseFinalizerName).
+				ControllerReference(gvk, app.Name, string(app.UID)).
+				PodSets(podSets...).
+				ReserveQuotaAt(utiltestingapi.MakeAdmission("cq").PodSets(psas...).Obj(), now).
+				Condition(metav1.Condition{
+					Type: kueue.WorkloadEvicted, Status: metav1.ConditionTrue,
+					Reason: kueue.WorkloadEvictedByPreemption, Message: "Preempted",
+				}).
+				Obj()
+			if err := kClient.Create(ctx, wl); err != nil {
+				t.Fatalf("Could not create workload: %v", err)
+			}
+
+			reconciler, err := NewReconciler(ctx, kClient, indexer, &utiltesting.EventRecorder{},
+				jobframework.WithCache(schdcache.New(kClient)),
+				jobframework.WithClock(testingclock.NewFakeClock(now)))
+			if err != nil {
+				t.Fatalf("NewReconciler: %v", err)
+			}
+			if _, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(app)}); err != nil {
+				t.Fatalf("Reconcile: %v", err)
+			}
+
+			got := &kueue.Workload{}
+			if err := kClient.Get(ctx, client.ObjectKeyFromObject(wl), got); err != nil {
+				t.Fatalf("Get workload: %v", err)
+			}
+			// clearAdmissionAfterEviction releases the reservation by setting QuotaReserved
+			// false, which is what the scheduler cache stops charging on.
+			if reserved := apimeta.IsStatusConditionTrue(got.Status.Conditions, kueue.WorkloadQuotaReserved); reserved != tc.wantReserved {
+				t.Errorf("QuotaReserved = %v, want %v", reserved, tc.wantReserved)
 			}
 		})
 	}

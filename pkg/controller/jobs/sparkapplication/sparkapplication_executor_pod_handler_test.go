@@ -145,12 +145,23 @@ func TestExecutorPodPredicate(t *testing.T) {
 			obj:  trackedExecutorPod("e1"),
 			want: true,
 		},
+		// Tracked so the job is reconciled when an evicted application's last Pod goes.
 		"driver pod": {
 			obj: &corev1.Pod{
 				ObjectMeta: metav1.ObjectMeta{
 					Labels: map[string]string{
 						sparkcommon.LabelSparkAppName: "app",
 						sparkcommon.LabelSparkRole:    sparkcommon.SparkRoleDriver,
+					},
+				},
+			},
+			want: true,
+		},
+		"driver pod missing the app-name label": {
+			obj: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels: map[string]string{
+						sparkcommon.LabelSparkRole: sparkcommon.SparkRoleDriver,
 					},
 				},
 			},
