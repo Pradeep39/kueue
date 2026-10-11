@@ -450,6 +450,7 @@ func (c *Cache) snapshotClusterQueue(
 		FairWeight:                    cq.FairWeight,
 		AllocatableResourceGeneration: cq.AllocatableResourceGeneration,
 		Workloads:                     maps.Clone(cq.Workloads),
+		supersededSlices:              cq.supersededSliceKeys(),
 		Preemption:                    cq.Preemption,
 		NamespaceSelector:             cq.NamespaceSelector,
 		Status:                        cq.Status,

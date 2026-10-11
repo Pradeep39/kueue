@@ -309,6 +309,46 @@ func TestApplyPodSetCounts(t *testing.T) {
 		args args
 		want *kueue.Workload
 	}{
+		// A partial-scale-up slice lowered in place below the chain's floor: the API's
+		// minCount <= count rule would reject the update outright.
+		"MinCountCappedWhenCountDropsBelowIt": {
+			args: args{
+				wl: &kueue.Workload{
+					Spec: kueue.WorkloadSpec{
+						PodSets: []kueue.PodSet{
+							{Name: "executor", Count: 7, MinCount: ptr.To[int32](5)},
+						},
+					},
+				},
+				counts: PodSetsCounts{"executor": 3},
+			},
+			want: &kueue.Workload{
+				Spec: kueue.WorkloadSpec{
+					PodSets: []kueue.PodSet{
+						{Name: "executor", Count: 3, MinCount: ptr.To[int32](3)},
+					},
+				},
+			},
+		},
+		"MinCountKeptWhenCountStaysAboveIt": {
+			args: args{
+				wl: &kueue.Workload{
+					Spec: kueue.WorkloadSpec{
+						PodSets: []kueue.PodSet{
+							{Name: "executor", Count: 7, MinCount: ptr.To[int32](5)},
+						},
+					},
+				},
+				counts: PodSetsCounts{"executor": 9},
+			},
+			want: &kueue.Workload{
+				Spec: kueue.WorkloadSpec{
+					PodSets: []kueue.PodSet{
+						{Name: "executor", Count: 9, MinCount: ptr.To[int32](5)},
+					},
+				},
+			},
+		},
 		"EdgeCase_EmptyWorkloadPodsSets": {
 			args: args{
 				wl: &kueue.Workload{},

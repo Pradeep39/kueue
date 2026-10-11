@@ -66,8 +66,19 @@ func ExtractPodSetCounts(podSets []kueue.PodSet) PodSetsCounts {
 	})
 }
 
-// ExtractGrantedPodSetCounts builds a PodSetsCounts map from a list of PodSetAssignments.
-// Each entry maps PodSet name to its replica count.
+// ExtractGrantedPodSetCounts builds a PodSetsCounts map from a list of PodSetAssignments,
+// capped by what spec.podSets requests. Each entry maps PodSet name to its replica count.
+//
+// This is deliberately distinct from ExtractPodSetCountsFromWorkload: for an elastic job the
+// requested count in spec.podSets can exceed the granted count (a scale-up creates a replacement
+// slice rather than growing the grant in place, and a stale read can raise the request on an
+// already-admitted slice). Anything that authorizes real consumption - ungating Pods, for
+// example - must be capped by the grant, never by the request.
+//
+// PodSetAssignment.Count is optional. The scheduler always sets it (Assignment.ToAPI), but an
+// assignment that lacks it falls back to the PodSet's own count, matching what
+// totalRequestsFromAdmission does, so a hand-written or legacy admission is not read as a grant
+// of zero.
 func ExtractGrantedPodSetCounts(wl *kueue.Workload) PodSetsCounts {
 	if wl.Status.Admission == nil {
 		return nil
@@ -99,6 +110,10 @@ func ExtractGrantedPodSetCountsAfterReclaim(wl *kueue.Workload) PodSetsCounts {
 
 // ExtractPodSetCountsFromWorkload returns a PodSetsCounts map derived from the provided Workload.
 //
+// Note this reports what the Workload *requests* (spec.podSets), which for an elastic job can
+// exceed what was actually granted. Use ExtractGrantedPodSetCounts wherever the answer must be
+// bounded by the quota the scheduler handed out.
+//
 // Important: This function assumes the Workload is not nil. It does not perform a nil check,
 // and calling it with a nil Workload will result in a panic.
 func ExtractPodSetCountsFromWorkload(wl *kueue.Workload) PodSetsCounts {
@@ -116,7 +131,13 @@ func ExtractPodSetCountsFromWorkload(wl *kueue.Workload) PodSetsCounts {
 func ApplyPodSetCounts(wl *kueue.Workload, counts PodSetsCounts) {
 	for i := range wl.Spec.PodSets {
 		if count, found := counts[wl.Spec.PodSets[i].Name]; found {
-			wl.Spec.PodSets[i].Count = count
+			ps := &wl.Spec.PodSets[i]
+			ps.Count = count
+			// The API rejects minCount > count. A partial-scale-up slice whose count is
+			// lowered in place below the chain's floor would otherwise fail every update.
+			if ps.MinCount != nil && *ps.MinCount > count {
+				ps.MinCount = ptr.To(count)
+			}
 		}
 	}
 }

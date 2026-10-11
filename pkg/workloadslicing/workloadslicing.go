@@ -20,8 +20,10 @@ package workloadslicing
 import (
 	"cmp"
 	"context"
+	"errors"
 	"fmt"
 	"slices"
+	"strings"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
@@ -29,8 +31,10 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/sets"
+	"k8s.io/client-go/util/retry"
 	"k8s.io/klog/v2"
 	"k8s.io/utils/clock"
+	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -39,7 +43,9 @@ import (
 	"sigs.k8s.io/kueue/pkg/constants"
 	"sigs.k8s.io/kueue/pkg/controller/core/indexer"
 	"sigs.k8s.io/kueue/pkg/features"
+	"sigs.k8s.io/kueue/pkg/resources"
 	"sigs.k8s.io/kueue/pkg/scheduler/preemption"
+	utiltas "sigs.k8s.io/kueue/pkg/util/tas"
 	"sigs.k8s.io/kueue/pkg/workload"
 	"sigs.k8s.io/kueue/pkg/workload/concurrentadmission"
 	workloadevict "sigs.k8s.io/kueue/pkg/workload/evict"
@@ -509,4 +515,165 @@ func FindReplacedSliceTarget(preemptor *kueue.Workload, targets []*preemption.Ta
 		}
 	}
 	return targets, nil
+}
+
+// errWorkloadAdmittedConcurrently indicates that, between the caller's eligibility check and
+// this update landing, Kueue's own scheduler admitted the workload at a count that no longer
+// qualifies for an in-place patch (i.e. it is now a scale-up on an admitted workload). The
+// caller should create a new slice instead of forcing this update through, which would leave
+// spec.PodSets desynced from the frozen status.admission.podSetAssignments snapshot that drives
+// ClusterQueue usage accounting.
+var errWorkloadAdmittedConcurrently = errors.New("workload was admitted concurrently and no longer qualifies for an in-place slice update")
+
+// evictionRequiresJobStop reports whether wl's Evicted condition means the owning
+// job must be stopped, rather than merely handed over to a successor slice.
+//
+// # Why this exists
+//
+// EnsureWorkloadSlices returns exactly one slice to the job reconciler, and the
+// reconciler's "handle eviction" step (jobframework.JobReconciler step 6) only runs
+// stopJob when *that* slice carries an Evicted condition. For an elastic job the
+// selected slice is normally the newest one: under Dynamic Allocation a pending
+// scale-up probe slice is almost always present, and normalizeActiveSlices prefers
+// it (pendingReplacement). So the quota-holding slice — the one the scheduler
+// actually preempts — is not the slice the reconciler inspects. The drain loop
+// above is the only path that surfaces it.
+//
+// That loop used to skip an evicted slice whenever an *admitted* replacement
+// existed, on the assumption that the replacement had taken ownership of the Pods.
+// That assumption holds for a scale-up handover, where the predecessor is
+// deliberately superseded and Finished (Scheduler.replaceWorkloadSlice uses
+// Finish(WorkloadSliceReplaced) — never an Evicted condition, so a handover never
+// reaches this code at all). It does not hold for preemption:
+//
+//  1. The preemptor evicts the quota-holding slice, which keeps its reservation
+//     until the job reconciler releases it.
+//  2. The already-queued scale-up probe is then admitted, because slice
+//     replacements are admitted on the *delta* against the predecessor's
+//     still-charged usage (flavorassigner.Assignment.append).
+//  3. With an admitted replacement now present, the drain loop skipped the evicted
+//     slice, so step 6 never ran and stopJob never suspended the job.
+//  4. Unsuspended, the job's driver kept scaling executors, each new slice was
+//     admitted on another small delta, and the preemptee *recaptured* the quota it
+//     was supposed to yield. The preemptor starved until unrelated capacity freed
+//     up. Step 6's clearAdmissionAfterEviction could not rescue this either: it is
+//     gated on !job.IsActive(), and the job stayed Running precisely because it was
+//     never suspended.
+//
+// Returning the evicted slice for these reasons restores the invariant that a
+// genuine eviction always reaches stopJob. Non-elastic jobs were never affected,
+// having no replacement slices for the shortcut to match.
+//
+// The set is an explicit allow-list rather than "anything but a handover" because
+// Evicted is also used for elastic bookkeeping that must not stop the job — e.g.
+// the concurrent-admission controller's "VariantEvicted"/"ConcurrentAdmission"
+// reasons, which retire one admission variant while another keeps running.
+func evictionRequiresJobStop(wl *kueue.Workload) bool {
+	cond := apimeta.FindStatusCondition(wl.Status.Conditions, kueue.WorkloadEvicted)
+	if cond == nil || cond.Status != metav1.ConditionTrue {
+		return false
+	}
+	switch cond.Reason {
+	case kueue.WorkloadEvictedByPreemption,
+		kueue.WorkloadEvictedByFlavorMigration,
+		kueue.WorkloadEvictedByPodsReadyTimeout,
+		kueue.WorkloadEvictedByAdmissionCheck,
+		kueue.WorkloadEvictedByClusterQueueStopped,
+		kueue.WorkloadEvictedByLocalQueueStopped,
+		kueue.WorkloadEvictedDueToNodeFailures:
+		return true
+	}
+	// Deactivation reasons carry an appended cause, e.g. "Deactivated<Cause>".
+	return strings.HasPrefix(cond.Reason, kueue.WorkloadDeactivated)
+}
+
+// scaleDownAdmission lowers wl's granted PodSetAssignments to counts, returning whether
+// anything changed.
+//
+// The scheduler cache derives a workload's usage from status.admission
+// (workload.totalRequestsFromAdmission), NOT from spec.podSets. So patching only the spec
+// on scale-down leaves the ClusterQueue charged for pods that no longer exist. Worse, a
+// later slice replacement is admitted on a delta computed against the frozen count
+// (flavorassigner.Assignment.append), which never re-checks the absolute total against
+// nominalQuota — so once the ledger drifts high it stays there. Lowering the granted
+// counts here is what actually releases the quota.
+//
+// ResourceUsage is the podSet total, so it is rescaled proportionally. A TopologyAssignment
+// is truncated to the new count so TAS domain accounting stays consistent.
+func scaleDownAdmission(wl *kueue.Workload, counts workload.PodSetsCounts) bool {
+	if wl.Status.Admission == nil {
+		return false
+	}
+	changed := false
+	for i := range wl.Status.Admission.PodSetAssignments {
+		psa := &wl.Status.Admission.PodSetAssignments[i]
+		newCount, ok := counts[psa.Name]
+		if !ok || psa.Count == nil || newCount >= *psa.Count {
+			continue
+		}
+		oldCount := *psa.Count
+		psa.Count = ptr.To(newCount)
+		if psa.ResourceUsage != nil {
+			usage := resources.NewRequestsFromResourceList(psa.ResourceUsage)
+			usage.Divide(int64(oldCount))
+			usage.Mul(int64(newCount))
+			psa.ResourceUsage = usage.ToResourceList(nil)
+		}
+		if psa.TopologyAssignment != nil {
+			psa.TopologyAssignment = utiltas.V1Beta2From(
+				utiltas.TruncateAssignment(utiltas.InternalFrom(psa.TopologyAssignment), newCount))
+		}
+		changed = true
+	}
+	return changed
+}
+
+// updatePodSetCountsWithRetry applies counts to wl's pod sets and updates it, retrying on
+// optimistic-lock conflicts by re-fetching wl and reapplying counts before each retry.
+// Without the retry, a caller whose upstream pod set counts change in quick succession
+// (e.g. Dynamic Allocation scaling an executor pool up and down within milliseconds) can
+// have two back-to-back EnsureWorkloadSlices calls race on the same Workload's
+// ResourceVersion, turning a routine scale event into a hard error instead of converging on
+// the latest count.
+//
+// Before every attempt (including the first), it re-validates eligibility against the
+// current wl: if the workload has been admitted at a count that makes this no longer an
+// allowed in-place update, it returns errWorkloadAdmittedConcurrently rather than reapplying
+// the caller's target count blindly.
+//
+// For an admitted workload this also lowers the granted counts in status.admission, so the
+// freed quota is released instead of staying charged — see scaleDownAdmission.
+func updatePodSetCountsWithRetry(ctx context.Context, clnt client.Client, wl *kueue.Workload, counts workload.PodSetsCounts) error {
+	key := client.ObjectKeyFromObject(wl)
+	first := true
+	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		if !first {
+			if err := clnt.Get(ctx, key, wl); err != nil {
+				return err
+			}
+		}
+		first = false
+		currentCounts := workload.ExtractPodSetCountsFromWorkload(wl)
+		if workload.HasQuotaReservation(wl) && !ScaledDown(currentCounts, counts) {
+			return errWorkloadAdmittedConcurrently
+		}
+		workload.ApplyPodSetCounts(wl, counts)
+		return clnt.Update(ctx, wl)
+	}); err != nil {
+		return err
+	}
+
+	// The spec is now authoritative; bring the granted counts down to match. This is a
+	// separate call because admission lives on the status subresource. A failure here
+	// leaves the pre-fix behavior (spec low, admission frozen high) and is retried on the
+	// next reconcile, so it degrades rather than corrupting anything.
+	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		if err := clnt.Get(ctx, key, wl); err != nil {
+			return err
+		}
+		if !workload.HasQuotaReservation(wl) || !scaleDownAdmission(wl, counts) {
+			return nil
+		}
+		return clnt.Status().Update(ctx, wl)
+	})
 }

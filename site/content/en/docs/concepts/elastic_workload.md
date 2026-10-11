@@ -76,6 +76,7 @@ metadata:
 
 An optional `kueue.x-k8s.io/elastic-job-scale-up-strategy` annotation selects how scale-up is admitted: `"atomic"` (default when unset) or `"partial"`.
 The admission webhook validates this annotation only when the `ElasticJobsViaWorkloadSlicesWithPartialReplicaScaleUp` feature gate is enabled. When that gate is off, the annotation is allowed and ignored. When the gate is on, the webhook rejects the annotation unless `kueue.x-k8s.io/elastic-job` is `"true"`, the `ElasticJobsViaWorkloadSlices` feature gate is enabled, and the value is exactly `"atomic"` or `"partial"`.
+`"partial"` is honoured by `ray.io/v1.RayJob`, `ray.io/v1.RayCluster`, `ray.io/v1.RayService` and, for its executors, `sparkoperator.k8s.io/v1beta2.SparkApplication`. The first Workload is still admitted whole; only later scale-ups can be admitted in part.
 
 ## Limitations
 
@@ -84,6 +85,8 @@ The admission webhook validates this annotation only when the `ElasticJobsViaWor
    * `ray.io/v1.RayJob`
    * `ray.io/v1.RayCluster`
    * `ray.io/v1.RayService`
+   * `sparkoperator.k8s.io/v1beta2.SparkApplication`
+   * `spark.apache.org/v1.SparkApplication`
 * Elastic workloads are not supported for jobs with partial admission enabled.
 
     * Attempting to scale jobs with partial admission enabled will result in an admission validation error similar to the following:

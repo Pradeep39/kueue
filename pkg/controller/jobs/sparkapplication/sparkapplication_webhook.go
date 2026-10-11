@@ -18,8 +18,10 @@ package sparkapplication
 
 import (
 	"context"
+	"slices"
 
 	sparkv1beta2 "github.com/kubeflow/spark-operator/v2/api/v1beta2"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/util/validation/field"
@@ -28,10 +30,12 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
+	kueue "sigs.k8s.io/kueue/apis/kueue/v1beta2"
 	qcache "sigs.k8s.io/kueue/pkg/cache/queue"
 	schdcache "sigs.k8s.io/kueue/pkg/cache/scheduler"
 	"sigs.k8s.io/kueue/pkg/controller/jobframework"
 	"sigs.k8s.io/kueue/pkg/features"
+	utilpod "sigs.k8s.io/kueue/pkg/util/pod"
 	"sigs.k8s.io/kueue/pkg/util/podset"
 	"sigs.k8s.io/kueue/pkg/util/webhook"
 	"sigs.k8s.io/kueue/pkg/workloadslicing"
@@ -39,9 +43,11 @@ import (
 
 var (
 	specPath                     = field.NewPath("spec")
+	sparkConfPath                = specPath.Child("sparkConf")
 	dynamicAllocationEnabledPath = specPath.Child("dynamicAllocation").Child("enabled")
 	driverSpecPath               = specPath.Child("driver")
 	executorSpecPath             = specPath.Child("executor")
+	executorTemplateSpecPath     = executorSpecPath.Child("template").Child("spec")
 )
 
 type SparkApplicationWebhook struct {
@@ -97,6 +103,18 @@ func (w *SparkApplicationWebhook) Default(ctx context.Context, obj *sparkv1beta2
 	}
 	jobframework.ApplyDefaultForManagedBy(job, w.queues, w.cache, log)
 
+	if isAnElasticJob(obj) {
+		// Ensure the PodSchedulingGate is present in the SparkApplication's executor pod
+		// Template, so Dynamic-Allocation-created executor Pods (built by Spark's driver
+		// from this template's mounted file, for the lifetime of the application) stay
+		// gated until the ElasticJobUngater confirms the owning workload slice has been
+		// granted quota for them.
+		if job.Spec.Executor.Template == nil {
+			job.Spec.Executor.Template = emptyExecutorPodTemplateSpec.DeepCopy()
+		}
+		utilpod.GateTemplate(job.Spec.Executor.Template, kueue.ElasticJobSchedulingGate)
+	}
+
 	return nil
 }
 
@@ -122,7 +140,7 @@ func isAnElasticJob(sparkApp *sparkv1beta2.SparkApplication) bool {
 
 func (w *SparkApplicationWebhook) validateCreate(ctx context.Context, job *sparkv1beta2.SparkApplication, maxTimeoutOnWorkload *metav1.Duration) (field.ErrorList, error) {
 	var allErrors field.ErrorList
-	kueueJob := (*SparkApplication)(job)
+	kueueJob := fromObject(job)
 
 	if w.manageJobsWithoutQueueName || jobframework.QueueName(kueueJob) != "" {
 		spec := &job.Spec
@@ -131,11 +149,25 @@ func (w *SparkApplicationWebhook) validateCreate(ctx context.Context, job *spark
 			allErrors = append(allErrors, field.Invalid(specPath.Child("mode"), spec.Mode, "only Cluster mode is supported for a kueue managed job"))
 		}
 
-		if !isAnElasticJob(job) && ptr.Deref(spec.DynamicAllocation, sparkv1beta2.DynamicAllocation{}).Enabled {
+		if isAnElasticJob(job) {
+			allErrors = append(allErrors, validateElasticJob(job)...)
+		} else if ptr.Deref(spec.DynamicAllocation, sparkv1beta2.DynamicAllocation{}).Enabled {
 			allErrors = append(allErrors,
 				field.Invalid(dynamicAllocationEnabledPath,
 					ptr.Deref(spec.DynamicAllocation, sparkv1beta2.DynamicAllocation{}).Enabled,
 					"a kueue managed job can use dynamicAllocation only when the ElasticJobsViaWorkloadSlices feature gate is on and the job is an elastic job",
+				),
+			)
+		}
+
+		// The executor count feeds the executor PodSet directly, so a value Kueue cannot
+		// parse would silently size that PodSet from the structured field alone - leaving
+		// the declared executors unaccounted. Reject it at create time instead.
+		if _, _, err := kueueJob.sparkConfExecutorInstances(); err != nil {
+			allErrors = append(allErrors,
+				field.Invalid(sparkConfPath.Key("spark.executor.instances"),
+					spec.SparkConf["spark.executor.instances"],
+					"must be an integer so Kueue can size the executor PodSet",
 				),
 			)
 		}
@@ -151,6 +183,32 @@ func (w *SparkApplicationWebhook) validateCreate(ctx context.Context, job *spark
 	}
 
 	return allErrors, nil
+}
+
+func validateElasticJob(job *sparkv1beta2.SparkApplication) field.ErrorList {
+	allErrors := field.ErrorList{}
+
+	workloadSliceSchedulingGate := corev1.PodSchedulingGate{
+		Name: kueue.ElasticJobSchedulingGate,
+	}
+
+	var executorSchedulingGates []corev1.PodSchedulingGate
+	if job.Spec.Executor.Template != nil {
+		executorSchedulingGates = job.Spec.Executor.Template.Spec.SchedulingGates
+	}
+
+	if !slices.Contains(executorSchedulingGates, workloadSliceSchedulingGate) {
+		allErrors = append(
+			allErrors,
+			field.Invalid(
+				executorTemplateSpecPath.Child("schedulingGates"),
+				executorSchedulingGates,
+				"an elastic job must have the ElasticJobSchedulingGate on its executor pod template",
+			),
+		)
+	}
+
+	return allErrors
 }
 
 func (w *SparkApplicationWebhook) validateTopologyRequest(ctx context.Context, sparkApp *SparkApplication) (field.ErrorList, error) {
