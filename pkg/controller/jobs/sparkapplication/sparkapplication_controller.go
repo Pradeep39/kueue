@@ -99,6 +99,12 @@ type SparkApplication struct {
 	// cachedWorkloadSequenceNumber memoizes workloadSequenceNumber() for the lifetime of
 	// this wrapper. See GetWorkloadNameExtraPart for why this exists.
 	cachedWorkloadSequenceNumber *int32
+
+	// cachedPodsActive records, for this reconcile, whether any driver or executor Pod is
+	// still active. Set by PodSets(), which the eviction path always reaches first (the
+	// evicted Workload is compared against the job before step 6 runs). nil means it was
+	// not observed this reconcile, and IsActive() falls back to AppState alone.
+	cachedPodsActive *bool
 }
 
 var _ jobframework.GenericJob = (*SparkApplication)(nil)
@@ -112,8 +118,43 @@ func (j *SparkApplication) IsSuspended() bool {
 	return ptr.Deref(j.Spec.Suspend, false)
 }
 
+// IsActive reports whether the application still has running Pods, which is what the
+// jobframework contract asks for and what both callers mean: releasing an evicted
+// Workload's quota, and waiting for Pods to drain before creating a new Workload.
+//
+// AppState alone is not enough. On suspend the operator moves to SUSPENDING and then
+// SUSPENDED within about a second, while the driver and executors keep running for several
+// more. Releasing quota on the state change handed it to the preemptor while the victim
+// still held it: observed 3 executors running with no grant for ~5s per preemption, and up
+// to 15 live Pods against a 12-slot cohort.
+//
+// Pods already being deleted are not counted, matching batch/Job's status.active: a Pod
+// stuck terminating on a lost node must not pin its quota forever.
 func (j *SparkApplication) IsActive() bool {
-	return j.Status.AppState.State == sparkv1beta2.ApplicationStateRunning
+	if j.Status.AppState.State == sparkv1beta2.ApplicationStateRunning {
+		return true
+	}
+	return ptr.Deref(j.cachedPodsActive, false)
+}
+
+// observePodsActive lists the application's driver and executor Pods and records whether
+// any is still active for IsActive().
+func (j *SparkApplication) observePodsActive(ctx context.Context, c client.Client) error {
+	if j.cachedPodsActive != nil {
+		return nil
+	}
+	pods := &corev1.PodList{}
+	if err := c.List(ctx, pods,
+		client.InNamespace(j.Namespace),
+		client.MatchingLabels{sparkcommon.LabelSparkAppName: j.Name},
+	); err != nil {
+		return err
+	}
+	active := slices.ContainsFunc(pods.Items, func(p corev1.Pod) bool {
+		return p.DeletionTimestamp == nil && p.Status.Phase != corev1.PodSucceeded && p.Status.Phase != corev1.PodFailed
+	})
+	j.cachedPodsActive = &active
+	return nil
 }
 
 func (j *SparkApplication) Suspend() {
@@ -227,6 +268,13 @@ func (j *SparkApplication) PodSets(ctx context.Context, c client.Client) ([]kueu
 	// where the generated workload name must never be reused (see GetWorkloadNameExtraPart).
 	if jobframework.WorkloadSliceEnabled(j) {
 		if _, err := j.workloadSequenceNumber(ctx, c); err != nil {
+			return nil, err
+		}
+	}
+
+	// Same reason for IsActive(), which has no client either.
+	if c != nil {
+		if err := j.observePodsActive(ctx, c); err != nil {
 			return nil, err
 		}
 	}

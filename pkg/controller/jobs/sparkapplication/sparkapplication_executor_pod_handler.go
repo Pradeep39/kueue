@@ -53,9 +53,9 @@ const executorPodDebounce = 5 * time.Second
 // immediately instead of resetting the timer again.
 const executorPodMaxWait = 30 * time.Second
 
-// executorPodPredicate filters Pod events down to Spark executor Pods that carry the
-// Spark Operator's admission-webhook-assigned owning-application label. Driver Pods and
-// any non-Spark Pods are ignored before they ever reach the handler.
+// executorPodPredicate filters Pod events down to Spark executor and driver Pods that carry
+// the Spark Operator's admission-webhook-assigned owning-application label. Non-Spark Pods
+// are ignored before they ever reach the handler.
 type executorPodPredicate struct{}
 
 var _ predicate.Predicate = executorPodPredicate{}
@@ -67,12 +67,15 @@ func (executorPodPredicate) Update(e event.UpdateEvent) bool {
 func (executorPodPredicate) Delete(e event.DeleteEvent) bool { return isTrackedExecutorPod(e.Object) }
 func (executorPodPredicate) Generic(event.GenericEvent) bool { return false }
 
+// isTrackedExecutorPod also admits driver Pods. IsActive() keeps an evicted application's
+// quota until its last Pod is gone, and the driver can outlive every executor; without its
+// events nothing would reconcile the job again to release that quota.
 func isTrackedExecutorPod(obj client.Object) bool {
 	pod, ok := obj.(*corev1.Pod)
 	if !ok {
 		return false
 	}
-	return sparkutil.IsExecutorPod(pod) && pod.Labels[sparkcommon.LabelSparkAppName] != ""
+	return (sparkutil.IsExecutorPod(pod) || sparkutil.IsDriverPod(pod)) && pod.Labels[sparkcommon.LabelSparkAppName] != ""
 }
 
 // executorPodHandler enqueues a reconcile for the owning SparkApplication once executor
