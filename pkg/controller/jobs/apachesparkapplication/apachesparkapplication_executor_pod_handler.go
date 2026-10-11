@@ -152,11 +152,22 @@ func (h *executorPodHandler) schedule(obj client.Object, q workqueue.TypedRateLi
 	}
 
 	h.burstStarts[key] = now
-	h.timers[key] = h.clock.AfterFunc(h.debounce, func() {
-		q.Add(req)
-		h.mu.Lock()
+	var t clock.Timer
+	t = h.clock.AfterFunc(h.debounce, func() { h.fire(key, t, req, q) })
+	h.timers[key] = t
+}
+
+// fire runs when a debounce timer expires. It clears the key's bookkeeping only if t is still
+// the key's current timer: Reset on a timer whose callback has already started re-runs the
+// callback, and by then schedule() may have installed a newer timer, which a stale callback
+// must not orphan. A stale or repeated callback still enqueues; the workqueue de-duplicates.
+// t is read under h.mu, which schedule() holds while assigning it.
+func (h *executorPodHandler) fire(key types.NamespacedName, t clock.Timer, req reconcile.Request, q workqueue.TypedRateLimitingInterface[reconcile.Request]) {
+	h.mu.Lock()
+	if cur, ok := h.timers[key]; ok && cur == t {
 		delete(h.timers, key)
 		delete(h.burstStarts, key)
-		h.mu.Unlock()
-	})
+	}
+	h.mu.Unlock()
+	q.Add(req)
 }

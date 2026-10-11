@@ -1089,6 +1089,13 @@ Never`, or equal priorities.
 
 ## 14.3 Smaller items
 
+- Slice names fold in a count of the Workloads the application owns (§8.7). That count is "every
+  Workload ever owned" only while superseded slices are kept, which is Kueue's default: a replaced
+  slice is Finished, not deleted. If a Finished-Workload retention policy
+  (`objectRetentionPolicies.workloads.afterFinished`) deletes slices while the application still runs,
+  the count can fall back to a value a live slice uses, and the next slice's create fails with
+  `AlreadyExists`. Leave that policy unset for namespaces running elastic SparkApplications, or long
+  enough to outlive them.
 - `Scheduler.replaceOldWorkloadSlice` does not retry a failed `Finish`. Harmless for accounting
   after §10.2, but latent.
 - Under atomic scale-up, the scheduler can admit against a spec generation that has since changed:
