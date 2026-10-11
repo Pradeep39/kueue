@@ -567,6 +567,14 @@ reset on each new event, so a request reaches the workqueue only after a quiet w
 (`executorPodDebounce = 5s`). A pure quiet-window debounce can be starved indefinitely by a
 continuous stream, so a ceiling (`executorPodMaxWait = 30s`) forces a flush.
 
+**Teardown is not debounced.** Once an application's driver goes away (deleted, terminating or
+terminated: suspension, preemption or completion), every Pod event for it enqueues immediately, until
+a new driver appears. During teardown the reconcile the debounce would delay is the one that releases
+an evicted Workload's quota after its last Pod stops (§12). Debouncing it held that quota ~8s past the
+Pods' exit under preemption. The workqueue still coalesces duplicate keys, so a teardown costs a few
+reconciles, and scaling under a live driver keeps the debounce. The state expires after two minutes, so
+an application deleted outright leaves nothing behind.
+
 Per-key timers guarded by a mutex are used rather than the workqueue's own `AddAfter` delay heap,
 because staggered `AddAfter` calls from a burst each fire independently and defeat the coalescing.
 The clock is injected so the behaviour is unit-testable.

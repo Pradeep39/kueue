@@ -190,3 +190,128 @@ func TestExecutorPodPredicate(t *testing.T) {
 		})
 	}
 }
+
+func trackedDriverPod(name string) *corev1.Pod {
+	pod := trackedExecutorPod(name)
+	pod.Labels[sparkcommon.LabelSparkRole] = sparkcommon.SparkRoleDriver
+	return pod
+}
+
+func drain(t *testing.T, q workqueue.TypedRateLimitingInterface[reconcile.Request]) {
+	t.Helper()
+	for q.Len() > 0 {
+		item, _ := q.Get()
+		q.Done(item)
+	}
+}
+
+// TestExecutorPodHandlerTeardownFlushesImmediately pins the teardown fast path. Once the
+// driver goes away, the reconcile that releases an evicted Workload's quota must not wait
+// out the debounce: debouncing it held quota ~8s past the Pods' exit under preemption.
+func TestExecutorPodHandlerTeardownFlushesImmediately(t *testing.T) {
+	ctx := context.Background()
+	for name, goAway := range map[string]func(*executorPodHandler, workqueue.TypedRateLimitingInterface[reconcile.Request]){
+		"driver deleted": func(h *executorPodHandler, q workqueue.TypedRateLimitingInterface[reconcile.Request]) {
+			h.Delete(ctx, event.DeleteEvent{Object: trackedDriverPod("d")}, q)
+		},
+		"driver terminating": func(h *executorPodHandler, q workqueue.TypedRateLimitingInterface[reconcile.Request]) {
+			d := trackedDriverPod("d")
+			d.DeletionTimestamp = &metav1.Time{Time: time.Now()}
+			h.Update(ctx, event.UpdateEvent{ObjectOld: trackedDriverPod("d"), ObjectNew: d}, q)
+		},
+		"driver terminated": func(h *executorPodHandler, q workqueue.TypedRateLimitingInterface[reconcile.Request]) {
+			d := trackedDriverPod("d")
+			d.Status.Phase = corev1.PodSucceeded
+			h.Update(ctx, event.UpdateEvent{ObjectOld: trackedDriverPod("d"), ObjectNew: d}, q)
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			fakeClock := testingclock.NewFakeClock(time.Now())
+			h := newExecutorPodHandler()
+			h.clock = fakeClock
+			q := workqueue.NewTypedRateLimitingQueue(workqueue.DefaultTypedControllerRateLimiter[reconcile.Request]())
+			defer q.ShutDown()
+
+			// A pending debounced burst is superseded, not left to fire later.
+			h.Update(ctx, event.UpdateEvent{ObjectOld: trackedExecutorPod("e1"), ObjectNew: trackedExecutorPod("e1")}, q)
+			goAway(h, q)
+			if got := q.Len(); got != 1 {
+				t.Fatalf("queue length right after the driver went away = %d, want 1", got)
+			}
+			drain(t, q)
+
+			// Every later event for the application also goes straight to the queue.
+			h.Delete(ctx, event.DeleteEvent{Object: trackedExecutorPod("e2")}, q)
+			if got := q.Len(); got != 1 {
+				t.Fatalf("queue length right after an executor deletion during teardown = %d, want 1", got)
+			}
+			drain(t, q)
+
+			// The superseded timer must not fire a stray reconcile later.
+			fakeClock.Step(executorPodDebounce)
+			if got := q.Len(); got != 0 {
+				t.Errorf("queue length after the old debounce window = %d, want 0", got)
+			}
+		})
+	}
+}
+
+func TestExecutorPodHandlerTeardownEnds(t *testing.T) {
+	ctx := context.Background()
+	for name, tc := range map[string]struct {
+		after func(*executorPodHandler, *testingclock.FakeClock, workqueue.TypedRateLimitingInterface[reconcile.Request])
+	}{
+		// A resubmission brings a new driver, and scaling under it is debounced again.
+		"a new driver": {after: func(h *executorPodHandler, _ *testingclock.FakeClock, q workqueue.TypedRateLimitingInterface[reconcile.Request]) {
+			h.Create(ctx, event.CreateEvent{Object: trackedDriverPod("d2")}, q)
+		}},
+		// An application deleted outright must not stay in teardown forever.
+		"the teardown TTL": {after: func(_ *executorPodHandler, c *testingclock.FakeClock, _ workqueue.TypedRateLimitingInterface[reconcile.Request]) {
+			c.Step(teardownTTL + time.Second)
+		}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			fakeClock := testingclock.NewFakeClock(time.Now())
+			h := newExecutorPodHandler()
+			h.clock = fakeClock
+			q := workqueue.NewTypedRateLimitingQueue(workqueue.DefaultTypedControllerRateLimiter[reconcile.Request]())
+			defer q.ShutDown()
+
+			h.Delete(ctx, event.DeleteEvent{Object: trackedDriverPod("d")}, q)
+			tc.after(h, fakeClock, q)
+			drain(t, q)
+
+			h.Delete(ctx, event.DeleteEvent{Object: trackedExecutorPod("e")}, q)
+			if got := q.Len(); got != 0 {
+				t.Fatalf("an executor deletion after teardown ended was enqueued immediately (queue length %d); want it debounced", got)
+			}
+			fakeClock.Step(executorPodDebounce)
+			if got := q.Len(); got != 1 {
+				t.Errorf("queue length after the debounce window = %d, want 1", got)
+			}
+		})
+	}
+}
+
+// TestExecutorPodHandlerScaleDownStaysDebounced: with the driver alive, Dynamic Allocation
+// deleting executors is ordinary scaling and keeps the debounce.
+func TestExecutorPodHandlerScaleDownStaysDebounced(t *testing.T) {
+	ctx := context.Background()
+	fakeClock := testingclock.NewFakeClock(time.Now())
+	h := newExecutorPodHandler()
+	h.clock = fakeClock
+	q := workqueue.NewTypedRateLimitingQueue(workqueue.DefaultTypedControllerRateLimiter[reconcile.Request]())
+	defer q.ShutDown()
+
+	h.Update(ctx, event.UpdateEvent{ObjectOld: trackedDriverPod("d"), ObjectNew: trackedDriverPod("d")}, q)
+	for _, e := range []string{"e1", "e2", "e3"} {
+		h.Delete(ctx, event.DeleteEvent{Object: trackedExecutorPod(e)}, q)
+	}
+	if got := q.Len(); got != 0 {
+		t.Fatalf("scale-down deletions under a live driver enqueued immediately (queue length %d)", got)
+	}
+	fakeClock.Step(executorPodDebounce)
+	if got := q.Len(); got != 1 {
+		t.Errorf("queue length after the debounce window = %d, want 1", got)
+	}
+}

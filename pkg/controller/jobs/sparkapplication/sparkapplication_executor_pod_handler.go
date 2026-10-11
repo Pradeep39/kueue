@@ -53,6 +53,10 @@ const executorPodDebounce = 5 * time.Second
 // immediately instead of resetting the timer again.
 const executorPodMaxWait = 30 * time.Second
 
+// teardownTTL bounds how long an application is treated as tearing down after its driver
+// went away, so an application deleted outright does not leave its entry behind forever.
+const teardownTTL = 2 * time.Minute
+
 // executorPodPredicate filters Pod events down to Spark executor and driver Pods that carry
 // the Spark Operator's admission-webhook-assigned owning-application label. Non-Spark Pods
 // are ignored before they ever reach the handler.
@@ -103,6 +107,8 @@ type executorPodHandler struct {
 	mu          sync.Mutex
 	timers      map[types.NamespacedName]clock.Timer
 	burstStarts map[types.NamespacedName]time.Time
+	// teardowns records applications whose driver is going away, and when that was seen.
+	teardowns map[types.NamespacedName]time.Time
 }
 
 func newExecutorPodHandler() *executorPodHandler {
@@ -112,19 +118,30 @@ func newExecutorPodHandler() *executorPodHandler {
 		maxWait:     executorPodMaxWait,
 		timers:      make(map[types.NamespacedName]clock.Timer),
 		burstStarts: make(map[types.NamespacedName]time.Time),
+		teardowns:   make(map[types.NamespacedName]time.Time),
 	}
 }
 
 func (h *executorPodHandler) Create(_ context.Context, e event.CreateEvent, q workqueue.TypedRateLimitingInterface[reconcile.Request]) {
-	h.schedule(e.Object, q)
+	h.schedule(e.Object, false, q)
 }
 
 func (h *executorPodHandler) Update(_ context.Context, e event.UpdateEvent, q workqueue.TypedRateLimitingInterface[reconcile.Request]) {
-	h.schedule(e.ObjectNew, q)
+	h.schedule(e.ObjectNew, false, q)
 }
 
 func (h *executorPodHandler) Delete(_ context.Context, e event.DeleteEvent, q workqueue.TypedRateLimitingInterface[reconcile.Request]) {
-	h.schedule(e.Object, q)
+	h.schedule(e.Object, true, q)
+}
+
+// driverGoingAway reports whether pod is a driver that is being deleted, has been deleted,
+// or has terminated.
+func driverGoingAway(pod *corev1.Pod, deleted bool) bool {
+	if !sparkutil.IsDriverPod(pod) {
+		return false
+	}
+	return deleted || pod.DeletionTimestamp != nil ||
+		pod.Status.Phase == corev1.PodSucceeded || pod.Status.Phase == corev1.PodFailed
 }
 
 func (h *executorPodHandler) Generic(context.Context, event.GenericEvent, workqueue.TypedRateLimitingInterface[reconcile.Request]) {
@@ -135,7 +152,15 @@ func (h *executorPodHandler) Generic(context.Context, event.GenericEvent, workqu
 // reconcile.Request only reaches the queue once no further event arrives for that key
 // for a full debounce window — unless the burst has already run for executorPodMaxWait,
 // in which case this flushes immediately instead of resetting again.
-func (h *executorPodHandler) schedule(obj client.Object, q workqueue.TypedRateLimitingInterface[reconcile.Request]) {
+//
+// While the application is tearing down — its driver is going away, as on suspension,
+// preemption or completion — every event enqueues immediately instead. The debounce exists
+// to coalesce Dynamic Allocation's scaling, but during teardown the reconcile it delays is
+// the one that releases an evicted Workload's quota once the last Pod is gone (IsActive),
+// and debouncing it held that quota ~8s past the Pods' exit. The workqueue still coalesces
+// duplicate keys, so a teardown burst costs a handful of reconciles. A new driver ends
+// teardown, so scaling under a live driver keeps the debounce.
+func (h *executorPodHandler) schedule(obj client.Object, deleted bool, q workqueue.TypedRateLimitingInterface[reconcile.Request]) {
 	pod, ok := obj.(*corev1.Pod)
 	if !ok {
 		return
@@ -151,6 +176,30 @@ func (h *executorPodHandler) schedule(obj client.Object, q workqueue.TypedRateLi
 	defer h.mu.Unlock()
 
 	now := h.clock.Now()
+	for k, since := range h.teardowns {
+		if now.Sub(since) > teardownTTL {
+			delete(h.teardowns, k)
+		}
+	}
+	switch {
+	case driverGoingAway(pod, deleted):
+		if _, ok := h.teardowns[key]; !ok {
+			h.teardowns[key] = now
+		}
+	case sparkutil.IsDriverPod(pod):
+		// A live driver: the application is running, or was resubmitted.
+		delete(h.teardowns, key)
+	}
+	if _, tearingDown := h.teardowns[key]; tearingDown {
+		if t, ok := h.timers[key]; ok {
+			t.Stop()
+			delete(h.timers, key)
+			delete(h.burstStarts, key)
+		}
+		q.Add(req)
+		return
+	}
+
 	if t, ok := h.timers[key]; ok {
 		if now.Sub(h.burstStarts[key]) >= h.maxWait {
 			t.Stop()
