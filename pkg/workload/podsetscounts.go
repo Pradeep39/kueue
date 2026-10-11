@@ -131,7 +131,13 @@ func ExtractPodSetCountsFromWorkload(wl *kueue.Workload) PodSetsCounts {
 func ApplyPodSetCounts(wl *kueue.Workload, counts PodSetsCounts) {
 	for i := range wl.Spec.PodSets {
 		if count, found := counts[wl.Spec.PodSets[i].Name]; found {
-			wl.Spec.PodSets[i].Count = count
+			ps := &wl.Spec.PodSets[i]
+			ps.Count = count
+			// The API rejects minCount > count. A partial-scale-up slice whose count is
+			// lowered in place below the chain's floor would otherwise fail every update.
+			if ps.MinCount != nil && *ps.MinCount > count {
+				ps.MinCount = ptr.To(count)
+			}
 		}
 	}
 }
