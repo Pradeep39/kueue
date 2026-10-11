@@ -18,7 +18,7 @@ Reading order for a reviewer short on time: §2.2 (why gang scheduling is the wr
 (the central asymmetry), §10.2 (chain-scoped accounting).
 
 Code references are paths relative to the repository root. This describes a working implementation
-validated on a live cluster. Known gaps are stated as such — §6, §14, §A9.
+validated on a live cluster. Known gaps are stated as such — §14 and §A9.
 
 Diagrams: [`diagrams/`](./diagrams/README.md).
 
@@ -127,6 +127,8 @@ may have, and keeps its accounting honest as that changes.**
 - **NG3.** Guaranteeing a workload can reach its configured *maximum*, which is a limit rather
   than a reservation.
 - **NG4.** MultiKueue support in the first iteration.
+- **NG5.** Integration tests against a live scheduler in CI. Validation here is on a live cluster
+  (§13), and the unit tests cover each mechanism with a negative control.
 
 # 3. Proposal
 
@@ -173,12 +175,13 @@ usable by another (US-4); no behaviour change for existing elastic `batch/v1.Job
 | **R-10** | Existing elastic integrations MUST be unaffected. | Met |
 | **R-11** | The number of workers awaiting quota SHOULD remain proportionate to the quota available. | Met with `spark.kubernetes.allocation.maxPendingPods` — §14.1 |
 | **R-12** | Time-to-admission under a saturated queue SHOULD remain bounded. | Met with partial scale-up (`elastic-job-scale-up-strategy: partial`) — §14.1 |
-| **R-13** | The per-worker cost used for accounting MUST match what the framework actually requests of Kubernetes, for every resource the queue governs. | Met for CPU and memory — upstream for Kubeflow, this contribution for Apache (§8.5, §A5); the general risk remains — §6.3 |
+| **R-13** | The per-worker cost used for accounting MUST match what the framework actually requests of Kubernetes, for every resource the queue governs. | Met for CPU and memory — upstream for Kubeflow, this contribution for Apache (§8.5, §A5), checked against live Pods' requests (§13) |
 
 R-11 and R-12 are met by mechanisms an application opts into, not by default behaviour: a Spark
 setting that bounds Pending executors at the source, and KEP-12100 partial scale-up. Without them
-the behaviour is as it was, and §14.1 records what that costs. Whether Kueue should apply the Spark
-setting itself is open (§6.1).
+the behaviour is as it was, and §14.1 records what that costs. The Spark setting stays the
+application's (or the platform's) to make: Kueue setting it would change the framework's autoscaling
+policy, which NG2 rules out.
 
 Two invariants define correctness. Both are checked continuously by an automated harness, and both
 are necessary — neither implies the other.
@@ -207,44 +210,20 @@ from the same value the queue charges, the check is circular and passes regardle
 | Preemption hands a victim's quota to the preemptor while the victim's Pods still run. | Quota is held until no driver or executor Pod is active (§12). |
 | Preemption under DA evicts whole applications, repeatedly. | Not mitigated here; a separate, Spark-aware proposal (§14.2). |
 | Silent oversubscription. | SC-2 is a first-class success criterion, not an implementation detail. |
-| The predicted worker Pod diverges from the one the framework actually creates. | R-13 holds for CPU and memory; the structural risk remains — §6.3. |
+| The predicted worker Pod diverges from the one the framework actually creates. | R-13, checked against live Pods' requests (§13); §15 sets the same rule for any new integration. |
 
-# 6. Open questions
+# 6. Settled questions
 
-## 6.1 Sizing guidance versus enforcement
+Questions earlier drafts left open, and how they were settled:
 
-An application configured to want far more than its quota can ever supply behaves correctly but
-inefficiently: it repeatedly asks and is repeatedly refused. §14.1 settles the mechanism —
-`spark.kubernetes.allocation.maxPendingPods` bounds the asking at its source, and partial scale-up
-lets whatever is granted be used. What remains open is who sets the bound: today the application
-does, so R-11 holds only for applications that do. Kueue's webhook could default it for elastic DA
-applications that leave it unset, at the cost of Kueue changing a framework setting the user did
-not write. A bound enforced by Kueue itself is not an option: Kueue cannot stop DA creating Pods
-(§7.1).
-
-## 6.2 Scope deferred
-
-MultiKueue support, and integration testing against a live scheduler in CI.
-
-## 6.3 Predicted cost versus actual request — the structural risk
-
-The item a reviewer should weigh most carefully, because it is a property of the *approach* rather
-than of this implementation.
-
-Kueue admits a workload by reconstructing a predicted worker Pod from the workload's resource and
-charging quota for it. The Pod that actually runs is built independently, by the framework, from
-the framework's own configuration. Nothing reconciles the two and Kueue never reads the running Pod
-back. When the two derivations disagree, **the cluster follows reality and the ledger follows the
-prediction**, silently.
-
-Two such divergences existed in the Kubeflow integration and were fixed upstream (§8.5), which is
-why R-13 is marked met. **The general risk is not closed by fixing two instances.** Any integration that predicts a
-worker Pod from a custom resource inherits this failure mode, and elasticity makes it worse: a
-static workload's divergence is a fixed error found once, whereas an autoscaling workload
-multiplies it by a worker count that changes continuously and without bound. A complete design
-would say how the predicted cost is kept faithful — validating it against observed Pods, deriving
-it from the framework's own logic rather than re-implementing it, or reporting a discrepancy rather
-than absorbing it. This proposal guarantees only the two resources Kueue governs here.
+- **Who bounds the executors waiting for quota.** The application or platform, through
+  `spark.kubernetes.allocation.maxPendingPods` (§14.1). Kueue setting it would change the framework's
+  autoscaling policy, which NG2 rules out.
+- **Deferred scope.** MultiKueue support and CI integration tests are non-goals (NG4, NG5).
+- **Predicted cost against the Pod that actually runs.** Kueue charges a Pod it predicts from the
+  workload's resource and never reads the running Pod back, so the two must be derived the same way.
+  For CPU and memory they are (§8.5), and the validation checked the charge against live Pods'
+  requests (§13). §15 makes the same rule a requirement for any further integration.
 
 ---
 
@@ -479,7 +458,7 @@ needing fresh quota. Omitting `initialExecutors` makes both Kueue and Spark star
 **Attribution.** For the Kubeflow integration the charging rules below are implemented in
 `pkg/controller/jobs/sparkapplication/sparkapplication_resources.go`, which is **upstream code
 this contribution does not modify**. They are documented here because elastic accounting is only
-as good as the per-worker cost it multiplies (§6.3), and because the Apache integration in Part III
+as good as the per-worker cost it multiplies (§8.5), and because the Apache integration in Part III
 implements the equivalent arithmetic in its own package, where it *is* part of this contribution.
 
 The governing rule: **a PodSet must charge what the kubelet will be asked for.** Where two surfaces
@@ -1009,6 +988,8 @@ violated SC-2 before the release fix above and held SC-1, SC-2 and the live-Pod 
 across 9,720 SC-2 checks, with evictions falling from 13 to 5–6 per run. The thrash those evictions
 represent is §14.2.
 
+In every run, Kueue's per-Pod charge matched the memory and CPU the live Pods requested (R-13).
+
 # 14. Known gaps
 
 ## 14.1 Gate-blocked Pods inflate the requested count — resolved (R-11, R-12)
@@ -1041,8 +1022,8 @@ Pending executors Spark keeps, and gated Pods are Pending. At 2 it held each app
 two gated Pods, cut the largest request-over-grant gap from 7 to 2, halved Workload writes and
 removed the Workload-controller conflicts (§13). This is the "incremental growth" candidate, enforced
 by the framework that creates the Pods rather than by Kueue capping a count it does not control, so
-the gated Pods and the request stay in step. It is a per-application setting; §6.1 asks who should
-set it.
+the gated Pods and the request stay in step. It is a per-application setting by design: Kueue
+bounds what a workload may consume, not how much it asks for (NG2).
 
 **R-12 — admit the part that fits.** With the `ElasticJobsViaWorkloadSlicesWithPartialReplicaScaleUp`
 gate on and `kueue.x-k8s.io/elastic-job-scale-up-strategy: "partial"` on the application, `PodSets()`
@@ -1116,7 +1097,12 @@ The generic machinery is integration-agnostic. Adapting it requires:
 5. **An `IsActive()` that reports live Pods,** not a state field the framework advances before its
    Pods stop; otherwise an evicted workload's quota is released early (§12).
 6. **Optionally, `MinCount` on the elastic PodSet** when the job opts into partial scale-up (§14.1).
-7. **Nothing else.** Chain-scoped accounting, ungating, preemption exclusion and the scale-down
+7. **A per-worker cost derived the way the framework derives it.** Kueue charges the Pod it predicts
+   and never reads the running Pod back, so a wrong prediction goes unnoticed, and elasticity
+   multiplies it by a worker count that keeps changing. Derive CPU and memory from the framework's
+   own rules (for Spark, base plus overhead rather than the pod template; §8.5), and check the charge
+   against live Pods' requests once on a cluster, as §13 did.
+8. **Nothing else.** Chain-scoped accounting, ungating, preemption exclusion and the scale-down
    patch are all generic.
 
 The two questions to answer before starting: does the framework's controller restart the workload
