@@ -129,7 +129,12 @@ func (j *SparkApplication) IsSuspended() bool {
 // to 15 live Pods against a 12-slot cohort.
 //
 // Pods already being deleted are not counted, matching batch/Job's status.active: a Pod
-// stuck terminating on a lost node must not pin its quota forever.
+// stuck terminating on a lost node must not pin its quota forever. Nor are Pods still behind
+// a scheduling gate: one has never been bound, so it holds nothing, and once the Workload is
+// evicted no admitted slice grants it, so the ungater will not release it. Counting it pinned
+// the quota of a preempted application indefinitely: the driver created one more executor in
+// the second it was suspended, that Pod stayed gated for minutes, and the application never
+// requeued. An ungated Pod still counts, because it can bind at any moment.
 func (j *SparkApplication) IsActive() bool {
 	if j.Status.AppState.State == sparkv1beta2.ApplicationStateRunning {
 		return true
@@ -151,7 +156,8 @@ func (j *SparkApplication) observePodsActive(ctx context.Context, c client.Clien
 		return err
 	}
 	active := slices.ContainsFunc(pods.Items, func(p corev1.Pod) bool {
-		return p.DeletionTimestamp == nil && p.Status.Phase != corev1.PodSucceeded && p.Status.Phase != corev1.PodFailed
+		return p.DeletionTimestamp == nil && len(p.Spec.SchedulingGates) == 0 &&
+			p.Status.Phase != corev1.PodSucceeded && p.Status.Phase != corev1.PodFailed
 	})
 	j.cachedPodsActive = &active
 	return nil

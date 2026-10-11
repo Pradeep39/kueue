@@ -1474,6 +1474,22 @@ func TestReconcilerKeepsEvictedQuotaWhilePodsRun(t *testing.T) {
 			pods:         []client.Object{elasticExecutorPod("e1", corev1.PodRunning, true)},
 			wantReserved: false,
 		},
+		// The driver created one more executor in the second it was suspended; it stayed gated
+		// for minutes and, counted, kept the preempted application's quota indefinitely.
+		"a gated executor alone does not hold the reservation": {
+			state: sparkappv1beta2.ApplicationStateSuspended,
+			pods: []client.Object{func() *corev1.Pod {
+				p := elasticExecutorPod("e1", corev1.PodPending, false)
+				p.Spec.SchedulingGates = []corev1.PodSchedulingGate{{Name: kueue.ElasticJobSchedulingGate}}
+				return p
+			}()},
+			wantReserved: false,
+		},
+		"an ungated pending executor still holds the reservation": {
+			state:        sparkappv1beta2.ApplicationStateSuspended,
+			pods:         []client.Object{elasticExecutorPod("e1", corev1.PodPending, false)},
+			wantReserved: true,
+		},
 		"terminated pods do not hold the reservation": {
 			state:        sparkappv1beta2.ApplicationStateSuspended,
 			pods:         []client.Object{elasticExecutorPod("e1", corev1.PodSucceeded, false)},
