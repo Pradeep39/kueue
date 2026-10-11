@@ -33,6 +33,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/component-base/featuregate"
 	testingclock "k8s.io/utils/clock/testing"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
@@ -40,6 +41,7 @@ import (
 	configapi "sigs.k8s.io/kueue/apis/config/v1beta2"
 	kueue "sigs.k8s.io/kueue/apis/kueue/v1beta2"
 	schdcache "sigs.k8s.io/kueue/pkg/cache/scheduler"
+	"sigs.k8s.io/kueue/pkg/constants"
 	"sigs.k8s.io/kueue/pkg/controller/jobframework"
 	"sigs.k8s.io/kueue/pkg/features"
 	"sigs.k8s.io/kueue/pkg/podset"
@@ -1350,5 +1352,88 @@ func TestRunWithPodSetsInfoIsIdempotentAcrossSlices(t *testing.T) {
 	// User annotations must not be collateral damage.
 	if got := job.Spec.Driver.Annotations["user-annotation"]; got != "must-survive" {
 		t.Errorf("driver user-annotation = %q, want %q", got, "must-survive")
+	}
+}
+
+// TestPodSetsPartialScaleUpMinCount pins the KEP-12100 opt-in. Without MinCount a scale-up
+// slice is all-or-nothing: on a saturated ClusterQueue, capacity that frees in pieces smaller
+// than the requested delta sits idle until the whole delta fits (observed on a 12-slot
+// cohort: 4 slots free for ~8s while a slice asking for +7 executors waited).
+func TestPodSetsPartialScaleUpMinCount(t *testing.T) {
+	daConf := map[string]string{
+		"spark.dynamicAllocation.enabled":      "true",
+		"spark.dynamicAllocation.minExecutors": "3",
+		"spark.dynamicAllocation.maxExecutors": "30",
+	}
+	executorPods := []client.Object{
+		elasticExecutorPod("e1", corev1.PodRunning, false),
+		elasticExecutorPod("e2", corev1.PodRunning, false),
+		elasticExecutorPod("e3", corev1.PodRunning, false),
+		elasticExecutorPod("e4", corev1.PodPending, false),
+		elasticExecutorPod("e5", corev1.PodPending, false),
+	}
+	cases := map[string]struct {
+		partialGate  bool
+		strategy     string
+		conf         map[string]string
+		wantMinCount *int32
+	}{
+		"partial strategy with the gate on sets MinCount to the derived count": {
+			partialGate:  true,
+			strategy:     constants.ElasticJobScaleUpStrategyPartial,
+			conf:         daConf,
+			wantMinCount: ptr.To[int32](5),
+		},
+		"atomic strategy leaves the PodSet all-or-nothing": {
+			partialGate: true,
+			strategy:    constants.ElasticJobScaleUpStrategyAtomic,
+			conf:        daConf,
+		},
+		"no strategy annotation defaults to atomic": {
+			partialGate: true,
+			conf:        daConf,
+		},
+		"gate off ignores the annotation": {
+			strategy: constants.ElasticJobScaleUpStrategyPartial,
+			conf:     daConf,
+		},
+		// A static executor pool never scales up, so it has nothing to admit partially.
+		"dynamic allocation off is never partial": {
+			partialGate: true,
+			strategy:    constants.ElasticJobScaleUpStrategyPartial,
+			conf:        map[string]string{"spark.executor.instances": "5"},
+		},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			features.SetFeatureGatesDuringTest(t, map[featuregate.Feature]bool{
+				features.ElasticJobsViaWorkloadSlices:                          true,
+				features.ElasticJobsViaWorkloadSlicesWithPartialReplicaScaleUp: tc.partialGate,
+			})
+			w := sparkapplicationtesting.MakeSparkApplication("app", "ns").
+				Annotation(workloadslicing.EnabledAnnotationKey, workloadslicing.EnabledAnnotationValue)
+			if tc.strategy != "" {
+				w = w.Annotation(constants.ElasticJobScaleUpStrategyAnnotationKey, tc.strategy)
+			}
+			obj := w.Obj()
+			obj.Spec.Executor.Instances = nil
+			obj.Spec.SparkConf = tc.conf
+
+			clientBuilder := utiltesting.NewClientBuilder().WithObjects(executorPods...)
+			c := clientBuilder.Build()
+			if err := SetupIndexes(t.Context(), utiltesting.AsIndexer(clientBuilder)); err != nil {
+				t.Fatalf("failed to setup indexes: %v", err)
+			}
+			podSets, err := fromObject(obj).PodSets(t.Context(), c)
+			if err != nil {
+				t.Fatalf("PodSets() returned an unexpected error: %v", err)
+			}
+			if podSets[0].MinCount != nil {
+				t.Errorf("driver MinCount = %d, want nil: the driver is a singleton", *podSets[0].MinCount)
+			}
+			if diff := cmp.Diff(tc.wantMinCount, podSets[1].MinCount); diff != "" {
+				t.Errorf("executor MinCount mismatch (-want +got):\n%s", diff)
+			}
+		})
 	}
 }

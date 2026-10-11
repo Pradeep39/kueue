@@ -36,6 +36,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	kueue "sigs.k8s.io/kueue/apis/kueue/v1beta2"
+	"sigs.k8s.io/kueue/pkg/constants"
 	"sigs.k8s.io/kueue/pkg/controller/jobframework"
 	"sigs.k8s.io/kueue/pkg/features"
 	"sigs.k8s.io/kueue/pkg/podset"
@@ -202,6 +203,15 @@ func (j *SparkApplication) PodSets(ctx context.Context, c client.Client) ([]kueu
 		Template: *executorPodTemplateSpec,
 		Count:    executorCount,
 	}
+	// KEP-12100 partial scale-up. Under a saturated queue an all-or-nothing scale-up slice
+	// waits until the whole delta fits, so capacity that frees in smaller pieces sits idle
+	// while the request (inflated by gate-blocked executors) cannot be admitted. MinCount
+	// lets the scheduler admit whatever part of the delta fits. Set to the current count, as
+	// for Ray: the initial Workload stays atomic, and jobframework copies the chain's floor
+	// forward onto each scale-up probe (prepareWorkloadSliceForScaleUp).
+	if partialScaleUpEnabled(j) {
+		podSets[1].MinCount = ptr.To(executorCount)
+	}
 
 	if err := setTopologyRequestToPodSetIfEnabled(
 		&podSets[1], executorPodTemplateSpec,
@@ -219,6 +229,15 @@ func (j *SparkApplication) PodSets(ctx context.Context, c client.Client) ([]kueu
 	}
 
 	return podSets, nil
+}
+
+// partialScaleUpEnabled reports whether j opted into KEP-12100 partial scale-up. Only the
+// executor PodSet is ever variable: the driver is a singleton.
+func partialScaleUpEnabled(j *SparkApplication) bool {
+	return features.Enabled(features.ElasticJobsViaWorkloadSlicesWithPartialReplicaScaleUp) &&
+		jobframework.WorkloadSliceEnabled(j) &&
+		j.dynamicAllocationEnabled() &&
+		j.GetAnnotations()[constants.ElasticJobScaleUpStrategyAnnotationKey] == constants.ElasticJobScaleUpStrategyPartial
 }
 
 func (j *SparkApplication) RunWithPodSetsInfo(ctx context.Context, _ client.Client, podSetsInfo []podset.PodSetInfo) error {
