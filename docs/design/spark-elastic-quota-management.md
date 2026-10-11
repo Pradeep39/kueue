@@ -2,7 +2,7 @@
 title: "Elastic Quota Management for Spark Workloads in Kueue"
 subtitle: "Proposal, design, and the Apache Spark Kubernetes Operator addendum"
 author: "Pradeep Reddy"
-date: "2026-10-09"
+date: "2026-10-11"
 ---
 
 # 0. About this document
@@ -71,8 +71,8 @@ has exactly such a minimum: the driver plus **`max(minExecutors, initialExecutor
 the count Spark starts with. (`spark.executor.instances`, where it is also set, joins that
 maximum — Spark takes the largest of the three; §8.3.) Admitting less leaves a half-formed
 application holding quota it cannot use, so the floor is admitted atomically: both PodSets go in
-the first workload slice, which is granted whole or not at all, and partial admission is rejected
-outright for elastic jobs.
+the first workload slice, which is granted whole or not at all. That holds under the opt-in partial
+scale-up of §14.1 too: only growth *above* the floor can be admitted in part.
 
 The mistake is extending it to the *peak*. A reservation sized for peak demand is held for the
 workload's entire lifetime whether the capacity is used or not: for an interactive session idle
@@ -171,9 +171,14 @@ usable by another (US-4); no behaviour change for existing elastic `batch/v1.Job
 | **R-8** | A workload MUST be able to start below its configured maximum, and MUST NOT be rejected merely because its maximum exceeds available quota. | Met |
 | **R-9** | Behaviour for non-elastic workloads MUST be unchanged, including the immutability guarantees they rely on. | Met |
 | **R-10** | Existing elastic integrations MUST be unaffected. | Met |
-| **R-11** | The number of workers awaiting quota SHOULD remain proportionate to the quota available. | **Not met** — §14.1 |
-| **R-12** | Time-to-admission under a saturated queue SHOULD remain bounded. | **Not met** — §14.1 |
+| **R-11** | The number of workers awaiting quota SHOULD remain proportionate to the quota available. | Met with `spark.kubernetes.allocation.maxPendingPods` — §14.1 |
+| **R-12** | Time-to-admission under a saturated queue SHOULD remain bounded. | Met with partial scale-up (`elastic-job-scale-up-strategy: partial`) — §14.1 |
 | **R-13** | The per-worker cost used for accounting MUST match what the framework actually requests of Kubernetes, for every resource the queue governs. | Met for CPU and memory — upstream for Kubeflow, this contribution for Apache (§8.5, §A5); the general risk remains — §6.3 |
+
+R-11 and R-12 are met by mechanisms an application opts into, not by default behaviour: a Spark
+setting that bounds Pending executors at the source, and KEP-12100 partial scale-up. Without them
+the behaviour is as it was, and §14.1 records what that costs. Whether Kueue should apply the Spark
+setting itself is open (§6.1).
 
 Two invariants define correctness. Both are checked continuously by an automated harness, and both
 are necessary — neither implies the other.
@@ -198,7 +203,9 @@ from the same value the queue charges, the check is circular and passes regardle
 | Accounting for a workload requires modifying it, restarting it. | R-5: size is observed, never written back. |
 | Quota released on scale-down is not actually reusable. | R-4 is stated as an outcome and validated, not assumed. |
 | Elasticity weakens guarantees non-elastic users depend on. | R-9; every relaxation is confined to elastic workloads. |
-| A workload is admitted, then starved of the growth it needs. | R-8; §14.1 records where this is currently imperfect. |
+| A workload is admitted, then starved of the growth it needs. | R-8; R-12 via partial scale-up, so freed capacity is used as it appears (§14.1). |
+| Preemption hands a victim's quota to the preemptor while the victim's Pods still run. | Quota is held until no driver or executor Pod is active (§12). |
+| Preemption under DA evicts whole applications, repeatedly. | Not mitigated here; a separate, Spark-aware proposal (§14.2). |
 | Silent oversubscription. | SC-2 is a first-class success criterion, not an implementation detail. |
 | The predicted worker Pod diverges from the one the framework actually creates. | R-13 holds for CPU and memory; the structural risk remains — §6.3. |
 
@@ -207,9 +214,13 @@ from the same value the queue charges, the check is circular and passes regardle
 ## 6.1 Sizing guidance versus enforcement
 
 An application configured to want far more than its quota can ever supply behaves correctly but
-inefficiently: it repeatedly asks and is repeatedly refused. It is unsettled whether the answer is
-documented guidance (size the maximum against the quota; start at the floor), a bound enforced by
-Kueue, or both. Affects R-11 and R-12.
+inefficiently: it repeatedly asks and is repeatedly refused. §14.1 settles the mechanism —
+`spark.kubernetes.allocation.maxPendingPods` bounds the asking at its source, and partial scale-up
+lets whatever is granted be used. What remains open is who sets the bound: today the application
+does, so R-11 holds only for applications that do. Kueue's webhook could default it for elastic DA
+applications that leave it unset, at the cost of Kueue changing a framework setting the user did
+not write. A bound enforced by Kueue itself is not an option: Kueue cannot stop DA creating Pods
+(§7.1).
 
 ## 6.2 Scope deferred
 
@@ -451,8 +462,9 @@ the floor rather than admitting the driver without its initial executors.
 
 The upper clamp **narrows but does not close** the gated-Pod loop (§14.1): it converts an unbounded
 climb into a bounded over-request, but when `maxExecutors` exceeds what the queue can grant the
-over-request still cannot be admitted. Closing it properly needs a bound derived from the queue's
-capacity, which the `PodSets(ctx, client)` signature does not expose.
+over-request still cannot be admitted. A bound derived from the queue's capacity is not needed to
+close it, and the `PodSets(ctx, client)` signature could not supply one: §14.1 bounds the request at
+its source instead, and makes an over-request harmless to admission.
 
 Unchanged: with DA disabled, the static count path short-circuits before any of this; with no
 bounds configured the clamp is the identity function.
@@ -460,7 +472,7 @@ bounds configured the clamp is the identity function.
 **Operational consequence.** With `initialExecutors: 1` and `minExecutors: 3` the first Workload
 is driver 1 + executor 1 and the floor of 3 is reached by two further slice replacements, each
 needing fresh quota. Omitting `initialExecutors` makes both Kueue and Spark start at
-`minExecutors`, so the floor is admitted atomically. This is the cheapest lever on §14.1.
+`minExecutors`, so the floor is admitted atomically.
 
 ## 8.5 What Kueue charges — upstream behaviour this design depends on
 
@@ -702,7 +714,7 @@ entirely. `ExtractPodSetCountsFromWorkload` gained a doc note pointing at the ne
 naming is what made this easy to get wrong, so part of the mitigation is documentary.
 
 With the cap correct, surplus executors stay `Pending` rather than running, which makes §14.1 more
-visible. The two want addressing together.
+visible. §14.1 describes how that is addressed.
 
 ## 9.6 Why sizing and gating are both needed
 
@@ -902,6 +914,7 @@ Two fixes general to any elastic-job integration, not specific to Spark:
 | Executor Pod list fails | `PodSets()` returns the error; reconcile retries. | No partial accounting is written. |
 | Job deleted and recreated with the same chain-root name | Separate chains, via the job UID. | Prevents undercounting two independent jobs. |
 | Feature gate off | `sliceChainKey` returns empty; original accounting path. | No behaviour change for non-elastic clusters. |
+| Workload evicted (e.g. preempted) while its Pods still run | Quota is held until no driver or executor Pod is active, then released. | See below. |
 
 | Signal | Where | Use |
 |---|---|---|
@@ -911,6 +924,23 @@ Two fixes general to any elastic-job integration, not specific to Spark:
 | `kueue_cluster_queue_resource_usage` | metrics | Same source as `flavorsUsage`; graphable against `..._nominal_quota`. |
 
 The two chain-accounting lines are at V(3), so `--v=3` is required to observe them.
+
+**When an evicted application gives its quota back.** The job reconciler releases an evicted
+Workload's quota once `IsActive()` reports false, and `IsActive()` was `AppState == RUNNING` — upstream
+code from the original integration, affecting any preempted SparkApplication, elastic or not. On
+suspend the operator moves to `SUSPENDING` and then `SUSPENDED` within about a second, while the
+driver and executors run for several more, so the quota went to the preemptor while the victim still
+held it. Under preemption on a 12-slot cohort: three executors running with no grant for ~5s per
+eviction, and up to 15 live Pods — an SC-2 breach the ledger never showed.
+
+`IsActive()` now also holds while any driver or executor Pod is neither terminated nor being
+deleted. That is the jobframework contract ("returns true if there are any running pods") and
+`batch/v1.Job`'s `status.active`. Pods already being deleted are not counted, so a Pod stuck
+terminating on a lost node cannot pin its quota. `IsActive()` has no client, so `PodSets()` records
+the observation; the eviction path always calls `PodSets()` first, because the evicted Workload is
+compared against the job before the release step runs. The Pod watch now admits driver Pods too:
+the driver can outlive every executor, and without its events nothing would reconcile the job again
+to release the quota.
 
 # 13. Validation
 
@@ -945,12 +975,32 @@ workers exactly, and quota released on scale-down was promptly reusable.
 **One limitation bounds what that proves.** The harness derived each worker's cost from the same
 configured value Kueue charges, so for memory it compared the ledger against a restatement of its
 own assumption. It verifies that the ledger tracks Pod *count* correctly; it cannot detect a
-systematic per-Pod under-charge. Summing actual `resources.requests` from the Pod snapshot removes
-the circularity and is a prerequisite for the next validation round.
+systematic per-Pod under-charge.
+
+**Second round, for R-11, R-12 and preemption.** The harness was rebuilt to watch rather than sample:
+every Pod, Workload and `SparkApplication` change, the controller and driver logs, and the
+apiserver's own 409 counts. It reads live Pods directly rather than Kueue's charge, which removes the
+circularity above, and it marks every watch restart so a lost deletion cannot leave a phantom Pod.
+Three DA applications (SparkALS, 200 tasks, `minExecutors: 3`, `maxExecutors: 30`) ran on a cohort of
+two 6-CPU/5376Mi queues with borrowing — twelve executor slots, exactly filled by the three floors.
+
+| Configuration | Peak gated Pods | Largest pending request | Workload writes | Workload-controller conflicts | Free capacity idle behind a pending scale-up |
+|---|---|---|---|---|---|
+| Neither (atomic, unbounded) | 16 | 10 | 434 | 50 | 7s |
+| Partial scale-up | 22 | 12 | 426 | 70 | **0s** |
+| `maxPendingPods: 2` | **6** | **5** | 194 | **0** | 0s |
+| Both | **6** | **5** | 216 | 4 | ~0s |
+
+Applications that did not opt in were unchanged on the new image (minCount absent; 15 peak gated, 15s
+idle). With aggressive timeouts (`schedulerBacklogTimeout: 2s`, `executorIdleTimeout: 5s`) the same
+held. Three preemption scenarios — two low-priority applications, then a high-priority one —
+violated SC-2 before the release fix above and held SC-1, SC-2 and the live-Pod ceiling after it,
+across 9,720 SC-2 checks, with evictions falling from 13 to 5–6 per run. The thrash those evictions
+represent is §14.2.
 
 # 14. Known gaps
 
-## 14.1 Gate-blocked Pods inflate the requested count
+## 14.1 Gate-blocked Pods inflate the requested count — resolved (R-11, R-12)
 
 Per §8.1 a gated Pod counts as live. When the queue is saturated the replacement slice cannot be
 admitted, so nothing raises the grant, so the Pods stay gated and keep being counted, so the
@@ -958,28 +1008,87 @@ requested count grows. Observed: 68 gate-blocked Pods against a twelve-slot quot
 wait, and sustained reconcile-conflict churn. Correcting the ungating cap (§9.5) makes this more
 visible, because surplus executors now correctly remain `Pending`.
 
-The obvious fix is wrong, as §8.1 explains: excluding gated Pods removes the only scale-up signal. A
-correct fix must **bound** the request. Two candidates, both behaviour changes warranting their own
-proposal:
+**What actually happens, measured on a live cluster.** The request does not climb without limit; it
+oscillates. DA raises its target in steps of 1, 2 and 4 executors at `schedulerBacklogTimeout`
+intervals while a stage is backlogged, and lowers it when the stage drains. Spark's
+`ExecutorPodsAllocator` then deletes Pending executors older than `executorIdleTimeout` ("Deleting N
+excess pod requests") — gated Pods included, since to Spark they are just Pending. One pending slice
+went 4 → 10 → 4 with every ALS stage: 55 spec generations in 88 seconds. Each change of the live
+count rewrites the pending slice's spec, followed by a status write updating `observedGeneration`.
+The §8.6 debounce does not damp this, because `SparkApplication` status updates (about one a second
+from the operator) and Workload events also trigger the reconcile. The status writes lose the race to
+the next spec write: 50 of 66 conflicts were in the Workload controller.
 
-- **Latch.** Once a replacement slice exists and is unadmitted, stop revising its count upward
-  until it is admitted or dropped. Bounds churn without needing quota awareness.
-- **Incremental growth.** Cap the request at `granted + step`. Simpler, at the cost of slower
-  scale-up.
+Two things follow. The churn is a cost but not the reason admission waits; and the wait itself was
+mostly correct queueing — on a full cohort nothing is free until an application shrinks or finishes.
+**The defect was all-or-nothing scale-up**: when capacity did free in pieces smaller than the
+request, it stayed idle. Four slots sat free for ~5s while a slice asked for seven more executors,
+and that application finished without ever scaling up.
 
-The `maxExecutors` clamp (§8.4) already converts an unbounded climb into a bounded over-request.
-Configuration mitigations, pending measurement: size `maxExecutors` against available quota, and set
-`initialExecutors` equal to `minExecutors` so the floor is admitted atomically.
+**R-11 — bound the request at its source.** `spark.kubernetes.allocation.maxPendingPods` caps the
+Pending executors Spark keeps, and gated Pods are Pending. At 2 it held each application to exactly
+two gated Pods, cut the largest request-over-grant gap from 7 to 2, halved Workload writes and
+removed the Workload-controller conflicts (§13). This is the "incremental growth" candidate, enforced
+by the framework that creates the Pods rather than by Kueue capping a count it does not control, so
+the gated Pods and the request stay in step. It is a per-application setting; §6.1 asks who should
+set it.
 
-## 14.2 Smaller items
+**R-12 — admit the part that fits.** With the `ElasticJobsViaWorkloadSlicesWithPartialReplicaScaleUp`
+gate on and `kueue.x-k8s.io/elastic-job-scale-up-strategy: "partial"` on the application, `PodSets()`
+sets the executor PodSet's `MinCount` to the derived count, as the Ray integration does. The initial
+Workload therefore stays atomic (G7), and jobframework copies the chain's floor forward onto every
+scale-up probe, so the scheduler admits any growth between the predecessor's grant and the request
+and keeps a new probe for the remainder (KEP-12100). Free capacity idle behind a pending scale-up
+fell from 7–15s to zero. `ApplyPodSetCounts` now caps `MinCount` at the new `Count`: a partial slice
+lowered in place below its floor otherwise violates the API's `minCount <= count` rule, and every
+later update is rejected — a latent defect for Ray too.
+
+**The latch is not needed.** With the request bounded at its source and partial admission making an
+over-request harmless, the remaining churn is small, and a latch would add reconcile-to-reconcile
+state to suppress writes that now rarely happen.
+
+Recommended configuration for elastic DA applications:
+
+```yaml
+metadata:
+  annotations:
+    kueue.x-k8s.io/elastic-job: "true"
+    kueue.x-k8s.io/elastic-job-scale-up-strategy: "partial"
+spec:
+  sparkConf:
+    "spark.kubernetes.allocation.maxPendingPods": "2"
+```
+
+## 14.2 Preemption under Dynamic Allocation evicts whole applications
+
+Not addressed by this proposal, and the next piece of work. With priorities differing within a
+queue, every scale-up step of a high-priority DA application is an independent preemption decision,
+and each one evicts an entire lower-priority application to reclaim a few executors. The operator
+resumes a victim with a full restart, so its work is repeated each time. Measured with accounting
+correct: 5–6 single-victim evictions per seven-minute run, victims restarted two to six times, and
+one low-priority application unfinished at the end of every run. Partial scale-up does not help:
+the scheduler plans the full delta *with* preemption before trying a reduced count. Bounding
+Pending executors made no measurable difference (5 evictions with `maxPendingPods: 2`, 6 without).
+
+Generic partial preemption (KEP-975) is not enough: which executors to reclaim, and whether to
+reclaim rather than wait, depend on the Spark application's state. Preemption needs to be
+Spark-aware; kubernetes-sigs/kueue#16233 states the requirements. Mitigations available today are
+configuration only: a small `maxExecutors` on high-priority DA applications, `withinClusterQueue:
+Never`, or equal priorities.
+
+## 14.3 Smaller items
 
 - `Scheduler.replaceOldWorkloadSlice` does not retry a failed `Finish`. Harmless for accounting
   after §10.2, but latent.
+- Under atomic scale-up, the scheduler can admit against a spec generation that has since changed:
+  observed deciding on 5 executors while the job reconciler raised the spec to 6, so the admission
+  landed as 5 granted against 6 requested. The ledger charges `min(spec, granted)` and the job
+  reconciler issues a probe for the remainder, so it self-heals; with partial scale-up the state is
+  legitimate.
 - `scaledDownPodSetNames` and `isPreexistingStaleCount` are retirable once §10.3 has shipped long
   enough that no objects carry stale grants.
 - No envtest or live-cluster integration tests; the development environment cannot reach the
   kubebuilder-tools host.
-- Admission-latency instrumentation exists but the configuration comparison has not been run.
 
 # 15. Applying this pattern to another integration
 
@@ -993,7 +1102,10 @@ The generic machinery is integration-agnostic. Adapting it requires:
    scale (in which case `Generation` suffices).
 4. **A gate in the Pod template** — only if the framework's controller creates Pods outside Kueue's
    admission path, and only if its Pod template is applied to Pods created later.
-5. **Nothing else.** Chain-scoped accounting, ungating, preemption exclusion and the scale-down
+5. **An `IsActive()` that reports live Pods,** not a state field the framework advances before its
+   Pods stop; otherwise an evicted workload's quota is released early (§12).
+6. **Optionally, `MinCount` on the elastic PodSet** when the job opts into partial scale-up (§14.1).
+7. **Nothing else.** Chain-scoped accounting, ungating, preemption exclusion and the scale-down
    patch are all generic.
 
 The two questions to answer before starting: does the framework's controller restart the workload
@@ -1024,7 +1136,9 @@ only elastic-specific optional interface exists purely for naming); `RunWithPodS
 node selectors, tolerations, labels, annotations and scheduling gates; and the one place the
 reconciler writes a count back onto pod sets is guarded by
 `canBePartiallyAdmitted && ps.MinCount != nil`, the partial-admission path, which `ValidateWorkload`
-explicitly forbids combining with elastic jobs.
+forbids combining with elastic jobs unless the KEP-12100 partial scale-up gate is on. Even then
+nothing is written to the CR: a partial scale-up is a new slice, never a resume, and
+`RunWithPodSetsInfo` does not write an executor count.
 
 What plays the role `spec.parallelism` plays for a plain Job:
 
@@ -1040,13 +1154,16 @@ What plays the role `spec.parallelism` plays for a plain Job:
 | Component | File | Contribution |
 |---|---|---|
 | Live-count derivation | `pkg/controller/jobs/sparkapplication/sparkapplication_podset.go` | `liveExecutorCount`, `computeLiveExecutorCount`, `isVerifiedLiveExecutor`, `initialExecutorCount`, `declaredInitialExecutors`, `numInitialExecutors`, `sparkConfExecutorInstances`, `dynamicAllocationExecutorCount`, `clampToDynamicAllocationBounds`, `workloadSequenceNumber` |
-| Pod watch and debounce | `..._executor_pod_handler.go` | `executorPodPredicate`, `isTrackedExecutorPod`, `executorPodHandler` |
+| Pod watch and debounce | `..._executor_pod_handler.go` | `executorPodPredicate`, `isTrackedExecutorPod` (executors and drivers), `executorPodHandler` |
 | Slice naming, PodSets | `..._controller.go` | `PodSets`, `GetWorkloadNameExtraPart`, `RunWithPodSetsInfo`, `RestorePodSetsInfo` |
+| Partial scale-up opt-in | `..._controller.go` | `partialScaleUpEnabled`; `PodSets` sets the executor `MinCount` |
+| Quota release on eviction | `..._controller.go` | `IsActive`, `observePodsActive` |
 | Gate injection and validation | `..._webhook.go` | `Default`, `validateElasticJob`, malformed-count rejection |
 | Chain-scoped accounting | `pkg/cache/scheduler/clusterqueue.go` | `sliceChainKey`, `sliceReplacementFor`, `sliceIsLater`, `sliceGroupTip`, `reconcileSliceGroup`, `supersededSliceKeys` |
 | Snapshot exposure | `pkg/cache/scheduler/clusterqueue_snapshot.go`, `snapshot.go` | `supersededSlices`, `SliceSuperseded` |
 | Preemption exclusion | `pkg/scheduler/preemption/preemption.go`, `.../classical/hierarchical_preemption.go` | Superseded slices skipped in both candidate collectors |
 | Grant-aware extractor | `pkg/workload/podsetscounts.go` | `ExtractGrantedPodSetCounts` |
+| `MinCount` kept within `Count` | `pkg/workload/podsetscounts.go` | `ApplyPodSetCounts` |
 | Ungating cap | `pkg/controller/elasticjobs/elastic_job_ungater.go` | `podsToUngate` caps by the grant |
 | Scale-down of grants | `pkg/workloadslicing/workloadslicing.go` | `scaleDownAdmission`, `updatePodSetCountsWithRetry`, `NormalizeActiveSlices` |
 | Admission immutability exception | `pkg/webhooks/workload_webhook.go` | `validateAdmissionUpdate` |
@@ -1300,7 +1417,11 @@ advances to those once at least `minExecutors` are ready — so no Pod listing i
 - **The webhook does not reject a malformed `spark.executor.instances` at admission**, the way the
   Kubeflow one does. `staticExecutorCount()` still returns a proper error, so the failure surfaces
   during reconcile rather than at create time.
-- **The gated-Pod feedback loop is narrowed, not closed** (§14.1).
+- **Partial scale-up is not wired for this integration.** `spark.kubernetes.allocation.maxPendingPods`
+  bounds the gated-Pod loop here as it does for Kubeflow (§14.1), since it is a Spark setting, but
+  R-12 needs the executor `MinCount` this integration does not yet set.
+- **The quota-release fix of §12 is not applied here.** `IsActive()` reads the operator's state
+  summary, and whether that leads its Pods the way Kubeflow's does is unmeasured.
 - **No integration tests.** envtest binaries are unreachable in this environment, so coverage is
   unit-level only: pod-template construction, the memory and CPU arithmetic, static and DA counts,
   the elastic path, webhook validation, and setup/registration.
