@@ -15,8 +15,7 @@ About 25 minutes, or 15 without scenario D.
    - the `SparkPartialPreemption` gate on
    - every node Ready
    - no leftover SparkApplications
-
-   If anything is left over, run `./demo.sh reset`.
+   - if anything is left over, run `./demo.sh reset` first
 2. **Screens:**
 
    | Where | What |
@@ -25,8 +24,8 @@ About 25 minutes, or 15 without scenario D.
    | Screen 2, KueueViz | your KueueViz frontend (export `KUEUEVIZ=<url>` so preflight checks it) |
    | Terminal | `./demo.sh watch`, the live table described below |
 
-   Keep a second Lens tab on **Custom Resources → kueue.x-k8s.io → Workloads**, and one on
-   **sparkoperator.k8s.io → SparkApplications**.
+   - also keep Lens tabs open on **Custom Resources → kueue.x-k8s.io → Workloads** and
+     **sparkoperator.k8s.io → SparkApplications**
 3. **Warm up.** Run scenario B once beforehand, then reset. This makes sure the Spark image is cached and
    the timing feels right on the day.
 4. **Talk through the terminal view once.** Each row is a Spark application:
