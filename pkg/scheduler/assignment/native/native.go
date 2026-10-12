@@ -53,7 +53,7 @@ type nativePlanner struct {
 
 // Plan builds an assignment plan using kueue-native algorithms.
 // As of right now, this implementation is expected to never return an Error-Plan.
-func (p *nativePlanner) Plan(ctx context.Context, asgn *flavorassigner.Assignment, _ ...assignment.PlannerOption) assignment.Plan {
+func (p *nativePlanner) Plan(ctx context.Context, asgn *flavorassigner.Assignment, opts ...assignment.PlannerOption) assignment.Plan {
 	log := log.FromContext(ctx)
 	cq := p.snapshot.ClusterQueue(p.wl.ClusterQueue)
 
@@ -64,7 +64,7 @@ func (p *nativePlanner) Plan(ctx context.Context, asgn *flavorassigner.Assignmen
 	arm := asgn.RepresentativeMode()
 
 	if arm == flavorassigner.Preempt {
-		strategies := p.preemptor.GetPreemptionStrategyIterator(ctx, *p.wl, p.snapshot, *asgn)
+		strategies := p.preemptor.GetPreemptionStrategyIteratorWithMode(ctx, *p.wl, p.snapshot, *asgn, assignment.PreemptionMode(opts...))
 		faPreemptionTargets := p.preemptor.GetTargetsWithStrategy(ctx, strategies)
 		if len(faPreemptionTargets) > 0 {
 			p.updateAssignmentForTAS(ctx, cq, asgn, faPreemptionTargets)

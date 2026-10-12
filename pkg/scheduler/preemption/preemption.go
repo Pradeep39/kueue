@@ -178,6 +178,45 @@ func (p *Preemptor) getPreemptionStrategyIterator(ctx context.Context, preemptio
 	return classicalPreemptionStrategy(ctx, p, preemptionCtx)
 }
 
+// Mode selects which kinds of preemption targets a set of strategies may produce
+// (docs/design/spark-aware-preemption.md §5.3).
+type Mode int
+
+const (
+	// WholeOnly produces only whole-workload targets: today's behaviour, and the default.
+	WholeOnly Mode = iota
+	// PartialOnly produces only partial targets (Target.Reclaim set), taken from workloads that
+	// declare partial preemption, above their floors. It never evicts a whole workload.
+	PartialOnly
+	// NoPreemption produces no targets at all: the workload may only be admitted into free
+	// quota. Used for grow-back slices (§5.5).
+	NoPreemption
+)
+
+// GetPreemptionStrategyIteratorWithMode is GetPreemptionStrategyIterator restricted to mode.
+func (p *Preemptor) GetPreemptionStrategyIteratorWithMode(
+	ctx context.Context,
+	wl workload.Info,
+	snapshot *schdcache.Snapshot,
+	assignment flavorassigner.Assignment,
+	mode Mode,
+) iter.Seq[PreemptionStrategy] {
+	switch mode {
+	case PartialOnly:
+		return p.partialPreemptionStrategyIterator(ctx, p.buildContext(ctx, wl, assignment, snapshot))
+	case NoPreemption:
+		return func(func(PreemptionStrategy) bool) {}
+	default:
+		return p.GetPreemptionStrategyIterator(ctx, wl, snapshot, assignment)
+	}
+}
+
+// partialPreemptionStrategyIterator yields the partial-preemption strategy (§5.3).
+// TODO(partial-preemption): implemented by the planner change; yields nothing until then.
+func (p *Preemptor) partialPreemptionStrategyIterator(_ context.Context, _ *preemptionCtx) iter.Seq[PreemptionStrategy] {
+	return func(func(PreemptionStrategy) bool) {}
+}
+
 // GetTargetsWithStrategy returns the workloads to evict using the provided preemption strategies.
 func (p *Preemptor) GetTargetsWithStrategy(ctx context.Context, strategies iter.Seq[PreemptionStrategy]) []*Target {
 	return p.getTargets(ctx, strategies)
