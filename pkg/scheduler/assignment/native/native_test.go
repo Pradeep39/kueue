@@ -36,6 +36,7 @@ import (
 	schdcache "sigs.k8s.io/kueue/pkg/cache/scheduler"
 	"sigs.k8s.io/kueue/pkg/features"
 	"sigs.k8s.io/kueue/pkg/resources"
+	"sigs.k8s.io/kueue/pkg/scheduler/assignment"
 	"sigs.k8s.io/kueue/pkg/scheduler/flavorassigner"
 	"sigs.k8s.io/kueue/pkg/scheduler/preemption"
 	preemptexpectations "sigs.k8s.io/kueue/pkg/scheduler/preemption/expectations"
@@ -292,6 +293,70 @@ func TestPlan(t *testing.T) {
 			}
 			if freeCapacityAfter := freeCapacity(t, snapshot); freeCapacityAfter != freeCapacityBefore {
 				t.Errorf("Plan() did not restore the snapshot TAS free capacity: before %s, after %s", freeCapacityBefore, freeCapacityAfter)
+			}
+		})
+	}
+}
+
+// TestPlanPreemptionMode checks that the preemption mode restricts the targets a plan may
+// contain: NoPreemption never preempts, and PartialOnly never makes room for a TAS
+// placement, whose simulation removes targets whole.
+func TestPlanPreemptionMode(t *testing.T) {
+	onNode := &utiltestingapi.MakeTopologyAssignment([]string{corev1.LabelHostname}).
+		Domain(utiltestingapi.MakeTopologyDomainAssignment([]string{tasTestNode}, 1).Obj()).
+		TopologyAssignment
+	cases := map[string]struct {
+		mode        preemption.Mode
+		wantTargets []string
+		wantFit     bool
+	}{
+		"WholeOnly preempts the lower-priority workload": {
+			mode:        preemption.WholeOnly,
+			wantTargets: []string{victimName},
+			wantFit:     true,
+		},
+		"NoPreemption reserves topology without preempting": {
+			mode: preemption.NoPreemption,
+		},
+		"PartialOnly does not make room for a TAS placement": {
+			mode: preemption.PartialOnly,
+		},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			features.SetFeatureGatesDuringTest(t, map[featuregate.Feature]bool{
+				features.TopologyAwareScheduling: true,
+			})
+			log := testr.New(t)
+			ctx := ctrllog.IntoContext(t.Context(), log)
+			snapshot := newTASTestSnapshot(ctx, t, log, "4", false)
+			wl := workload.NewInfo(log, utiltestingapi.MakeWorkload("incoming", "default").
+				Priority(incomingPriority).
+				PodSets(*utiltestingapi.MakePodSet(kueue.DefaultPodSetName, 1).
+					RequiredTopologyRequest(corev1.LabelHostname).
+					Request(corev1.ResourceCPU, "2").
+					Obj()).
+				Obj())
+			wl.ClusterQueue = tasTestCQ
+			preemptor := preemption.New(
+				utiltesting.NewFakeClient(), workload.Ordering{}, &utiltesting.EventRecorder{}, nil, false,
+				clocktesting.NewFakeClock(time.Now()), nil, preemptexpectations.New(), nil,
+			)
+			assigner := flavorassigner.New(
+				wl, snapshot.ClusterQueue(tasTestCQ), snapshot.ResourceFlavors, false,
+				preemption.NewOracle(preemptor, snapshot), nil,
+				configapi.QuotaCheckBlockUndeclared, resources.NewResourceFormatter(), 0,
+			)
+			initialAssignment := assigner.AssignFlavors(ctx, log, nil)
+			gotPlan := NewPlanner(wl, snapshot, preemptor, assigner).Plan(ctx, &initialAssignment, assignment.WithPreemptionMode(tc.mode))
+			if diff := cmp.Diff(tc.wantTargets, targetNames(gotPlan.PreemptionTargets)); diff != "" {
+				t.Errorf("Plan() preemption targets mismatch (-want +got):\n%s", diff)
+			}
+			if gotPlan.CanFit() != tc.wantFit {
+				t.Errorf("Plan() CanFit = %v, want %v", gotPlan.CanFit(), tc.wantFit)
+			}
+			if diff := cmp.Diff(onNode, gotPlan.Assignment.PodSets[0].TopologyAssignment); diff != "" {
+				t.Errorf("Plan() topology assignment mismatch (-want +got):\n%s", diff)
 			}
 		})
 	}

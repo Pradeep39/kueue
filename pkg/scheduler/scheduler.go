@@ -293,10 +293,17 @@ func (e *entry) markAssumed() {
 // recordAssignment stores a flavor assignment and its preemption
 // targets from nominate. FlavorScanState aliases the stored
 // assignment's FlavorScanState so it tracks any later mutation.
-func (e *entry) recordAssignment(a flavorassigner.Assignment, targets []*preemption.Target) {
+// note, when set, is appended to the assignment's message.
+func (e *entry) recordAssignment(a flavorassigner.Assignment, targets []*preemption.Target, note string) {
 	e.assignment = a
 	e.preemptionTargets = targets
 	e.inadmissibleMsg = e.assignment.Message()
+	if note != "" {
+		if e.inadmissibleMsg != "" {
+			e.inadmissibleMsg += "; "
+		}
+		e.inadmissibleMsg += note
+	}
 	e.FlavorScanState = &e.assignment.FlavorScanState
 }
 
@@ -304,9 +311,19 @@ func (e *entry) recordAssignment(a flavorassigner.Assignment, targets []*preempt
 // clears the cached flavor assignment so the next cycle reconsiders
 // every flavor.
 func (e *entry) markPreemptionOutcome(preempted, errors int) {
+	e.markPreemptionOutcomeOf(preempted, errors, false)
+}
+
+// markPreemptionOutcomeOf is markPreemptionOutcome, saying "partial preemption"
+// when every target was a partial one.
+func (e *entry) markPreemptionOutcomeOf(preempted, errors int, allPartial bool) {
 	e.FlavorScanState = nil
 	if preempted != 0 {
-		e.inadmissibleMsg += fmt.Sprintf(". Pending the preemption of %d workload(s)", preempted)
+		kind := "preemption"
+		if allPartial {
+			kind = "partial preemption"
+		}
+		e.inadmissibleMsg += fmt.Sprintf(". Pending the %s of %d workload(s)", kind, preempted)
 		e.requeueReason = qcache.RequeueReasonPendingPreemption
 	} else if errors > 0 {
 		e.inadmissibleMsg += fmt.Sprintf(". Preempting %d workload(s) failed, will retry.", errors)
@@ -654,7 +671,7 @@ func (s *Scheduler) issuePreemptions(ctx context.Context, log logr.Logger, e *en
 	if err != nil {
 		log.Error(err, "Failed to preempt workloads")
 	}
-	e.markPreemptionOutcome(preempted, errors)
+	e.markPreemptionOutcomeOf(preempted, errors, allPartialTargets(preemptionTargets))
 }
 
 // waitForPodsReadyIfNeeded blocks admission until all currently admitted
@@ -844,12 +861,18 @@ func (s *Scheduler) nominateWorkload(ctx context.Context, log logr.Logger, h qca
 				e.requeueReason = qcache.RequeueReasonNamespaceMismatch
 			}
 		}
-	} else if assignment, targets, err := s.getAssignments(ctx, &e.Info, snap); err != nil {
+	} else if predecessor := pendingPartialPreemptionPredecessor(&h.Info, snap); predecessor != nil {
+		// Not requeued as a pending preemption: that would keep it at the head and retry it
+		// immediately. It waits as inadmissible until the reclaim lowers the predecessor's grant.
+		log.V(3).Info("Workload slice waits for the partial preemption of the slice it replaces", "replacedWorkloadSlice", klog.KObj(predecessor.Obj))
+		e.inadmissibleMsg = fmt.Sprintf("Waiting for the partial preemption of the replaced workload slice %s to complete", workload.Key(predecessor.Obj))
+		e.quotaReservedReason = kueue.WorkloadQuotaReservedReasonWaitingForPreemptedWorkloads
+	} else if assignment, targets, note, err := s.getAssignments(ctx, &e.Info, snap); err != nil {
 		log.Error(err, "Failed to compute the initial assignment")
 		e.inadmissibleMsg = err.Error()
 		e.quotaReservedReason = kueue.WorkloadQuotaReservedReasonAssignmentError
 	} else {
-		e.recordAssignment(assignment, targets)
+		e.recordAssignment(assignment, targets, note)
 		return e, true
 	}
 	return e, false
@@ -893,7 +916,7 @@ func (s *Scheduler) updateAssignmentIfNeeded(
 	nominationScanState := e.assignment.FlavorScanState
 	e.FlavorScanState = nil
 	e.NominationMapping = e.readResourceToFlavorMapping()
-	newAssignment, newTargets, err := s.getAssignments(ctx, &e.Info, snapshot)
+	newAssignment, newTargets, newNote, err := s.getAssignments(ctx, &e.Info, snapshot)
 	if revertRemoval != nil {
 		revertRemoval()
 	}
@@ -904,7 +927,7 @@ func (s *Scheduler) updateAssignmentIfNeeded(
 		return false, err
 	}
 
-	e.recordAssignment(newAssignment, newTargets)
+	e.recordAssignment(newAssignment, newTargets, newNote)
 	e.assignment.FlavorScanState.RestoreAfterRecompute(nominationScanState)
 	if needsOverlapRecompute && e.assignment.RepresentativeMode() == flavorassigner.Fit {
 		e.assignment.SetRepresentativeMode(flavorassigner.DeferredFit)
@@ -1563,6 +1586,7 @@ func resolveFlavorIndex(wl *workload.Info, flavors []kueue.ResourceFlavorReferen
 func (s *Scheduler) getAssignments(ctx context.Context, wl *workload.Info, snap *schdcache.Snapshot) (
 	fullAssignment flavorassigner.Assignment,
 	targets []*preemption.Target,
+	note string,
 	err error,
 ) {
 	log := log.FromContext(ctx)
@@ -1591,16 +1615,17 @@ func (s *Scheduler) getAssignments(ctx context.Context, wl *workload.Info, snap 
 		planner = nativeplanner.NewPlanner(wl, snap, s.preemptor, flvAssigner)
 	}
 
-	initialAssignment := flvAssigner.AssignFlavors(ctx, log, nil)
-	assignmentPlan := planner.Plan(ctx, &initialAssignment)
-
-	if !assignmentPlan.CanFit() && assignmentPlan.Error == nil && workload.MinCountsUsable(wl.Obj) && wl.CanBePartiallyAdmitted() {
+	full := func(mode preemption.Mode) assignment.Plan {
+		initialAssignment := flvAssigner.AssignFlavors(ctx, log, nil)
+		return planner.Plan(ctx, &initialAssignment, assignment.WithPreemptionMode(mode))
+	}
+	reduced := func(mode preemption.Mode) (assignment.Plan, bool) {
 		// bestPA is tracked here, not returned by fitsFn(), so it can't drift from
 		// the counts Reduce returns.
 		var bestPartialPlan *assignment.Plan
 		fitsFn := func(nextCounts []int32) bool {
 			initialAssignment := flvAssigner.AssignFlavors(ctx, log, nextCounts)
-			if partialPlan := planner.Plan(ctx, &initialAssignment); partialPlan.CanFit() {
+			if partialPlan := planner.Plan(ctx, &initialAssignment, assignment.WithPreemptionMode(mode)); partialPlan.CanFit() {
 				bestPartialPlan = &partialPlan
 				return true
 			}
@@ -1611,8 +1636,15 @@ func (s *Scheduler) getAssignments(ctx context.Context, wl *workload.Info, snap 
 		mustGrow := replaceableWorkloadSlice != nil && workload.IsAdmitted(replaceableWorkloadSlice.Obj)
 		reducer := flavorassigner.NewOrderedPodSetReducer(effectiveReducerPodSets(wl.Obj.Spec.PodSets, replaceableWorkloadSlice, mustGrow), fitsFn)
 		if _, found := reducer.Reduce(mustGrow); found {
-			assignmentPlan = *bestPartialPlan
+			return *bestPartialPlan, true
 		}
+		return assignment.Plan{}, false
+	}
+
+	ladder := planLadder(wl, cq)
+	assignmentPlan, fitted := ladder.run(full, reduced)
+	if !fitted && assignmentPlan.Error == nil && assignmentPlan.Assignment.RepresentativeMode() == flavorassigner.Preempt {
+		note = ladder.noFitNote()
 	}
 
 	fullAssignment, targets, err = *assignmentPlan.Assignment, assignmentPlan.PreemptionTargets, assignmentPlan.Error
@@ -1643,4 +1675,164 @@ func effectiveReducerPodSets(podSets []kueue.PodSet, replaceableWorkloadSlice *w
 		}
 	}
 	return effective
+}
+
+// planAttempt is one rung of the ladder getAssignments climbs to find a plan:
+// a pod count (the full one, or the best reduced one) and the kinds of
+// preemption targets the plan may contain.
+type planAttempt struct {
+	reduced bool
+	mode    preemption.Mode
+}
+
+// attemptLadder is the ordered list of plan attempts for a workload, stopping at
+// the first that fits (docs/design/spark-aware-preemption.md §5.3, §5.5).
+type attemptLadder struct {
+	attempts []planAttempt
+	// growBack, waitFallback and reclaimInFlight only shape the message when nothing fits.
+	growBack        bool
+	waitFallback    bool
+	reclaimInFlight bool
+}
+
+// planLadder builds the attempt ladder for wl in cq.
+//
+// Without partial preemption it is today's: the full count, then (with
+// partial admission) a reduced count, both with whole-workload preemption.
+//
+// With partial preemption: the full then a reduced count into free quota only;
+// then the full then a reduced count by partial reclaim; then the ClusterQueue's
+// fallback, which is either today's whole-workload preemption (Evict) or
+// nothing, leaving the workload pending (Wait). A grow-back slice only ever
+// tries free quota, so that it never preempts, least of all its own preemptor.
+//
+// While a partial preemption is in flight anywhere in cq's cohort tree the Evict
+// fallback is held back too: the quota that reclaim frees is not yet visible, and
+// a preemptor waiting on it would otherwise evict whole workloads for room that is
+// about to appear. Whole eviction resumes once no reclaim is outstanding.
+func planLadder(wl *workload.Info, cq *schdcache.ClusterQueueSnapshot) attemptLadder {
+	canReduce := workload.MinCountsUsable(wl.Obj) && wl.CanBePartiallyAdmitted()
+	if !features.Enabled(features.SparkPartialPreemption) || cq == nil || !cq.PartialPreemption.Enabled {
+		return newAttemptLadder(canReduce, preemption.WholeOnly)
+	}
+	if workload.IsGrowBack(wl.Obj) {
+		l := newAttemptLadder(canReduce, preemption.NoPreemption)
+		l.growBack = true
+		return l
+	}
+	if cq.PartialPreemption.FallbackWait {
+		l := newAttemptLadder(canReduce, preemption.NoPreemption, preemption.PartialOnly)
+		l.waitFallback = true
+		return l
+	}
+	if partialPreemptionInFlight(cq) {
+		l := newAttemptLadder(canReduce, preemption.NoPreemption, preemption.PartialOnly)
+		l.reclaimInFlight = true
+		return l
+	}
+	return newAttemptLadder(canReduce, preemption.NoPreemption, preemption.PartialOnly, preemption.WholeOnly)
+}
+
+// partialPreemptionInFlight reports whether any workload in cq's cohort tree (or
+// in cq alone, without a cohort) has a partial preemption outstanding.
+func partialPreemptionInFlight(cq *schdcache.ClusterQueueSnapshot) bool {
+	cqs := []*schdcache.ClusterQueueSnapshot{cq}
+	if cq.HasParent() {
+		cqs = cq.Parent().Root().SubtreeClusterQueues()
+	}
+	for _, c := range cqs {
+		for _, wl := range c.Workloads {
+			if workload.PartialPreemptionPending(wl.Obj) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// newAttemptLadder tries each mode in turn, first with the full count and then,
+// when canReduce, with a reduced count.
+func newAttemptLadder(canReduce bool, modes ...preemption.Mode) attemptLadder {
+	var l attemptLadder
+	for _, mode := range modes {
+		l.attempts = append(l.attempts, planAttempt{mode: mode})
+		if canReduce {
+			l.attempts = append(l.attempts, planAttempt{reduced: true, mode: mode})
+		}
+	}
+	return l
+}
+
+// run tries the attempts in order and returns the first plan that can fit.
+// full plans the full count in the given mode; reduced searches for the
+// largest reduced count that can fit in that mode, reporting whether it found
+// one. A full-count plan carrying an error ends the search with that plan.
+// When nothing fits, the last full-count plan is returned, so the workload's
+// pending status describes the last mode it was refused in.
+func (l attemptLadder) run(
+	full func(preemption.Mode) assignment.Plan,
+	reduced func(preemption.Mode) (assignment.Plan, bool),
+) (assignment.Plan, bool) {
+	var last assignment.Plan
+	for _, a := range l.attempts {
+		if a.reduced {
+			if plan, found := reduced(a.mode); found {
+				return plan, true
+			}
+			continue
+		}
+		last = full(a.mode)
+		if last.Error != nil {
+			return last, false
+		}
+		if last.CanFit() {
+			return last, true
+		}
+	}
+	return last, false
+}
+
+// noFitNote explains, when nothing fits, why the workload did not preempt.
+func (l attemptLadder) noFitNote() string {
+	switch {
+	case l.growBack:
+		return "growing back after a partial preemption, so it may only use free quota"
+	case l.waitFallback:
+		return "partial preemption cannot make room and the ClusterQueue's partial-preemption fallback is Wait"
+	case l.reclaimInFlight:
+		return "partial preemption cannot make room yet; whole-workload preemption waits for the partial preemptions in progress to complete"
+	}
+	return ""
+}
+
+// allPartialTargets reports whether every target is a partial preemption.
+func allPartialTargets(targets []*preemption.Target) bool {
+	if len(targets) == 0 {
+		return false
+	}
+	for _, t := range targets {
+		if t.Reclaim == nil {
+			return false
+		}
+	}
+	return true
+}
+
+// pendingPartialPreemptionPredecessor returns the slice wl replaces when a
+// partial preemption is still outstanding on it (§5.4 "Races"). Admitting wl
+// then would land the replacement mid-reclaim, so it waits for the reclaim to
+// clear; its count is re-derived from the lowered grant.
+func pendingPartialPreemptionPredecessor(wl *workload.Info, snap *schdcache.Snapshot) *workload.Info {
+	if !features.Enabled(features.SparkPartialPreemption) {
+		return nil
+	}
+	cq := snap.ClusterQueue(wl.ClusterQueue)
+	if cq == nil || !cq.PartialPreemption.Enabled {
+		return nil
+	}
+	_, replaced := workloadslicing.ReplacedWorkloadSlice(wl, snap)
+	if replaced == nil || !workload.PartialPreemptionPending(replaced.Obj) {
+		return nil
+	}
+	return replaced
 }
