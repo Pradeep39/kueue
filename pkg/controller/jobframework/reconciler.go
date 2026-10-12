@@ -475,6 +475,12 @@ func (r *JobReconciler) ReconcileGenericJob(ctx context.Context, req ctrl.Reques
 
 	log.V(2).Info("Reconciling Job")
 
+	// 0. Run an outstanding partial preemption before any slice scaling, which must not
+	// lower the grant while the reclaimed Pods still run.
+	if result, stop, err := r.reconcilePartialPreemption(ctx, job); stop {
+		return result, err
+	}
+
 	// 1. Attempt to retrieve an existing workload (if any) for this job.
 	wl, err := r.ensureOneWorkload(ctx, job, object)
 	if err != nil {
@@ -1209,6 +1215,9 @@ func (r *JobReconciler) ensureOneWorkload(ctx context.Context, job GenericJob, o
 		}
 		if compatible {
 			if err := r.syncWorkloadSlicePriority(ctx, job, object, wl); err != nil {
+				return nil, err
+			}
+			if err := r.syncPartialPreemptionAnnotations(ctx, job, wl); err != nil {
 				return nil, err
 			}
 			if wl != nil {
@@ -1984,6 +1993,10 @@ func ConstructWorkload(ctx context.Context, c client.Client, job GenericJob, lab
 		return nil, err
 	}
 
+	if pp, ok := partialPreemptionFor(job); ok {
+		applyPartialPreemptionDeclaration(wl, pp)
+	}
+
 	return wl, nil
 }
 
@@ -2061,6 +2074,9 @@ func prepareWorkloadSlice(ctx context.Context, clnt client.Client, job GenericJo
 			originName = oldSlice.Name
 		}
 		metav1.SetMetaDataAnnotation(&wl.ObjectMeta, kueue.WorkloadSliceNameAnnotation, originName)
+		// A replacement of a partially preempted slice is grow-back up to the count the
+		// predecessor had before it was reclaimed (spark-aware-preemption §5.5).
+		carryRestoreCount(wl, &oldSlice)
 		return nil
 	default:
 		// Any other slices length is invalid. I.E, we expect to have at most 1 "current/old" workload slice.
