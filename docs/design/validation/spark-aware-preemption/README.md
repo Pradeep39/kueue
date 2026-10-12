@@ -124,6 +124,8 @@ created.
 | P8 | r3 | **0** | 9 | 0 | **0** | ✅ | ✅ | ✅ |
 | P9 | r3 | **0** | 6 | 5 (forced) | **0** | ✅ | ❌² | ❌² |
 | REQ S1–S3, S6 | r3 | – | – | – | – | ✅ | ✅ | ✅ |
+| REQ S4 | r3 rerun | **0** | 2 | 0 | **0** | ✅ | ✅ | ✅ |
+| REQ S5 | r3 rerun | **0** | 3 | 0 | **0** | ✅ | ✅ | ✅ |
 
 ¹ **Whole-application eviction.** For 1–3s, evicted Pods are still stopping while the preemptor's Pods
 start. This happens identically with the gate off, so it is pre-existing behaviour of whole eviction.
@@ -149,7 +151,7 @@ and last at most the 60s executor grace period. With the default 90s timeout thi
 | Fallback `Wait` / `Evict` | ✅ | P7a: the first admission waited, with no eviction. P7b: one eviction |
 | Spread across victims | ✅ | P8: six decisions of one executor each, rotating across all four victims (2/2/2/3 reclaims each) |
 | Quota released when an application finishes | ✅ | No leak in any r2/r3 run. Bug 4 below was the r1 failure |
-| R-1..R-13 (EQM) with the gate on | ✅ | S1–S3: every R- check passes. S6: R-9 and R-10 pass |
+| R-1..R-13 (EQM) with the gate on | ✅ | S1–S5: every R- check passes. S6: R-9 and R-10 pass |
 | Spark decommissioning | ✅ | Reclaimed executors reported "gracefully decommissioned" by Spark. With it off (P4) they report "unexpectedly exited", still with 0 failures |
 
 **Not exercised:**
@@ -161,8 +163,8 @@ and last at most the 60s executor grace period. With the default 90s timeout thi
 ### 3.2 R-1 and R-4 in preemption runs
 
 `req-check`'s R-1 ("accounting tracks what runs") and R-4 ("capacity returned on scale-down") report
-FAIL in most preemption runs, including the gate-off baseline. They pass in every scenario without
-preemption (REQ S1–S3).
+FAIL in many preemption runs, including the gate-off baseline. They pass in every scenario without
+preemption (REQ S1–S3), and in the REQ S4/S5 reruns (longest overage 12–15s).
 
 In partial-preemption runs, the longest overage is Kueue holding quota while reclaimed executors
 decommission, which takes up to the 60s grace period. PR-4 requires that hold. The checker flags the
@@ -193,14 +195,16 @@ reported as is rather than relabelled.
 
 ## 5. Caveats
 
-- **A node failure invalidated REQ S4 and S5 in r3.** At 16:34:40 UTC the node running every Spark Pod
-  went `NodeStatusUnknown`, and its Pods were evicted 300s later. The Kueue controller was rescheduled
-  onto another node. No Kueue errors were logged.
+- **A Wi-Fi drop invalidated the first r3 run of REQ S4 and S5.** At 16:34:40 UTC the node running every
+  Spark Pod lost its Wi-Fi connection and went `NodeStatusUnknown`. Its Pods were evicted 300s later, and
+  the Kueue controller was rescheduled onto another node. No Kueue errors were logged.
 
-  S4 and S5 are the same scenarios as P1 and P3, which pass on r2 and r3. Their r3 results are archived
-  but should not be read as Kueue results.
-- **One executor failure in r2 P1.** Spark's own Dynamic Allocation scale-down removed an executor 3s
-  after it started, before it registered with the driver. No reclaim was involved. It is one failure
+  Both scenarios were rerun once the node was back, on the same image (captures `REQ-1012-1301-*`), and
+  pass every check. The archived S4/S5 results are the reruns.
+- **One executor failure each in r2 P1 and the S5 rerun.** In r2 P1, Spark's own Dynamic Allocation
+  scale-down removed an executor 3s after it started, before it registered with the driver; no reclaim was
+  involved. The S5 rerun's failure was on the high-priority application, which is never a reclaim victim,
+  so it has the same Spark-side cause. It is one failure
   against a limit of 60, and is the design's §8 risk arising from Spark itself.
 - **r2 P3's capture watch restarted once.** P3R is the clean rerun.
 - **r2 P5 exercised no reclaim.** The static victims finished before the preemptor needed room. P5B is
