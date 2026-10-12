@@ -557,3 +557,31 @@ func deletedPods(t *testing.T, c client.Client) []string {
 	slices.Sort(got)
 	return got
 }
+
+func TestSparkTimeSeconds(t *testing.T) {
+	cases := map[string]struct {
+		in     string
+		want   int64
+		wantOK bool
+	}{
+		"bare number is seconds": {in: "45", want: 45, wantOK: true},
+		"seconds suffix":         {in: "60s", want: 60, wantOK: true},
+		"minutes m":              {in: "2m", want: 120, wantOK: true},
+		"minutes min":            {in: "3min", want: 180, wantOK: true},
+		"hours":                  {in: "1h", want: 3600, wantOK: true},
+		"days":                   {in: "1d", want: 86400, wantOK: true},
+		"milliseconds truncate":  {in: "1500ms", want: 1, wantOK: true},
+		"upper case and spaces":  {in: " 90S ", want: 90, wantOK: true},
+		"negative":               {in: "-5s", wantOK: false},
+		"garbage":                {in: "soon", wantOK: false},
+		"empty":                  {in: "", wantOK: false},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			got, ok := sparkTimeSeconds(tc.in)
+			if ok != tc.wantOK || (ok && got != tc.want) {
+				t.Errorf("sparkTimeSeconds(%q) = %d, %v; want %d, %v", tc.in, got, ok, tc.want, tc.wantOK)
+			}
+		})
+	}
+}

@@ -17,6 +17,9 @@ limitations under the License.
 package sparkapplication
 
 import (
+	"strconv"
+	"strings"
+
 	"context"
 	"slices"
 
@@ -170,9 +173,51 @@ func applyDecommissionDefaults(job *SparkApplication) {
 	if job.Spec.Executor.Template == nil {
 		job.Spec.Executor.Template = emptyExecutorPodTemplateSpec.DeepCopy()
 	}
-	if job.Spec.Executor.Template.Spec.TerminationGracePeriodSeconds == nil {
-		job.Spec.Executor.Template.Spec.TerminationGracePeriodSeconds = ptr.To(decommissionTerminationGracePeriodSeconds)
+	// The grace period lives in two places: the Pod template (Spark before 4.1) and
+	// spark.kubernetes.executor.terminationGracePeriodSeconds (Spark 4.1+, which overrides the
+	// template and defaults to 30s). Default whichever is unset to the other's value, or to
+	// decommissionTerminationGracePeriodSeconds when neither is set, so every Spark version
+	// gives a terminating executor the same grace period.
+	templateGrace := job.Spec.Executor.Template.Spec.TerminationGracePeriodSeconds
+	confGrace, confSet := job.Spec.SparkConf[sparkConfExecutorTerminationGracePeriod]
+	grace := decommissionTerminationGracePeriodSeconds
+	switch {
+	case templateGrace != nil:
+		grace = *templateGrace
+	case confSet:
+		if seconds, ok := sparkTimeSeconds(confGrace); ok {
+			grace = seconds
+		}
 	}
+	if templateGrace == nil {
+		job.Spec.Executor.Template.Spec.TerminationGracePeriodSeconds = ptr.To(grace)
+	}
+	if !confSet {
+		job.Spec.SparkConf[sparkConfExecutorTerminationGracePeriod] = strconv.FormatInt(grace, 10) + "s"
+	}
+}
+
+// sparkTimeSeconds parses a Spark time property whose default unit is seconds, the way Spark's
+// timeConf(TimeUnit.SECONDS) does: a bare number is seconds, and the suffixes ms, s, m/min, h
+// and d are accepted. Sub-second values are truncated.
+func sparkTimeSeconds(v string) (int64, bool) {
+	v = strings.ToLower(strings.TrimSpace(v))
+	units := []struct {
+		suffix string
+		ms     int64
+	}{{"ms", 1}, {"min", 60_000}, {"s", 1_000}, {"m", 60_000}, {"h", 3_600_000}, {"d", 86_400_000}}
+	mult := int64(1_000)
+	for _, u := range units {
+		if strings.HasSuffix(v, u.suffix) {
+			v, mult = strings.TrimSuffix(v, u.suffix), u.ms
+			break
+		}
+	}
+	n, err := strconv.ParseInt(v, 10, 64)
+	if err != nil || n < 0 {
+		return 0, false
+	}
+	return n * mult / 1_000, true
 }
 
 // +kubebuilder:webhook:path=/validate-sparkoperator-k8s-io-v1beta2-sparkapplication,mutating=false,failurePolicy=fail,sideEffects=None,groups=sparkoperator.k8s.io,resources=sparkapplications,verbs=create;update,versions=v1beta2,name=vsparkapplication.kb.io,admissionReviewVersions=v1

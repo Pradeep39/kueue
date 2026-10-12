@@ -44,7 +44,13 @@ const sparkConfPreemptionMinExecutors = "spark.kueue.preemption.minExecutors"
 
 // decommissionTerminationGracePeriodSeconds is the executor grace period the webhook defaults
 // for a reclaimable application, bounding Spark's decommission hand-off (§5.4).
-const decommissionTerminationGracePeriodSeconds int64 = 120
+const decommissionTerminationGracePeriodSeconds int64 = 60
+
+// sparkConfExecutorTerminationGracePeriod is Spark's executor grace period property. From
+// Spark 4.1 it is written onto every executor Pod (BasicExecutorFeatureStep), overriding the
+// Pod template's terminationGracePeriodSeconds, and defaults to 30s. Before 4.1 it does not
+// exist and the template's value applies. The webhook therefore sets both, to the same value.
+const sparkConfExecutorTerminationGracePeriod = "spark.kubernetes.executor.terminationGracePeriodSeconds"
 
 // decommissionSparkConfDefaults are the Spark properties the webhook defaults to "true" for a
 // reclaimable application, so deleting an executor Pod triggers graceful decommissioning and
