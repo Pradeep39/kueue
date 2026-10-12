@@ -143,6 +143,15 @@ const (
 	// the 120s executor grace period the Spark webhook defaults, plus 30s.
 	DefaultPartialPreemptionTimeout = "150s"
 
+	// PartiallyPreemptedCondition is the Workload condition a partial preemption sets on its
+	// victim: True while the reclaim is outstanding, False with reason
+	// PartialPreemptionCompletedReason or PartialPreemptionTimedOutReason once it has ended.
+	PartiallyPreemptedCondition      = "PartiallyPreempted"
+	PartialPreemptionIssuedReason    = "PartialPreemptionIssued"
+	PartialPreemptionCompletedReason = "PartialPreemptionCompleted"
+	PartialPreemptionTimedOutReason  = "PartialPreemptionTimedOut"
+	PartialPreemptionAbandonedReason = "PartialPreemptionAbandoned"
+
 	// PodDeletionCostAnnotation is Kubernetes' ReplicaSet scale-down hint (KEP-2255). Lower
 	// values are removed first; a Pod without it counts as 0.
 	PodDeletionCostAnnotation = "controller.kubernetes.io/pod-deletion-cost"
