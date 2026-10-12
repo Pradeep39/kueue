@@ -43,6 +43,7 @@ import (
 	kueue "sigs.k8s.io/kueue/apis/kueue/v1beta2"
 	"sigs.k8s.io/kueue/pkg/constants"
 	"sigs.k8s.io/kueue/pkg/controller/core"
+	"sigs.k8s.io/kueue/pkg/features"
 	"sigs.k8s.io/kueue/pkg/metrics"
 	utilclient "sigs.k8s.io/kueue/pkg/util/client"
 	"sigs.k8s.io/kueue/pkg/util/expectations"
@@ -278,6 +279,20 @@ func (r *elasticJobUngater) podsToUngate(ctx context.Context, wl *kueue.Workload
 	// observed on a real cluster as 3 executors running against a grant of 2, leaving the
 	// ClusterQueue honest while the cluster was oversubscribed.
 	granted := workload.ExtractGrantedPodSetCounts(wl)
+	// While a partial preemption is outstanding the grant still shows the pre-reclaim count:
+	// it is lowered only after the reclaimed Pods have stopped. In the gap between the last
+	// reclaimed Pod disappearing and the grant being lowered, the old grant would make room
+	// for Pods the reclaim just gave away. Observed on a cluster: two recreated executors
+	// ungated in that gap, leaving four running against a grant of two. Cap by the target.
+	if features.Enabled(features.SparkPartialPreemption) {
+		if spec, declared := workload.PartialPreemption(wl); declared {
+			if target, pending := workload.PartialPreemptionTarget(wl); pending {
+				if g, ok := granted[spec.PodSet]; ok && target < g {
+					granted[spec.PodSet] = target
+				}
+			}
+		}
+	}
 	gatedPerPodSet := make(map[kueue.PodSetReference][]*corev1.Pod)
 	ungatedPerPodSet := make(map[kueue.PodSetReference]int32)
 	admissionUpdates := make(map[kueue.PodSetReference]podAdmissionUpdate)

@@ -733,6 +733,12 @@ Where the implementation on this branch differs from, or adds to, the sections a
 - **Scale-up slices never fall back to whole eviction** (§5.3), whatever the ClusterQueue's fallback.
   The first cluster run showed why: with both low-priority applications at their floor, a
   one-executor scale-up of the high-priority application evicted a whole low-priority one.
+- **The ungater caps at the reclaim target while a partial preemption is outstanding.** The grant is
+  lowered only after the reclaimed Pods stop. In the gap between the last of them disappearing and
+  the grant falling, the old grant made room for Pods the reclaim had just given away. On the cluster
+  (P3) two recreated executors were ungated in that gap, leaving four running against a grant of two,
+  an SC-2 breach. The target annotation is cleared only after the grant is lowered, so capping by it
+  closes the gap.
 - **A stale completion pass is a no-op.** A reconcile that reads the Workload before the previous
   pass's writes land finds the grant already at the target. It finishes the cleanup without lowering
   the grant again or emitting a second completion event.
