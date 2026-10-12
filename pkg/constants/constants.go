@@ -103,4 +103,47 @@ const (
 
 	ElasticJobScaleUpStrategyAtomic  = "atomic"
 	ElasticJobScaleUpStrategyPartial = "partial"
+
+	// Partial preemption (docs/design/spark-aware-preemption.md). These live here, rather than
+	// in the job framework, because the scheduler cache and the preemption planner read them.
+
+	// PartialPreemptionPodSetAnnotation, on a Workload, names the PodSet that partial
+	// preemption may reduce. A Workload without it is never partially preempted, which is
+	// how the driver of a Spark application stays protected: it is never named.
+	PartialPreemptionPodSetAnnotation = "kueue.x-k8s.io/partial-preemption-podset"
+	// PartialPreemptionMinCountAnnotation, on a Workload, is the count partial preemption
+	// must never take the reclaimable PodSet below.
+	PartialPreemptionMinCountAnnotation = "kueue.x-k8s.io/partial-preemption-min-count"
+	// PartialPreemptionMarkedPodsAnnotation, on a Workload, counts the reclaimable PodSet's
+	// ungated Pods whose controller.kubernetes.io/pod-deletion-cost is below 0: Pods their
+	// own job has already chosen to remove, and so cost nothing to reclaim.
+	PartialPreemptionMarkedPodsAnnotation = "kueue.x-k8s.io/partial-preemption-marked-pods"
+	// PartialPreemptionTargetAnnotation, on a victim Workload, is the granted count the
+	// reclaimable PodSet must be reduced to. Set by the scheduler; cleared by the job
+	// reconciler once the reclaim has completed.
+	PartialPreemptionTargetAnnotation = "kueue.x-k8s.io/partial-preemption-target"
+	// PartialPreemptionDeadlineAnnotation, on a victim Workload, is the RFC 3339 time after
+	// which the grant is lowered even if the reclaimed Pods have not stopped.
+	PartialPreemptionDeadlineAnnotation = "kueue.x-k8s.io/partial-preemption-deadline"
+	// PartialPreemptionRestoreCountAnnotation, on a Workload, is the granted count of the
+	// reclaimable PodSet before its first outstanding partial preemption. While the grant is
+	// below it, the Workload's scale-up slices are grow-back and must not preempt. It is
+	// carried onto replacement slices and removed once the grant reaches it again.
+	PartialPreemptionRestoreCountAnnotation = "kueue.x-k8s.io/partial-preemption-restore-count"
+	// PartialPreemptionFallbackAnnotation, on a ClusterQueue, chooses what happens when
+	// partial preemption cannot fit the preemptor's minimum: "Evict" (default) falls back to
+	// whole-workload preemption, "Wait" leaves the preemptor pending.
+	PartialPreemptionFallbackAnnotation = "kueue.x-k8s.io/partial-preemption-fallback"
+	PartialPreemptionFallbackEvict      = "Evict"
+	PartialPreemptionFallbackWait       = "Wait"
+	// PartialPreemptionTimeoutAnnotation, on a ClusterQueue, is a Go duration bounding how
+	// long a partial preemption waits for the reclaimed Pods to stop.
+	PartialPreemptionTimeoutAnnotation = "kueue.x-k8s.io/partial-preemption-timeout"
+	// DefaultPartialPreemptionTimeout applies when the ClusterQueue sets no timeout. It covers
+	// the 120s executor grace period the Spark webhook defaults, plus 30s.
+	DefaultPartialPreemptionTimeout = "150s"
+
+	// PodDeletionCostAnnotation is Kubernetes' ReplicaSet scale-down hint (KEP-2255). Lower
+	// values are removed first; a Pod without it counts as 0.
+	PodDeletionCostAnnotation = "controller.kubernetes.io/pod-deletion-cost"
 )
