@@ -101,7 +101,9 @@ func classicalPreemptionStrategy(ctx context.Context, preemptor *Preemptor, pree
 			allowBorrowing := opts.borrowing
 			candidateIter := func(yieldCandidate func(*Target) bool) {
 				cont := iterateOverCandidates(ctx, preemptionCtx, candidatesGenerator, allowBorrowing, yieldCandidate)
-				if cont && features.Enabled(features.ConfigurablePreemptions) {
+				// Configurable preemption's candidates cannot be filtered before they leave the
+				// snapshot, so a fallback that must spare partial-preemption workloads skips them.
+				if cont && features.Enabled(features.ConfigurablePreemptions) && !preemptionCtx.excludePartialDeclared {
 					preemptionCtx.configurableEvaluator.FindCandidates(
 						preemptionCtx.snapshot,
 						&preemptionCtx.preemptor,
@@ -125,7 +127,7 @@ func iterateOverCandidates(
 	allowBorrowing bool,
 	yield func(*Target) bool,
 ) (cont bool) {
-	yield = policy.YieldFromSnapshot(preemptionCtx.snapshot, yield)
+	yield = skipPartialDeclared(preemptionCtx, policy.YieldFromSnapshot(preemptionCtx.snapshot, yield))
 	iterator.Reset()
 	for candidateWl, reason := iterator.Next(allowBorrowing); candidateWl != nil; candidateWl, reason = iterator.Next(allowBorrowing) {
 		candidate := &Target{

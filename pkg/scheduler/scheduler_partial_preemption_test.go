@@ -69,6 +69,7 @@ func TestAttemptLadder(t *testing.T) {
 		none    = preemption.NoPreemption
 		partial = preemption.PartialOnly
 		whole   = preemption.WholeOnly
+		undecl  = preemption.WholeOnlyUndeclared
 	)
 	reducible := func(w *utiltestingapi.WorkloadWrapper) *utiltestingapi.WorkloadWrapper {
 		return w.PodSets(*utiltestingapi.MakePodSet("main", 4).SetMinimumCount(1).Request(corev1.ResourceCPU, "1").Obj())
@@ -154,14 +155,23 @@ func TestAttemptLadder(t *testing.T) {
 			wantTried: []planAttempt{full(none), red(none), full(partial), red(partial)},
 			wantNote:  "partial preemption cannot make room and the ClusterQueue's partial-preemption fallback is Wait",
 		},
-		"scale-up slice: never falls back to whole eviction": {
+		"scale-up slice: falls back only to victims that did not opt in": {
 			gate: true, cqEnabled: true,
 			wl: func(w *utiltestingapi.WorkloadWrapper) *utiltestingapi.WorkloadWrapper {
 				return reducible(w).Annotation(workloadslicing.WorkloadSliceReplacementFor, "default/predecessor")
 			},
 			fitsIn:    []planAttempt{full(whole), red(whole)},
-			wantTried: []planAttempt{full(none), red(none), full(partial), red(partial)},
-			wantNote:  "scaling up a running workload never preempts whole workloads, and partial preemption cannot make room above the victims' floors",
+			wantTried: []planAttempt{full(none), red(none), full(partial), red(partial), full(undecl), red(undecl)},
+			wantNote:  "scaling up a running workload never preempts whole workloads that opted into partial preemption, and nothing else can make room",
+		},
+		"scale-up slice: evicts a victim that did not opt in": {
+			gate: true, cqEnabled: true,
+			wl: func(w *utiltestingapi.WorkloadWrapper) *utiltestingapi.WorkloadWrapper {
+				return reducible(w).Annotation(workloadslicing.WorkloadSliceReplacementFor, "default/predecessor")
+			},
+			fitsIn:    []planAttempt{full(undecl)},
+			wantTried: []planAttempt{full(none), red(none), full(partial), red(partial), full(undecl)},
+			wantFit:   true,
 		},
 		"scale-up slice: partial preemption still applies": {
 			gate: true, cqEnabled: true,

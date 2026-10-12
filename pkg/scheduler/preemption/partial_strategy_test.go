@@ -479,6 +479,62 @@ func TestWholeOnlyIgnoresPartialPreemption(t *testing.T) {
 	}
 }
 
+// The scale-up fallback spares victims that declare partial preemption and evicts the others.
+func TestWholeOnlyUndeclaredSparesDeclaredVictims(t *testing.T) {
+	features.SetFeatureGateDuringTest(t, features.SparkPartialPreemption, true)
+	ctx, log := utiltesting.ContextWithLog(t)
+	now := time.Now().Truncate(time.Second)
+	for name, tc := range map[string]struct {
+		mode Mode
+		want []string
+	}{
+		"WholeOnlyUndeclared evicts only the undeclared victim": {mode: WholeOnlyUndeclared, want: []string{"b"}},
+		"WholeOnly takes the newer, declared victim first":      {mode: WholeOnly, want: []string{"a"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			declared := partialVictimSpec{name: "a", cq: "cq", pods: 2, floor: 1, age: 1}.workload(now)
+			undeclared := partialVictimSpec{name: "b", cq: "cq", pods: 2, undeclared: true, age: 2}.workload(now)
+			cl := utiltesting.NewClientBuilder().WithObjects(declared, undeclared).Build()
+			cqCache := schdcache.New(cl)
+			cqCache.AddOrUpdateResourceFlavor(log, utiltestingapi.MakeResourceFlavor("default").Obj())
+			if err := cqCache.AddClusterQueue(ctx, partialCQ("cq", "4", "")); err != nil {
+				t.Fatal(err)
+			}
+			for _, w := range []*kueue.Workload{declared, undeclared} {
+				cqCache.AddOrUpdateWorkload(ctx, log, w)
+			}
+			snapshot, err := cqCache.Snapshot(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			incoming := utiltestingapi.MakeWorkload("in", "").Priority(100).
+				PodSets(*utiltestingapi.MakePodSet(partialPodSet, 2).Request(corev1.ResourceCPU, "1").Obj()).Obj()
+			wlInfo := workload.NewInfo(log, incoming)
+			wlInfo.ClusterQueue = "cq"
+			assignment := flavorassigner.Assignment{PodSets: []flavorassigner.PodSetAssignment{{
+				Name: partialPodSet, Count: 2,
+				Flavors: flavorassigner.ResourceAssignment{corev1.ResourceCPU: {Name: "default", Mode: flavorassigner.Preempt}},
+			}}}
+			preemptor := New(cl, workload.Ordering{}, &utiltesting.EventRecorder{}, nil, false, clocktesting.NewFakeClock(now), nil, preemptexpectations.New(), nil)
+			targets := preemptor.GetTargetsWithStrategy(ctx, preemptor.GetPreemptionStrategyIteratorWithMode(ctx, *wlInfo, snapshot, assignment, tc.mode))
+			var got []string
+			for _, tgt := range targets {
+				if tgt.Reclaim != nil {
+					t.Errorf("Mode %v produced a partial target %v", tc.mode, tgt)
+				}
+				got = append(got, tgt.WorkloadInfo.Obj.Name)
+			}
+			if tc.want != nil {
+				if diff := cmp.Diff(tc.want, got); diff != "" {
+					t.Errorf("Unexpected whole targets (-want,+got):\n%s", diff)
+				}
+			} else if len(got) != 1 {
+				t.Errorf("Want one whole target, got %v", got)
+			}
+		})
+	}
+}
+
 func TestPartialPodSetUsageRoundTrip(t *testing.T) {
 	_, log := utiltesting.ContextWithLog(t)
 	now := time.Now()

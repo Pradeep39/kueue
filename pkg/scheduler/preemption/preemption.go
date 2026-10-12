@@ -134,6 +134,22 @@ type preemptionCtx struct {
 	tasRequests           schdcache.WorkloadTASRequests
 	frsNeedPreemption     sets.Set[resources.FlavorResource]
 	configurableEvaluator *configurable.PreemptionEvaluator
+	// excludePartialDeclared skips candidates that declare partial preemption (WholeOnlyUndeclared).
+	excludePartialDeclared bool
+}
+
+// skipPartialDeclared wraps a snapshot-removing yield so that, when the context excludes them,
+// candidates declaring partial preemption are passed over before they are removed.
+func skipPartialDeclared(pCtx *preemptionCtx, yield func(*Target) bool) func(*Target) bool {
+	if !pCtx.excludePartialDeclared {
+		return yield
+	}
+	return func(t *Target) bool {
+		if _, declared := workload.PartialPreemption(t.WorkloadInfo.Obj); declared {
+			return true
+		}
+		return yield(t)
+	}
 }
 
 func New(
@@ -196,6 +212,11 @@ const (
 	// NoPreemption produces no targets at all: the workload may only be admitted into free
 	// quota. Used for grow-back slices (§5.5).
 	NoPreemption
+	// WholeOnlyUndeclared is WholeOnly restricted to victims that do not declare partial
+	// preemption. A scale-up slice uses it as its fallback: a workload that opted into partial
+	// preemption is never evicted whole so that another can grow (§5.3), while workloads that
+	// did not opt in are preempted exactly as before.
+	WholeOnlyUndeclared
 )
 
 // GetPreemptionStrategyIteratorWithMode is GetPreemptionStrategyIterator restricted to mode.
@@ -211,6 +232,10 @@ func (p *Preemptor) GetPreemptionStrategyIteratorWithMode(
 		return p.partialPreemptionStrategyIterator(ctx, p.buildContext(ctx, wl, assignment, snapshot))
 	case NoPreemption:
 		return func(func(PreemptionStrategy) bool) {}
+	case WholeOnlyUndeclared:
+		pCtx := p.buildContext(ctx, wl, assignment, snapshot)
+		pCtx.excludePartialDeclared = true
+		return p.getPreemptionStrategyIterator(ctx, pCtx)
 	default:
 		return p.GetPreemptionStrategyIterator(ctx, wl, snapshot, assignment)
 	}

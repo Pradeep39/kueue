@@ -302,11 +302,13 @@ stops at the first that fits:
 - **`Evict` (default)** runs today's whole-workload preemption.
 - **`Wait`** leaves the preemptor pending.
 
-**A scale-up slice never falls back to whole eviction.** It belongs to a workload that is already
-running. Evicting a whole application so that another can grow by a few executors is the thrash this
-design exists to stop. So growth takes what lies above the victims' floors, or waits, whatever the
-ClusterQueue's fallback setting. This was found on the cluster (§11a): with every victim at its floor,
-a one-executor scale-up evicted a whole application.
+**A scale-up slice never whole-evicts a workload that opted into partial preemption.** It belongs
+to a workload that is already running. Evicting a whole application so that another can grow by a few
+executors is the thrash this design exists to stop. So growth takes what lies above opted-in victims'
+floors, or waits, whatever the ClusterQueue's fallback setting. Its fallback (`WholeOnlyUndeclared`)
+may still evict workloads that did not opt in, exactly as before, which keeps PR-7. This was found on
+the cluster (§11a): with every victim at its floor, a one-executor scale-up evicted a whole
+application.
 
 Because step 4 comes first, whole eviction only happens when the preemptor's own minimum cannot fit
 even after every eligible victim is reduced to its floor. In the baseline, that is a high-priority
@@ -730,7 +732,10 @@ Where the implementation on this branch differs from, or adds to, the sections a
 - **Field ownership.** The `PartiallyPreempted` condition is written under the field owner
   `kueue-partial-preemption` by both the scheduler and the job framework. The annotations are written
   with merge patches.
-- **Scale-up slices never fall back to whole eviction** (§5.3), whatever the ClusterQueue's fallback.
+- **Scale-up slices never whole-evict an opted-in workload** (§5.3), whatever the ClusterQueue's
+  fallback. They may still evict workloads that did not opt in, as before (PR-7). A first version
+  forbade all whole eviction for scale-ups, which also changed behaviour for victims that never
+  opted in and for other elastic integrations' scale-ups.
   The first cluster run showed why: with both low-priority applications at their floor, a
   one-executor scale-up of the high-priority application evicted a whole low-priority one.
 - **The ungater caps at the reclaim target while a partial preemption is outstanding.** The grant is
