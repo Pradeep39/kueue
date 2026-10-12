@@ -20,6 +20,9 @@ Reading order for a reviewer short on time: §2.2 (why gang scheduling is the wr
 Code references are paths relative to the repository root. This describes a working implementation
 validated on a live cluster. Known gaps are stated as such — §14 and §A9.
 
+A condensed version, with the same decisions, mechanisms and results and less of the reasoning:
+[`spark-elastic-quota-management-condensed.md`](./spark-elastic-quota-management-condensed.md).
+
 Diagrams: [`diagrams/`](./diagrams/README.md).
 
 ---
