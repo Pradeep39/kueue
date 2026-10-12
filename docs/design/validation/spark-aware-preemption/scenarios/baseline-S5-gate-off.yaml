@@ -1,0 +1,141 @@
+# Scenario baseline-S5-gate-off
+# Setup: 12-slot cohort (setup/queues.yaml as is); SparkPartialPreemption gate OFF
+# Wave 1 (als-lo1:low,als-lo2:low) is applied at t=0; wave 2 (als-hi:high) 40 s later.
+# Judged by: req-check --preemption; baseline-preempt.py
+# Generated with: gen-apps.py als-lo1:low,als-lo2:low --idle 5s  /  gen-apps.py als-hi:high --idle 5s
+# ---- wave 1
+apiVersion: sparkoperator.k8s.io/v1beta2
+kind: SparkApplication
+metadata:
+  name: als-lo1
+  namespace: batch-ns-uno
+  annotations:
+    kueue.x-k8s.io/elastic-job: "true"
+  labels:
+    kueue.x-k8s.io/queue-name: batch-queue-uno
+    kueue.x-k8s.io/priority-class: low
+spec:
+  type: Scala
+  mode: cluster
+  image: docker.io/library/spark:4.0.1
+  imagePullPolicy: IfNotPresent
+  mainClass: org.apache.spark.examples.SparkALS
+  mainApplicationFile: local:///opt/spark/examples/jars/spark-examples.jar
+  arguments: ["1500", "1500", "12", "15", "200"]
+  sparkVersion: 4.0.1
+  sparkConf:
+    "spark.kubernetes.executor.podNamePrefix": "als-lo1"
+    "spark.dynamicAllocation.enabled": "true"
+    "spark.dynamicAllocation.shuffleTracking.enabled": "true"
+    "spark.dynamicAllocation.minExecutors": "3"
+    "spark.dynamicAllocation.maxExecutors": "30"
+    "spark.dynamicAllocation.schedulerBacklogTimeout": "2s"
+    "spark.dynamicAllocation.executorIdleTimeout": "5s"
+  driver:
+    cores: 1
+    memory: 512m
+    serviceAccount: spark-operator-spark
+    securityContext: &sc
+      capabilities:
+        drop: [ALL]
+      runAsGroup: 185
+      runAsUser: 185
+      runAsNonRoot: true
+      allowPrivilegeEscalation: false
+      seccompProfile:
+        type: RuntimeDefault
+  executor:
+    cores: 1
+    memory: 512m
+    securityContext: *sc
+---
+apiVersion: sparkoperator.k8s.io/v1beta2
+kind: SparkApplication
+metadata:
+  name: als-lo2
+  namespace: batch-ns-uno
+  annotations:
+    kueue.x-k8s.io/elastic-job: "true"
+  labels:
+    kueue.x-k8s.io/queue-name: batch-queue-uno
+    kueue.x-k8s.io/priority-class: low
+spec:
+  type: Scala
+  mode: cluster
+  image: docker.io/library/spark:4.0.1
+  imagePullPolicy: IfNotPresent
+  mainClass: org.apache.spark.examples.SparkALS
+  mainApplicationFile: local:///opt/spark/examples/jars/spark-examples.jar
+  arguments: ["1500", "1500", "12", "15", "200"]
+  sparkVersion: 4.0.1
+  sparkConf:
+    "spark.kubernetes.executor.podNamePrefix": "als-lo2"
+    "spark.dynamicAllocation.enabled": "true"
+    "spark.dynamicAllocation.shuffleTracking.enabled": "true"
+    "spark.dynamicAllocation.minExecutors": "3"
+    "spark.dynamicAllocation.maxExecutors": "30"
+    "spark.dynamicAllocation.schedulerBacklogTimeout": "2s"
+    "spark.dynamicAllocation.executorIdleTimeout": "5s"
+  driver:
+    cores: 1
+    memory: 512m
+    serviceAccount: spark-operator-spark
+    securityContext: &sc
+      capabilities:
+        drop: [ALL]
+      runAsGroup: 185
+      runAsUser: 185
+      runAsNonRoot: true
+      allowPrivilegeEscalation: false
+      seccompProfile:
+        type: RuntimeDefault
+  executor:
+    cores: 1
+    memory: 512m
+    securityContext: *sc
+---
+# ---- wave 2
+apiVersion: sparkoperator.k8s.io/v1beta2
+kind: SparkApplication
+metadata:
+  name: als-hi
+  namespace: batch-ns-uno
+  annotations:
+    kueue.x-k8s.io/elastic-job: "true"
+  labels:
+    kueue.x-k8s.io/queue-name: batch-queue-uno
+    kueue.x-k8s.io/priority-class: high
+spec:
+  type: Scala
+  mode: cluster
+  image: docker.io/library/spark:4.0.1
+  imagePullPolicy: IfNotPresent
+  mainClass: org.apache.spark.examples.SparkALS
+  mainApplicationFile: local:///opt/spark/examples/jars/spark-examples.jar
+  arguments: ["1500", "1500", "12", "15", "200"]
+  sparkVersion: 4.0.1
+  sparkConf:
+    "spark.kubernetes.executor.podNamePrefix": "als-hi"
+    "spark.dynamicAllocation.enabled": "true"
+    "spark.dynamicAllocation.shuffleTracking.enabled": "true"
+    "spark.dynamicAllocation.minExecutors": "3"
+    "spark.dynamicAllocation.maxExecutors": "30"
+    "spark.dynamicAllocation.schedulerBacklogTimeout": "2s"
+    "spark.dynamicAllocation.executorIdleTimeout": "5s"
+  driver:
+    cores: 1
+    memory: 512m
+    serviceAccount: spark-operator-spark
+    securityContext: &sc
+      capabilities:
+        drop: [ALL]
+      runAsGroup: 185
+      runAsUser: 185
+      runAsNonRoot: true
+      allowPrivilegeEscalation: false
+      seccompProfile:
+        type: RuntimeDefault
+  executor:
+    cores: 1
+    memory: 512m
+    securityContext: *sc
