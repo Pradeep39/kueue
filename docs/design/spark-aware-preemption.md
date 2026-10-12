@@ -302,6 +302,12 @@ stops at the first that fits:
 - **`Evict` (default)** runs today's whole-workload preemption.
 - **`Wait`** leaves the preemptor pending.
 
+**A scale-up slice never falls back to whole eviction.** It belongs to a workload that is already
+running. Evicting a whole application so that another can grow by a few executors is the thrash this
+design exists to stop. So growth takes what lies above the victims' floors, or waits, whatever the
+ClusterQueue's fallback setting. This was found on the cluster (§11a): with every victim at its floor,
+a one-executor scale-up evicted a whole application.
+
 Because step 4 comes first, whole eviction only happens when the preemptor's own minimum cannot fit
 even after every eligible victim is reduced to its floor. In the baseline, that is a high-priority
 application's *first* admission, its driver plus initial gang (5 of the 50 evictions). It is not a
@@ -724,6 +730,12 @@ Where the implementation on this branch differs from, or adds to, the sections a
 - **Field ownership.** The `PartiallyPreempted` condition is written under the field owner
   `kueue-partial-preemption` by both the scheduler and the job framework. The annotations are written
   with merge patches.
+- **Scale-up slices never fall back to whole eviction** (§5.3), whatever the ClusterQueue's fallback.
+  The first cluster run showed why: with both low-priority applications at their floor, a
+  one-executor scale-up of the high-priority application evicted a whole low-priority one.
+- **A stale completion pass is a no-op.** A reconcile that reads the Workload before the previous
+  pass's writes land finds the grant already at the target. It finishes the cleanup without lowering
+  the grant again or emitting a second completion event.
 - **Metrics (§5.7) are not implemented yet.** Events cover the lifecycle.
 
 # 12. Implementation inventory

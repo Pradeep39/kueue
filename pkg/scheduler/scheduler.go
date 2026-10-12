@@ -1687,6 +1687,7 @@ type attemptLadder struct {
 	growBack        bool
 	waitFallback    bool
 	reclaimInFlight bool
+	scaleUp         bool
 }
 
 // planLadder builds the attempt ladder for wl in cq.
@@ -1717,6 +1718,15 @@ func planLadder(wl *workload.Info, cq *schdcache.ClusterQueueSnapshot) attemptLa
 	if cq.PartialPreemption.FallbackWait {
 		l := newAttemptLadder(canReduce, preemption.NoPreemption, preemption.PartialOnly)
 		l.waitFallback = true
+		return l
+	}
+	// A scale-up slice belongs to a workload that is already running. Evicting a whole
+	// workload so that it can grow by a few Pods is the thrash partial preemption exists to
+	// stop, so growth never falls back to whole eviction: it takes what lies above the
+	// victims' floors, or waits. Whole eviction stays available for a first admission.
+	if workloadslicing.ScaledUp(wl.Obj) {
+		l := newAttemptLadder(canReduce, preemption.NoPreemption, preemption.PartialOnly)
+		l.scaleUp = true
 		return l
 	}
 	if partialPreemptionInFlight(cq) {
@@ -1795,6 +1805,8 @@ func (l attemptLadder) noFitNote() string {
 		return "partial preemption cannot make room and the ClusterQueue's partial-preemption fallback is Wait"
 	case l.reclaimInFlight:
 		return "partial preemption cannot make room yet; whole-workload preemption waits for the partial preemptions in progress to complete"
+	case l.scaleUp:
+		return "scaling up a running workload never preempts whole workloads, and partial preemption cannot make room above the victims' floors"
 	}
 	return ""
 }

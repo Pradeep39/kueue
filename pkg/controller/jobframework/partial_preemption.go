@@ -266,6 +266,16 @@ func (r *JobReconciler) executePartialPreemption(ctx context.Context, job Generi
 		return ctrl.Result{RequeueAfter: requeue}, true, nil
 	}
 
+	// A pass that read the Workload before the previous pass's writes landed finds the grant
+	// already at the target. Finish the cleanup without lowering again or reporting twice.
+	if granted <= target {
+		if err := r.resolvePartiallyPreempted(ctx, wl, constants.PartialPreemptionCompletedReason,
+			fmt.Sprintf("Reclaimed %s down to %d", podSet, target), now); err != nil {
+			return ctrl.Result{}, true, err
+		}
+		return ctrl.Result{}, true, clearPartialPreemptionTarget(ctx, r.client, wl)
+	}
+
 	// Step 3: lower the grant, and only now. spec.podSets is left alone on purpose.
 	reason := constants.PartialPreemptionCompletedReason
 	eventType, eventReason := corev1.EventTypeNormal, ReasonPartialPreemptionComplete

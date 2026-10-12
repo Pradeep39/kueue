@@ -328,6 +328,14 @@ func TestPartialPreemptionReclaimOrchestration(t *testing.T) {
 				eventType: corev1.EventTypeNormal, eventReason: ReasonPartialPreemptionComplete, restoreCount: "4",
 			},
 		},
+		"grant already at the target (stale pass): cleaned up without lowering or reporting again": {
+			wl:             withTarget(makePPTip(now), 4, now.Add(time.Minute), now).Obj(),
+			stopAfterCalls: 1,
+			want: want{
+				reclaimCalls: []int32{4}, grant: 4, cpu: "4", targetCleared: true,
+				condStatus: metav1.ConditionFalse, condReason: kueueconstants.PartialPreemptionCompletedReason,
+			},
+		},
 		"evicted mid-reclaim: abandoned without touching the grant": {
 			wl:             withTarget(makePPTip(now), 2, now.Add(time.Minute), now).EvictedAt(now).Obj(),
 			stopAfterCalls: 1,

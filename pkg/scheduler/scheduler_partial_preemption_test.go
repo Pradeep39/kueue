@@ -154,6 +154,24 @@ func TestAttemptLadder(t *testing.T) {
 			wantTried: []planAttempt{full(none), red(none), full(partial), red(partial)},
 			wantNote:  "partial preemption cannot make room and the ClusterQueue's partial-preemption fallback is Wait",
 		},
+		"scale-up slice: never falls back to whole eviction": {
+			gate: true, cqEnabled: true,
+			wl: func(w *utiltestingapi.WorkloadWrapper) *utiltestingapi.WorkloadWrapper {
+				return reducible(w).Annotation(workloadslicing.WorkloadSliceReplacementFor, "default/predecessor")
+			},
+			fitsIn:    []planAttempt{full(whole), red(whole)},
+			wantTried: []planAttempt{full(none), red(none), full(partial), red(partial)},
+			wantNote:  "scaling up a running workload never preempts whole workloads, and partial preemption cannot make room above the victims' floors",
+		},
+		"scale-up slice: partial preemption still applies": {
+			gate: true, cqEnabled: true,
+			wl: func(w *utiltestingapi.WorkloadWrapper) *utiltestingapi.WorkloadWrapper {
+				return reducible(w).Annotation(workloadslicing.WorkloadSliceReplacementFor, "default/predecessor")
+			},
+			fitsIn:    []planAttempt{red(partial)},
+			wantTried: []planAttempt{full(none), red(none), full(partial), red(partial)},
+			wantFit:   true,
+		},
 		"grow-back: free quota only, never preempts": {
 			gate: true, cqEnabled: true,
 			wl:        func(w *utiltestingapi.WorkloadWrapper) *utiltestingapi.WorkloadWrapper { return growBack(reducible(w)) },
