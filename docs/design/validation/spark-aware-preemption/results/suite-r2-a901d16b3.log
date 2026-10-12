@@ -1,0 +1,119 @@
+Kueue under test: ghcr.io/pradeep39/kueue:v0.20.0-devel-1339-ga901d16b3
+   quota: 6 cpu / 5376Mi per ClusterQueue (12 slots in the cohort)
+
+=================== P1-S4-floor-min  (07:31:41)
+   wave1 als-lo1:low,als-lo2:low [--partial --cap 2 --idle 5s]   wave2 +40s als-hi:high [--partial --cap 2 --idle 5s]
+FAIL  R-1 accounting tracks what runs                            ledger above live Pods: longest 43s (peak +7); live Pods above ledger: longest 2s
+FAIL  R-4 capacity returned on scale-down                        longest over-reservation 43s at 12:32:36; ledger at end 0 cpu
+PASS  R-13 per-worker charge matches the Pod                     0 samples where ledger memory/cpu differs from live Pods' request (charge == Pod request)
+PASS  SC-1 quota is a ceiling                                    SC-1 quota ceiling (12 cpu): HELD on 187 samples
+PASS  SC-1b live Pods within quota                               SC-1b real capacity (ungated live pods x 1cpu <= 12): HELD
+PASS  SC-2 every running worker has a grant (R-3, R-6)           SC-2 every running executor has a grant: HELD (1498 checks, grace 3s)
+PASS  capture integrity                                          watch starts: pods=1 workloads=1 (1 = no restart)
+n/a   R-4 evicted quota released promptly once Pods stop         no evictions
+INFO  R-2 resize while admitted, no restart                      preemption run; restarts {'als-lo1': 0, 'als-lo2': 0, 'als-hi': 0} are evictions, not resizes
+PASS  R-5 the job's resource is not modified to account for it   spec generation bumps vs suspend flips per app: als-hi 1/1, als-lo1 1/1, als-lo2 1/1
+PASS  R-8 starts below its maximum (maxExecutors 30 > 12 slots)  admitted ['als-hi', 'als-lo1', 'als-lo2'] of ['als-hi', 'als-lo1', 'als-lo2']
+PASS  R-11 workers awaiting quota bounded                        peak gated Pods per app {'als-hi': 2, 'als-lo1': 2, 'als-lo2': 2} against maxPendingPods 2
+INFO  R-12 no free capacity idle behind a pending scale-up       25s idle (preemption run)
+== PP-1012-0731-P1-S4-floor-min
+   whole preemptions 0, partial preemptions 8, reclaims completed 7, timed out 1, restarts (PENDING_RERUN) 3
+   app        state        end(s) drivers whole partial reruns execDel decom  graceful/unfinished/killed/unexpected failedEx
+   als-hi     COMPLETED       195       1     0       0      1      17    on                                -/-/-/-        0
+   als-lo1    COMPLETED       299       1     0       2      1      36    on                               10/0/0/0        1
+   als-lo2    COMPLETED       142       1     0       1      1      22    on                                3/0/0/0        0
+   quota: 6 cpu / 5376Mi per ClusterQueue (12 slots in the cohort)
+
+=================== P2-S4-floor1  (07:39:49)
+   wave1 als-lo1:low,als-lo2:low [--partial --cap 2 --floor 1 --idle 5s]   wave2 +40s als-hi:high [--partial --cap 2 --idle 5s]
+FAIL  R-1 accounting tracks what runs                            ledger above live Pods: longest 40s (peak +8); live Pods above ledger: longest 2s
+FAIL  R-4 capacity returned on scale-down                        longest over-reservation 40s at 12:40:51; ledger at end 0 cpu
+PASS  R-13 per-worker charge matches the Pod                     0 samples where ledger memory/cpu differs from live Pods' request (charge == Pod request)
+PASS  SC-1 quota is a ceiling                                    SC-1 quota ceiling (12 cpu): HELD on 190 samples
+PASS  SC-1b live Pods within quota                               SC-1b real capacity (ungated live pods x 1cpu <= 12): HELD
+PASS  SC-2 every running worker has a grant (R-3, R-6)           SC-2 every running executor has a grant: HELD (1567 checks, grace 3s)
+PASS  capture integrity                                          watch starts: pods=1 workloads=1 (1 = no restart)
+n/a   R-4 evicted quota released promptly once Pods stop         no evictions
+INFO  R-2 resize while admitted, no restart                      preemption run; restarts {'als-lo1': 0, 'als-lo2': 0, 'als-hi': 0} are evictions, not resizes
+PASS  R-5 the job's resource is not modified to account for it   spec generation bumps vs suspend flips per app: als-hi 1/1, als-lo1 1/1, als-lo2 1/1
+PASS  R-8 starts below its maximum (maxExecutors 30 > 12 slots)  admitted ['als-hi', 'als-lo1', 'als-lo2'] of ['als-hi', 'als-lo1', 'als-lo2']
+PASS  R-11 workers awaiting quota bounded                        peak gated Pods per app {'als-hi': 1, 'als-lo1': 2, 'als-lo2': 2} against maxPendingPods 2
+INFO  R-12 no free capacity idle behind a pending scale-up       5s idle (preemption run)
+== PP-1012-0731-P2-S4-floor1
+   whole preemptions 0, partial preemptions 16, reclaims completed 15, timed out 0, restarts (PENDING_RERUN) 3
+   app        state        end(s) drivers whole partial reruns execDel decom  graceful/unfinished/killed/unexpected failedEx
+   als-hi     COMPLETED       214       1     0       0      1      14    on                                6/0/0/0        0
+   als-lo1    COMPLETED       199       1     0       5      1      32    on                                6/0/0/0        0
+   als-lo2    COMPLETED       106       1     0       2      1      17    on                                2/0/0/0        0
+   quota: 6 cpu / 5376Mi per ClusterQueue (12 slots in the cohort)
+
+=================== P3-S5-floor1  (07:48:04)
+   wave1 als-lo1:low,als-lo2:low [--floor 1 --idle 5s]   wave2 +40s als-hi:high [--idle 5s]
+PASS  R-1 accounting tracks what runs                            ledger above live Pods: longest 8s (peak +8); live Pods above ledger: longest 0s
+PASS  R-4 capacity returned on scale-down                        longest over-reservation 8s at 12:49:37; ledger at end 0 cpu
+PASS  R-13 per-worker charge matches the Pod                     0 samples where ledger memory/cpu differs from live Pods' request (charge == Pod request)
+PASS  SC-1 quota is a ceiling                                    SC-1 quota ceiling (12 cpu): HELD on 85 samples
+PASS  SC-1b live Pods within quota                               SC-1b real capacity (ungated live pods x 1cpu <= 12): HELD
+PASS  SC-2 every running worker has a grant (R-3, R-6)           SC-2 every running executor has a grant: HELD (2575 checks, grace 3s)
+FAIL  capture integrity                                          watch starts: pods=2 workloads=2 (1 = no restart)
+n/a   R-4 evicted quota released promptly once Pods stop         no evictions
+INFO  R-2 resize while admitted, no restart                      preemption run; restarts {'als-lo1': 0, 'als-lo2': 0, 'als-hi': 0} are evictions, not resizes
+PASS  R-5 the job's resource is not modified to account for it   spec generation bumps vs suspend flips per app: als-hi 1/1, als-lo1 1/1, als-lo2 1/1
+PASS  R-8 starts below its maximum (maxExecutors 30 > 12 slots)  admitted ['als-hi', 'als-lo1', 'als-lo2'] of ['als-hi', 'als-lo1', 'als-lo2']
+INFO  R-11 workers awaiting quota bounded                        no cap in this run; peak gated per app {'als-hi': 6, 'als-lo1': 2, 'als-lo2': 28}
+INFO  R-12 no free capacity idle behind a pending scale-up       278s idle (preemption run)
+== PP-1012-0731-P3-S5-floor1
+   whole preemptions 0, partial preemptions 7, reclaims completed 6, timed out 0, restarts (PENDING_RERUN) 3
+   app        state        end(s) drivers whole partial reruns execDel decom  graceful/unfinished/killed/unexpected failedEx
+   als-hi     COMPLETED       426       1     0       0      1      16    on                                6/0/0/0        0
+   als-lo1    COMPLETED       426       1     0       5      1      27    on                                3/0/0/0        0
+   als-lo2    COMPLETED       426       1     0       2      1     136    on                                6/0/0/0        0
+   quota: 6 cpu / 5376Mi per ClusterQueue (12 slots in the cohort)
+
+=================== P4-S4-floor1-nodecom  (07:56:19)
+   wave1 als-lo1:low,als-lo2:low [--partial --cap 2 --floor 1 --no-decom --idle 5s]   wave2 +40s als-hi:high [--partial --cap 2 --idle 5s]
+PASS  R-1 accounting tracks what runs                            ledger above live Pods: longest 10s (peak +8); live Pods above ledger: longest 3s
+PASS  R-4 capacity returned on scale-down                        longest over-reservation 10s at 12:56:40; ledger at end 0 cpu
+PASS  R-13 per-worker charge matches the Pod                     0 samples where ledger memory/cpu differs from live Pods' request (charge == Pod request)
+PASS  SC-1 quota is a ceiling                                    SC-1 quota ceiling (12 cpu): HELD on 193 samples
+PASS  SC-1b live Pods within quota                               SC-1b real capacity (ungated live pods x 1cpu <= 12): HELD
+PASS  SC-2 every running worker has a grant (R-3, R-6)           SC-2 every running executor has a grant: HELD (1969 checks, grace 3s)
+PASS  capture integrity                                          watch starts: pods=1 workloads=1 (1 = no restart)
+n/a   R-4 evicted quota released promptly once Pods stop         no evictions
+INFO  R-2 resize while admitted, no restart                      preemption run; restarts {'als-lo1': 0, 'als-lo2': 0, 'als-hi': 0} are evictions, not resizes
+PASS  R-5 the job's resource is not modified to account for it   spec generation bumps vs suspend flips per app: als-hi 1/1, als-lo1 1/1, als-lo2 1/1
+PASS  R-8 starts below its maximum (maxExecutors 30 > 12 slots)  admitted ['als-hi', 'als-lo1', 'als-lo2'] of ['als-hi', 'als-lo1', 'als-lo2']
+PASS  R-11 workers awaiting quota bounded                        peak gated Pods per app {'als-hi': 2, 'als-lo1': 2, 'als-lo2': 2} against maxPendingPods 2
+INFO  R-12 no free capacity idle behind a pending scale-up       10s idle (preemption run)
+== PP-1012-0731-P4-S4-floor1-nodecom
+   whole preemptions 0, partial preemptions 7, reclaims completed 7, timed out 0, restarts (PENDING_RERUN) 3
+   app        state        end(s) drivers whole partial reruns execDel decom  graceful/unfinished/killed/unexpected failedEx
+   als-hi     COMPLETED       291       1     0       0      1      23    on                                5/0/0/0        0
+   als-lo1    COMPLETED       138       1     0       4      1      21   off                                0/0/0/5        0
+   als-lo2    COMPLETED       166       1     0       3      1      20   off                                0/0/3/3        0
+   quota: 12 cpu / 10752Mi per ClusterQueue (24 slots in the cohort)
+
+=================== P5-static-victims  (08:04:33)
+   wave1 als-lo1:low,als-lo2:low [--static-elastic 8 --floor 2]   wave2 +40s als-hi:high [--partial --cap 2 --idle 5s]
+PASS  R-1 accounting tracks what runs                            ledger above live Pods: longest 11s (peak +18); live Pods above ledger: longest 5s
+PASS  R-4 capacity returned on scale-down                        longest over-reservation 11s at 13:05:37; ledger at end 0 cpu
+PASS  R-13 per-worker charge matches the Pod                     0 samples where ledger memory/cpu differs from live Pods' request (charge == Pod request)
+PASS  SC-1 quota is a ceiling                                    SC-1 quota ceiling (24 cpu): HELD on 188 samples
+PASS  SC-1b live Pods within quota                               SC-1b real capacity (ungated live pods x 1cpu <= 24): HELD
+PASS  SC-2 every running worker has a grant (R-3, R-6)           SC-2 every running executor has a grant: HELD (1044 checks, grace 3s)
+PASS  capture integrity                                          watch starts: pods=1 workloads=1 (1 = no restart)
+n/a   R-4 evicted quota released promptly once Pods stop         no evictions
+INFO  R-2 resize while admitted, no restart                      preemption run; restarts {'als-lo1': 0, 'als-lo2': 0, 'als-hi': 0} are evictions, not resizes
+PASS  R-5 the job's resource is not modified to account for it   spec generation bumps vs suspend flips per app: als-hi 1/1, als-lo1 1/1, als-lo2 1/1
+PASS  R-8 starts below its maximum (maxExecutors 30 > 12 slots)  admitted ['als-hi', 'als-lo1', 'als-lo2'] of ['als-hi', 'als-lo1', 'als-lo2']
+INFO  R-11 workers awaiting quota bounded                        no cap in this run; peak gated per app {'als-hi': 2, 'als-lo1': 1, 'als-lo2': 1}
+INFO  R-12 no free capacity idle behind a pending scale-up       4s idle (preemption run)
+== PP-1012-0731-P5-static-victims
+   whole preemptions 0, partial preemptions 0, reclaims completed 0, timed out 0, restarts (PENDING_RERUN) 3
+   app        state        end(s) drivers whole partial reruns execDel decom  graceful/unfinished/killed/unexpected failedEx
+   als-hi     COMPLETED       229       1     0       0      1      28    on                               15/0/0/0        0
+   als-lo1    COMPLETED        94       1     0       0      1       8    on                                -/-/-/-        0
+   als-lo2    COMPLETED       144       1     0       0      1       8    on                                -/-/-/-        0
+   quota: 6 cpu / 5376Mi per ClusterQueue (12 slots in the cohort)
+
+suite done 08:12:53

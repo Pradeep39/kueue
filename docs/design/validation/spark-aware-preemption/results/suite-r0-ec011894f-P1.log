@@ -1,0 +1,27 @@
+Kueue under test: ghcr.io/pradeep39/kueue:v0.20.0-devel-1336-gec011894f
+   quota: 6 cpu / 5376Mi per ClusterQueue (12 slots in the cohort)
+
+=================== P1-S4-floor-min  (03:29:01)
+   wave1 als-lo1:low,als-lo2:low [--partial --cap 2 --idle 5s]   wave2 +40s als-hi:high [--partial --cap 2 --idle 5s]
+FAIL  R-1 accounting tracks what runs                            ledger above live Pods: longest 39s (peak +6); live Pods above ledger: longest 3s
+FAIL  R-4 capacity returned on scale-down                        longest over-reservation 39s at 08:29:59; ledger at end 4 cpu (apps not all finished: {'als-lo1': 'RUNNING', 'als-lo2': 'COMP
+PASS  R-13 per-worker charge matches the Pod                     0 samples where ledger memory/cpu differs from live Pods' request (charge == Pod request)
+PASS  SC-1 quota is a ceiling                                    SC-1 quota ceiling (12 cpu): HELD on 191 samples
+PASS  SC-1b live Pods within quota                               SC-1b real capacity (ungated live pods x 1cpu <= 12): HELD
+PASS  SC-2 every running worker has a grant (R-3, R-6)           SC-2 every running executor has a grant: HELD (2097 checks, grace 3s)
+PASS  capture integrity                                          watch starts: pods=1 workloads=1 (1 = no restart)
+PASS  R-4 evicted quota released promptly once Pods stop         2 evictions; release after last active Pod: median 1s, max 1s
+INFO  R-2 resize while admitted, no restart                      preemption run; restarts {'als-lo1': 2, 'als-lo2': 0, 'als-hi': 0} are evictions, not resizes
+PASS  R-5 the job's resource is not modified to account for it   spec generation bumps vs suspend flips per app: als-hi 1/1, als-lo1 5/5, als-lo2 1/1
+PASS  R-8 starts below its maximum (maxExecutors 30 > 12 slots)  admitted ['als-hi', 'als-lo1', 'als-lo2'] of ['als-hi', 'als-lo1', 'als-lo2']
+PASS  R-11 workers awaiting quota bounded                        peak gated Pods per app {'als-hi': 2, 'als-lo1': 2, 'als-lo2': 2} against maxPendingPods 2
+INFO  R-12 no free capacity idle behind a pending scale-up       22s idle (preemption run)
+== PP-1012-0329-P1-S4-floor-min
+   whole preemptions 2, partial preemptions 3, reclaims completed 4, timed out 0, restarts (PENDING_RERUN) 6
+   app        state        end(s) drivers whole partial reruns execDel decom  graceful/unfinished/killed/unexpected failedEx
+   als-hi     COMPLETED       209       1     0       0      1      26    on                                7/0/0/0        0
+   als-lo1    RUNNING           -       3     2       1      3      17    on                                1/0/0/0        0
+   als-lo2    COMPLETED       117       1     0       2      1      28    on                                4/0/0/0        0
+   quota: 6 cpu / 5376Mi per ClusterQueue (12 slots in the cohort)
+
+suite done 03:37:16

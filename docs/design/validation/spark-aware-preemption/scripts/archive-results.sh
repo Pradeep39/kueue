@@ -16,8 +16,8 @@ while IFS='|' read -r glob name rc ppa; do
     { echo "# $name  (capture: $(basename "$d"))"
       grep -m1 'kueue-controller-manager' "$d/context.txt" 2>/dev/null | sed 's/^/# /' || true
       echo; echo "## req-check $rc"
-      python3 -I "$HERE/req-check.py" "$d" $rc
-      if [ "$ppa" != "-" ]; then echo; echo "## pp-analyze $ppa"; python3 -I "$HERE/pp-analyze.py" $ppa "$d"; fi
+      python3 -I "$HERE/req-check.py" "$d" $rc || true   # exits non-zero when a check fails
+      if [ "$ppa" != "-" ]; then echo; echo "## pp-analyze $ppa"; python3 -I "$HERE/pp-analyze.py" $ppa "$d" || true; fi
       echo; echo "## summary.txt"; cat "$d/summary.txt" 2>/dev/null || true; } > "$f" 2>&1
     cp "$d/timeline.csv" "$OUT/$name.timeline.csv" 2>/dev/null || true
   done
