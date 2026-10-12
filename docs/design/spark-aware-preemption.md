@@ -489,6 +489,25 @@ exceeds the grant, so the job reconciler creates a scale-up slice for the differ
 §14.1 describes. That slice *is* the grow-back. It is admitted when quota frees up, and the ungater
 then releases the gated Pods.
 
+**Static applications reach the same state by a different route.**
+
+- **Kueue's request does not come from live Pods.** With Dynamic Allocation off, the executor count
+  Kueue requests is the declared `spark.executor.instances` (`sparkapplication_podset.go:224-225`).
+  So the request stays at the full count. As soon as the grant is lowered, the reconciler sees request >
+  grant and creates the grow-back slice. That would happen even if Spark recreated nothing.
+- **The driver does not scale up.** Its target is fixed at startup
+  (`KubernetesClusterSchedulerBackend.scala:111-112`). Only Dynamic Allocation calls the path that
+  changes it, `doRequestTotalExecutors` (`:187`).
+- **It replaces lost executors, up to that same target.** On the allocator's next round, the
+  replacements are born gated and stay Pending. Pending Pods count toward the target, so nothing more
+  is created. Spark never deletes them: it deletes Pending Pods only when Pods exceed the target, and
+  `spark.kubernetes.allocation.executor.timeout` covers only Pods that never appear.
+- **The reclaim is not a failure.** A deleted executor is `PodDeleted`. Only `PodFailed` is registered
+  with the failure tracker (`ExecutorPodsLifecycleManager.scala:99-107`), whose static-application limit
+  is `max(3, 2 × instances)`. §8 covers the one exception, and decommissioning avoids it.
+- **The application keeps running on fewer executors** until the grow-back slice is admitted and the
+  gated replacements are released.
+
 **Grow-back never preempts.** A reclaim records how many executors it took, in
 `kueue.x-k8s.io/partial-preemption-reclaimed: "<n>"` on the victim Workload.
 
