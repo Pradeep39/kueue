@@ -140,8 +140,8 @@ const (
 	// long a partial preemption waits for the reclaimed Pods to stop.
 	PartialPreemptionTimeoutAnnotation = "kueue.x-k8s.io/partial-preemption-timeout"
 	// DefaultPartialPreemptionTimeout applies when the ClusterQueue sets no timeout. It covers
-	// the 120s executor grace period the Spark webhook defaults, plus 30s.
-	DefaultPartialPreemptionTimeout = "150s"
+	// the 60s executor grace period the Spark webhook defaults, plus 30s.
+	DefaultPartialPreemptionTimeout = "90s"
 
 	// PartiallyPreemptedCondition is the Workload condition a partial preemption sets on its
 	// victim: True while the reclaim is outstanding, False with reason
