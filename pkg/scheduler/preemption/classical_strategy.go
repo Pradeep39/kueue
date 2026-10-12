@@ -33,12 +33,17 @@ type candidateIterator interface {
 	Next(borrow bool) (candidate *workload.Info, evictReason string)
 }
 
-// classicalPreemptionStrategy implements a heuristic to find a minimal set of Workloads
-// to preempt.
-// The heuristic first removes candidates, in the input order, while their
-// ClusterQueues are still borrowing resources and while the incoming Workload
-// doesn't fit in the quota.
-func classicalPreemptionStrategy(ctx context.Context, preemptor *Preemptor, preemptionCtx *preemptionCtx) iter.Seq[PreemptionStrategy] {
+// classicalCandidateSource is the classical candidate iterator, which the partial strategy
+// also draws its candidates from.
+type classicalCandidateSource interface {
+	candidateIterator
+	Candidates() []classical.Candidate
+	IsValid(candidate classical.Candidate, borrow bool) bool
+}
+
+// newClassicalCandidates builds the classical candidate iterator for the preemptor and the
+// borrowing options to attempt, in order.
+func newClassicalCandidates(ctx context.Context, preemptor *Preemptor, preemptionCtx *preemptionCtx) (classicalCandidateSource, []preemptionAttemptOpts) {
 	log := log.FromContext(ctx)
 	hierarchicalReclaimCtx := &classical.HierarchicalPreemptionCtx{
 		Log:               log,
@@ -81,7 +86,16 @@ func classicalPreemptionStrategy(ctx context.Context, preemptor *Preemptor, pree
 	default:
 		attemptPossibleOpts = []preemptionAttemptOpts{{true}, {false}}
 	}
+	return candidatesGenerator, attemptPossibleOpts
+}
 
+// classicalPreemptionStrategy implements a heuristic to find a minimal set of Workloads
+// to preempt.
+// The heuristic first removes candidates, in the input order, while their
+// ClusterQueues are still borrowing resources and while the incoming Workload
+// doesn't fit in the quota.
+func classicalPreemptionStrategy(ctx context.Context, preemptor *Preemptor, preemptionCtx *preemptionCtx) iter.Seq[PreemptionStrategy] {
+	candidatesGenerator, attemptPossibleOpts := newClassicalCandidates(ctx, preemptor, preemptionCtx)
 	return func(yieldStrategy func(PreemptionStrategy) bool) {
 		for _, opts := range attemptPossibleOpts {
 			allowBorrowing := opts.borrowing

@@ -161,3 +161,31 @@ func (c *candidateIterator) candidateIsValid(candidate *candidateElem, borrow bo
 func (c *candidateIterator) Reset() {
 	c.runIndex = 0
 }
+
+// Candidate is one preemption candidate of the classical algorithm with the reason it may
+// be preempted for. It is used by partial preemption, which takes from the same candidates
+// in its own order (docs/design/spark-aware-preemption.md §5.3).
+type Candidate struct {
+	WorkloadInfo *workload.Info
+	Reason       string
+	elem         *candidateElem
+}
+
+// Candidates returns every candidate, in the iterator's order, whatever its validity.
+func (c *candidateIterator) Candidates() []Candidate {
+	out := make([]Candidate, 0, len(c.candidates))
+	for _, elem := range c.candidates {
+		out = append(out, Candidate{
+			WorkloadInfo: elem.wl,
+			Reason:       elem.preemptionVariant.PreemptionReason(),
+			elem:         elem,
+		})
+	}
+	return out
+}
+
+// IsValid reports whether the candidate may still be preempted given the current state of
+// the snapshot, by the same rules Next applies.
+func (c *candidateIterator) IsValid(candidate Candidate, borrow bool) bool {
+	return c.candidateIsValid(candidate.elem, borrow)
+}
