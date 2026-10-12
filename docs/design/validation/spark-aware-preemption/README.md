@@ -22,6 +22,7 @@ The runs found four bugs. All are fixed on the branch, and each fix has a negati
 | [`scenarios/`](./scenarios/) | One manifest per scenario, both waves; the header records its setup and checks |
 | [`scripts/`](./scripts/) | Capture, analyzers, scenario generator, suite runners, results archiver |
 | [`results/`](./results/) | Per-run verdicts (`*.txt`), timelines (`*.timeline.csv`), suite logs |
+| [`demo/`](./demo/) | A live demo for Lens and KueueViz: `demo.sh` (scenarios A–D and a live terminal view) and the presenter guide [`DEMO.md`](./demo/DEMO.md) |
 
 ---
 

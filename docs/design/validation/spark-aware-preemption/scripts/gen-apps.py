@@ -7,6 +7,7 @@ PRIORITY is a WorkloadPriorityClass name (low/default/high) or "-" for none. Sam
 workload as apps.yaml, so runs stay comparable.
 """
 import argparse
+import json
 
 TEMPLATE = '''apiVersion: sparkoperator.k8s.io/v1beta2
 kind: SparkApplication
@@ -24,7 +25,7 @@ spec:
   imagePullPolicy: IfNotPresent
   mainClass: org.apache.spark.examples.SparkALS
   mainApplicationFile: local:///opt/spark/examples/jars/spark-examples.jar
-  arguments: ["1500", "1500", "12", "15", "200"]
+  arguments: {als_args}
   sparkVersion: 4.0.1
   sparkConf:
     "spark.kubernetes.executor.podNamePrefix": "{name}"
@@ -58,6 +59,7 @@ ap.add_argument("apps")
 ap.add_argument("--partial", action="store_true")
 ap.add_argument("--cap", type=int)
 ap.add_argument("--idle", default="5s")
+ap.add_argument("--als-args", default="1500 1500 12 15 200", help="SparkALS arguments: M U F iterations slices")
 ap.add_argument("--backlog", default="2s")
 ap.add_argument("--static", type=int, metavar="N", help="no Dynamic Allocation: spark.executor.instances N, not elastic")
 ap.add_argument("--static-elastic", type=int, metavar="N", help="no Dynamic Allocation: spark.executor.instances N, but keep the elastic opt-in")
@@ -69,7 +71,7 @@ docs = []
 for spec in a.apps.split(","):
     name, prio = spec.split(":")
     docs.append(TEMPLATE.format(
-        name=name, idle=a.idle, backlog=a.backlog,
+        name=name, idle=a.idle, backlog=a.backlog, als_args=json.dumps(a.als_args.split()),
         partial='\n    kueue.x-k8s.io/elastic-job-scale-up-strategy: "partial"' if a.partial else "",
         priority=f"\n    kueue.x-k8s.io/priority-class: {prio}" if prio != "-" else "",
         cap=f'\n    "spark.kubernetes.allocation.maxPendingPods": "{a.cap}"' if a.cap else "",
