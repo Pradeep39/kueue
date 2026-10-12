@@ -570,6 +570,14 @@ func (r *JobReconciler) ReconcileGenericJob(ctx context.Context, req ctrl.Reques
 			r.record.Eventf(object, nil, corev1.EventTypeNormal, ReasonFinishedWorkload, "FinishedWorkload",
 				"Workload '%s' is declared finished", workload.Key(wl))
 		}
+		// An elastic job can have more than one live slice: an admitted one and a scale-up
+		// slice still pending. wl is only one of them, so finish the others too, or the
+		// admitted slice keeps its quota after the job has ended.
+		if workloadslicing.Enabled(object) {
+			if err := r.finishRemainingSlices(ctx, job, wl, success, message); err != nil {
+				return ctrl.Result{}, err
+			}
+		}
 
 		// Execute job finalization logic
 		if err := r.finalizeJob(ctx, job); err != nil {
@@ -2452,4 +2460,30 @@ func mergeAnnotations(job GenericJob, customAnnotations map[string]string) (map[
 		}
 	}
 	return merged, changed
+}
+
+// finishRemainingSlices finishes every not-finished Workload of a finished elastic job other than
+// done, which the caller has already handled.
+func (r *JobReconciler) finishRemainingSlices(ctx context.Context, job GenericJob, done *kueue.Workload, success bool, message string) error {
+	object := job.Object()
+	list := &kueue.WorkloadList{}
+	if err := r.client.List(ctx, list, client.InNamespace(object.GetNamespace()), OwnerReferenceIndexFieldMatcher(job.GVK(), object.GetName())); err != nil {
+		return err
+	}
+	reason := kueue.WorkloadFinishedReasonSucceeded
+	if !success {
+		reason = kueue.WorkloadFinishedReasonFailed
+	}
+	for i := range list.Items {
+		wl := &list.Items[i]
+		if (done != nil && wl.UID == done.UID) || workloadfinish.IsFinished(wl) {
+			continue
+		}
+		if err := workloadfinish.Finish(ctx, r.client, wl, reason, message, r.clock); err != nil && !apierrors.IsNotFound(err) {
+			return err
+		}
+		r.record.Eventf(object, nil, corev1.EventTypeNormal, ReasonFinishedWorkload, "FinishedWorkload",
+			"Workload '%s' is declared finished", workload.Key(wl))
+	}
+	return nil
 }

@@ -18,6 +18,7 @@ package jobframework_test
 
 import (
 	"context"
+	"fmt"
 	"strconv"
 	"testing"
 	"time"
@@ -699,5 +700,76 @@ func TestPartialPreemptionRestoreCountCarriedToPendingReplacement(t *testing.T) 
 	}
 	if got := env.get(ppTipName).Annotations[kueueconstants.PartialPreemptionRestoreCountAnnotation]; got != "4" {
 		t.Errorf("tip restore count = %q, want \"4\" (its grant is still below it)", got)
+	}
+}
+
+// A job that finishes while a partial preemption is outstanding must still have its Workload
+// finished: abandoning the reclaim must not keep the finish step from running. Found on a
+// cluster (P5): two completed applications kept 18 slots of quota for 381s.
+func TestPartialPreemptionJobFinishedWorkloadIsFinished(t *testing.T) {
+	now := time.Now().Truncate(time.Second)
+	cases := map[string]*kueue.Workload{
+		"target outstanding": withTarget(makePPTip(now), 2, now.Add(time.Minute), now).Obj(),
+		"after a reclaim: grant below the request, restore count recorded": makePPTip(now).
+			Annotation(kueueconstants.PartialPreemptionRestoreCountAnnotation, "4").
+			ReserveQuotaAt(utiltestingapi.MakeAdmission("cq").PodSets(
+				utiltestingapi.MakePodSetAssignment(ppDriver).Assignment(corev1.ResourceCPU, "default", "1").Count(1).Obj(),
+				utiltestingapi.MakePodSetAssignment(ppExecutor).Assignment(corev1.ResourceCPU, "default", "2").Count(2).Obj(),
+			).Obj(), now.Add(-time.Hour)).Obj(),
+	}
+	for name, wl := range cases {
+		t.Run(name, func(t *testing.T) {
+			enablePPGates(t, true)
+			env := newPPEnv(t, now, 4, wl)
+			env.finished = true
+			for range 3 {
+				env.reconcile()
+			}
+			got := env.get(ppTipName)
+			if !apimeta.IsStatusConditionTrue(got.Status.Conditions, kueue.WorkloadFinished) {
+				t.Errorf("Workload not finished after the job finished; conditions %v", got.Status.Conditions)
+			}
+			if n := len(env.workloads()); n != 1 {
+				t.Errorf("got %d workloads, want 1 (a finished job must not create a grow-back slice)", n)
+			}
+		})
+	}
+}
+
+// A job that finishes while a scale-up slice is still pending must have every slice finished,
+// not only the one the reconciler picked. Found on a cluster (P5): a static application, partially
+// preempted, had a grow-back slice pending when it completed; the pending slice was finished and
+// the admitted one kept 7 slots of quota for six minutes.
+func TestJobFinishedFinishesEverySlice(t *testing.T) {
+	now := time.Now().Truncate(time.Second)
+	for _, gate := range []bool{true, false} {
+		t.Run(fmt.Sprintf("SparkPartialPreemption=%v", gate), func(t *testing.T) {
+			enablePPGates(t, gate)
+			tip := makePPTip(now).Obj()
+			tip.Status.Admission.PodSetAssignments[1].Count = new(int32(2))
+			tip.Status.Admission.PodSetAssignments[1].ResourceUsage = corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("2")}
+			pending := utiltestingapi.MakeWorkload("job-wl-probe", "ns").
+				Creation(now).
+				ControllerReference(ppGVK, "job", "job-uid").
+				Annotation(workloadslicing.EnabledAnnotationKey, workloadslicing.EnabledAnnotationValue).
+				Annotation(kueue.WorkloadSliceNameAnnotation, ppTipName).
+				Annotation(workloadslicing.WorkloadSliceReplacementFor, "ns/"+ppTipName).
+				Queue("lq").
+				PodSets(
+					*utiltestingapi.MakePodSet(ppDriver, 1).Request(corev1.ResourceCPU, "1").Obj(),
+					*utiltestingapi.MakePodSet(ppExecutor, 4).Request(corev1.ResourceCPU, "1").Obj(),
+				).Obj()
+			env := newPPEnv(t, now, 4, tip, pending)
+			env.finished = true
+			for range 3 {
+				env.reconcile()
+			}
+			for _, wl := range env.workloads() {
+				if !apimeta.IsStatusConditionTrue(wl.Status.Conditions, kueue.WorkloadFinished) {
+					t.Errorf("workload %s not finished after its job finished (quota reserved: %v)",
+						wl.Name, apimeta.IsStatusConditionTrue(wl.Status.Conditions, kueue.WorkloadQuotaReserved))
+				}
+			}
+		})
 	}
 }

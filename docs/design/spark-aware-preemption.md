@@ -739,6 +739,13 @@ Where the implementation on this branch differs from, or adds to, the sections a
   (P3) two recreated executors were ungated in that gap, leaving four running against a grant of two,
   an SC-2 breach. The target annotation is cleared only after the grant is lowered, so capping by it
   closes the gap.
+- **A finished elastic job finishes every slice.** When a job finishes, the job framework finished
+  only the Workload it had just picked. If a scale-up slice was still pending, that was the slice it
+  picked, and the admitted slice kept its quota after the job ended. Found on the cluster (P5): a
+  partially preempted static application had a grow-back slice pending when it completed, and its
+  admitted slice held 7 slots for six minutes. The bug is in the shared slicing code, not partial
+  preemption: any elastic job that finishes with a scale-up pending hits it. Partial preemption makes
+  it routine for static applications, whose request stays above a lowered grant until they finish.
 - **A stale completion pass is a no-op.** A reconcile that reads the Workload before the previous
   pass's writes land finds the grant already at the target. It finishes the cleanup without lowering
   the grant again or emitting a second completion event.
