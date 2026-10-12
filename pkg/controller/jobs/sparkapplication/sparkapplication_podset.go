@@ -233,18 +233,12 @@ func (j *SparkApplication) computeLiveExecutorCount(ctx context.Context, c clien
 		return j.initialExecutorCount()
 	}
 
-	podList := &corev1.PodList{}
-	if err := c.List(ctx, podList,
-		client.InNamespace(j.Namespace),
-		client.MatchingLabels{
-			sparkcommon.LabelSparkAppName: j.Name,
-			sparkcommon.LabelSparkRole:    sparkcommon.SparkRoleExecutor,
-		},
-	); err != nil {
+	pods, err := j.executorPods(ctx, c)
+	if err != nil {
 		return 0, err
 	}
 
-	if len(podList.Items) == 0 {
+	if len(pods) == 0 {
 		// No executor Pods exist yet (e.g. the application was just submitted):
 		// fall back to whatever initial/minimum count Dynamic Allocation is
 		// configured to request at startup, so the very first PodSet reservation
@@ -253,8 +247,8 @@ func (j *SparkApplication) computeLiveExecutorCount(ctx context.Context, c clien
 	}
 
 	var liveCount int32
-	for i := range podList.Items {
-		if isVerifiedLiveExecutor(&podList.Items[i]) {
+	for i := range pods {
+		if isVerifiedLiveExecutor(&pods[i]) {
 			liveCount++
 		}
 	}

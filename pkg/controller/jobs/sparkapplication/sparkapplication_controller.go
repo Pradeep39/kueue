@@ -105,6 +105,15 @@ type SparkApplication struct {
 	// evicted Workload is compared against the job before step 6 runs). nil means it was
 	// not observed this reconcile, and IsActive() falls back to AppState alone.
 	cachedPodsActive *bool
+
+	// cachedExecutorPods memoizes the executor Pod listing for this reconcile, so the live
+	// executor count and the partial-preemption marked-Pod count share one observation.
+	cachedExecutorPods *[]corev1.Pod
+
+	// cachedMarkedExecutorPods records, for PartialPreemptionMarkedPods(), how many ungated
+	// executor Pods carry a negative pod-deletion-cost. Set by PodSets() only when
+	// SparkPartialPreemption is on and the application is elastic; nil means not observed.
+	cachedMarkedExecutorPods *int32
 }
 
 var _ jobframework.GenericJob = (*SparkApplication)(nil)
@@ -261,6 +270,14 @@ func (j *SparkApplication) PodSets(ctx context.Context, c client.Client) ([]kueu
 	// forward onto each scale-up probe (prepareWorkloadSliceForScaleUp).
 	if partialScaleUpEnabled(j) {
 		podSets[1].MinCount = ptr.To(executorCount)
+	}
+	// The live count above does not list Pods for a static application, so the marked-Pod
+	// count partial preemption needs is observed separately (sharing the listing when the
+	// live count did list).
+	if c != nil && partialPreemptionEnabled(j) {
+		if err := j.observeMarkedExecutorPods(ctx, c); err != nil {
+			return nil, err
+		}
 	}
 
 	if err := setTopologyRequestToPodSetIfEnabled(

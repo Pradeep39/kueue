@@ -21,6 +21,7 @@ import (
 	"slices"
 
 	sparkv1beta2 "github.com/kubeflow/spark-operator/v2/api/v1beta2"
+	admissionv1 "k8s.io/api/admission/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
@@ -115,7 +116,63 @@ func (w *SparkApplicationWebhook) Default(ctx context.Context, obj *sparkv1beta2
 		utilpod.GateTemplate(job.Spec.Executor.Template, kueue.ElasticJobSchedulingGate)
 	}
 
+	if isCreateRequest(ctx) && partialPreemptionEnabled(job) && job.reclaimable() {
+		applyDecommissionDefaults(job)
+	}
+
 	return nil
+}
+
+// isCreateRequest reports whether the admission request being defaulted is a CREATE. The
+// mutating webhook is registered for CREATE only (see the marker above), but the
+// partial-preemption defaults must never touch an existing application's spec: the Spark
+// Operator re-runs an application on any spec change outside its exemption list. A context
+// without an admission request (unit tests) is treated as a create.
+func isCreateRequest(ctx context.Context) bool {
+	req, err := admission.RequestFromContext(ctx)
+	if err != nil {
+		return true
+	}
+	return req.Operation == admissionv1.Create
+}
+
+// reclaimable reports whether partial preemption could ever take an executor from the
+// application: its resolved floor is below the most executors it can run. For Dynamic
+// Allocation that is maxExecutors (unbounded when unset, as in Spark); for a static
+// application it is its executor count.
+func (j *SparkApplication) reclaimable() bool {
+	floor, err := j.resolvedPartialPreemptionFloor()
+	if err != nil {
+		return false
+	}
+	if j.dynamicAllocationEnabled() {
+		maxExecutors, ok := j.dynamicAllocationExecutorCount("maxExecutors")
+		return !ok || floor < maxExecutors
+	}
+	count, err := j.numInitialExecutors()
+	return err == nil && floor < count
+}
+
+// applyDecommissionDefaults turns on Spark's graceful decommissioning for a reclaimable
+// application, so deleting an executor Pod migrates its blocks rather than losing them
+// (docs/design/spark-aware-preemption.md §5.4). Values the application sets explicitly,
+// including "false", are left alone.
+func applyDecommissionDefaults(job *SparkApplication) {
+	for _, key := range decommissionSparkConfDefaults {
+		if _, ok := job.Spec.SparkConf[key]; ok {
+			continue
+		}
+		if job.Spec.SparkConf == nil {
+			job.Spec.SparkConf = map[string]string{}
+		}
+		job.Spec.SparkConf[key] = "true"
+	}
+	if job.Spec.Executor.Template == nil {
+		job.Spec.Executor.Template = emptyExecutorPodTemplateSpec.DeepCopy()
+	}
+	if job.Spec.Executor.Template.Spec.TerminationGracePeriodSeconds == nil {
+		job.Spec.Executor.Template.Spec.TerminationGracePeriodSeconds = ptr.To(decommissionTerminationGracePeriodSeconds)
+	}
 }
 
 // +kubebuilder:webhook:path=/validate-sparkoperator-k8s-io-v1beta2-sparkapplication,mutating=false,failurePolicy=fail,sideEffects=None,groups=sparkoperator.k8s.io,resources=sparkapplications,verbs=create;update,versions=v1beta2,name=vsparkapplication.kb.io,admissionReviewVersions=v1
@@ -126,7 +183,7 @@ var _ admission.Validator[*sparkv1beta2.SparkApplication] = &SparkApplicationWeb
 func (w *SparkApplicationWebhook) ValidateCreate(ctx context.Context, obj *sparkv1beta2.SparkApplication) (admission.Warnings, error) {
 	log := ctrl.LoggerFrom(ctx).WithName("sparkapplication-webhook")
 	log.Info("Validating create")
-	validationErrs, err := w.validateCreate(ctx, obj, w.maxTimeoutOnWorkload)
+	validationErrs, err := w.validateCreate(ctx, nil, obj, w.maxTimeoutOnWorkload)
 	if err != nil {
 		return nil, err
 	}
@@ -138,7 +195,8 @@ func isAnElasticJob(sparkApp *sparkv1beta2.SparkApplication) bool {
 	return workloadslicing.Enabled(sparkApp)
 }
 
-func (w *SparkApplicationWebhook) validateCreate(ctx context.Context, job *sparkv1beta2.SparkApplication, maxTimeoutOnWorkload *metav1.Duration) (field.ErrorList, error) {
+// validateCreate validates job. oldJob is nil on create, and the previous object on update.
+func (w *SparkApplicationWebhook) validateCreate(ctx context.Context, oldJob, job *sparkv1beta2.SparkApplication, maxTimeoutOnWorkload *metav1.Duration) (field.ErrorList, error) {
 	var allErrors field.ErrorList
 	kueueJob := fromObject(job)
 
@@ -171,6 +229,20 @@ func (w *SparkApplicationWebhook) validateCreate(ctx context.Context, job *spark
 				),
 			)
 		}
+
+		// The partial-preemption floor. Only a new or changed value is rejected: an
+		// application created before the gate was turned on must still accept updates,
+		// including Kueue's own suspend, and is simply treated as having no property.
+		if features.Enabled(features.SparkPartialPreemption) && preemptionMinExecutorsChanged(oldJob, job) {
+			if _, _, err := kueueJob.sparkConfPreemptionMinExecutorsValue(); err != nil {
+				allErrors = append(allErrors,
+					field.Invalid(sparkConfPath.Key(sparkConfPreemptionMinExecutors),
+						spec.SparkConf[sparkConfPreemptionMinExecutors],
+						"must be a non-negative integer",
+					),
+				)
+			}
+		}
 	}
 
 	allErrors = append(allErrors, jobframework.ValidateJobOnCreate(kueueJob, maxTimeoutOnWorkload)...)
@@ -183,6 +255,17 @@ func (w *SparkApplicationWebhook) validateCreate(ctx context.Context, job *spark
 	}
 
 	return allErrors, nil
+}
+
+// preemptionMinExecutorsChanged reports whether job's spark.kueue.preemption.minExecutors is
+// new (oldJob is nil, i.e. a create) or differs from oldJob's.
+func preemptionMinExecutorsChanged(oldJob, job *sparkv1beta2.SparkApplication) bool {
+	if oldJob == nil {
+		return true
+	}
+	oldValue, oldOk := oldJob.Spec.SparkConf[sparkConfPreemptionMinExecutors]
+	newValue, newOk := job.Spec.SparkConf[sparkConfPreemptionMinExecutors]
+	return oldOk != newOk || oldValue != newValue
 }
 
 func validateElasticJob(job *sparkv1beta2.SparkApplication) field.ErrorList {
@@ -241,7 +324,7 @@ func (w *SparkApplicationWebhook) ValidateUpdate(ctx context.Context, oldSparkAp
 	log := ctrl.LoggerFrom(ctx).WithName("sparkapplication-webhook")
 	log.V(5).Info("Validating update")
 	allErrors := jobframework.ValidateJobOnUpdate(fromObject(oldSparkApp), fromObject(newSparkApp), w.queues.DefaultLocalQueueExist, w.maxTimeoutOnWorkload)
-	validationErrs, err := w.validateCreate(ctx, newSparkApp, nil)
+	validationErrs, err := w.validateCreate(ctx, oldSparkApp, newSparkApp, nil)
 	if err != nil {
 		return nil, err
 	}
