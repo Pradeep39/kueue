@@ -513,14 +513,19 @@ then releases the gated Pods.
 - **The application keeps running on fewer executors** until the grow-back slice is admitted and the
   gated replacements are released.
 
-**Grow-back never preempts.** A reclaim records how many executors it took, in
-`kueue.x-k8s.io/partial-preemption-reclaimed: "<n>"` on the victim Workload.
+**Grow-back never preempts.** A reclaim records the victim's grant before it, in
+`kueue.x-k8s.io/partial-preemption-restore-count: "<n>"` on the victim Workload. Only the first
+reclaim records it; later ones leave it alone.
 
-- **The record is carried forward.** `workloadslicing` copies it onto each replacement slice of the
-  chain, and decrements it as grants grow back.
-- **Up to that count, the scale-up slice may only use free quota.** The planner skips steps 3–5 for that
-  portion.
-- **Beyond it, the slice is ordinary scale-up** and preempts by the normal rules.
+- **The record is carried forward.** The job framework copies it onto each replacement slice of the
+  chain. It removes it once the admitted slice's grant is back at or above it, but never while a
+  reclaim is outstanding.
+- **While it stands, the slice may only use free quota.** The scheduler runs only the free-quota steps
+  (1 and 2 of §5.3) for it, and the planner never preempts on its behalf.
+- **v1 is deliberately stricter than splitting the request.** The whole slice is grow-back while the
+  record stands, including any growth beyond the restore count. A Dynamic Allocation application that
+  wants more than it had before it was reclaimed waits for free quota until it is back at its old grant.
+  Splitting the request into a non-preempting part and an ordinary part is a follow-up.
 
 Without this, a victim's grow-back slice could preempt its own preemptor. That can happen under
 `LowerOrNewerEqualPriority` or in a fair-sharing cohort, and would ping-pong executors back and forth.
@@ -698,6 +703,29 @@ Two harness fixes:
    `RunningWithPartialCapacity` state, and Apple's fork's extra states, have not been checked against
    executors disappearing below `minExecutors`.
 
+# 11a. Implementation notes (v1)
+
+Where the implementation on this branch differs from, or adds to, the sections above:
+
+- **Grow-back** uses the restore count, and the whole slice is grow-back while it stands (§5.5).
+- **The fallback is held off while a reclaim is in flight.** While any workload in the preemptor's
+  cohort tree has a partial-preemption target outstanding, the scheduler skips the `Evict` fallback.
+  Otherwise the preemptor's next pass would find nothing left to reclaim, because the victim's reclaim
+  is already pending, and fall through to evicting a whole application.
+- **Topology-aware preemptors never use partial reclaim.** The TAS simulation removes victims whole.
+  This matches PNG-3.
+- **Decided preemptions are tracked as partial-aware targets** (`preemption.PreemptedTargets`), so a
+  partial victim frees only its reclaimed Pods when the scheduler checks later workloads in the same
+  cycle (SC-1).
+- **The workload controller handles two new transitions.**
+  - It observes the preemption expectation when a target appears, since the victim stays admitted.
+  - It requeues inadmissible workloads when an admitted workload's *grant* drops, since a completed
+    reclaim lowers the grant, not the spec.
+- **Field ownership.** The `PartiallyPreempted` condition is written under the field owner
+  `kueue-partial-preemption` by both the scheduler and the job framework. The annotations are written
+  with merge patches.
+- **Metrics (§5.7) are not implemented yet.** Events cover the lifecycle.
+
 # 12. Implementation inventory
 
 | Component | File | Change |
@@ -708,7 +736,7 @@ Two harness fixes:
 | Pod selection and deletion | `pkg/controller/jobs/sparkapplication/sparkapplication_controller.go` | `ReclaimPods` |
 | Cost sweep and marked-pod count | `pkg/controller/jobs/sparkapplication/sparkapplication_podset.go`, `..._controller.go` | ascending `pod-deletion-cost` selection in `ReclaimPods`; publish `partial-preemption-marked-pods` |
 | Decommission defaults | `pkg/controller/jobs/sparkapplication/sparkapplication_webhook.go` | default the §5.4 settings in `Default()` for reclaimable applications |
-| Grant lowering, reclaimed counter on new slices | `pkg/workloadslicing/workloadslicing.go` | reuse `scaleDownAdmission`; carry `partial-preemption-reclaimed` |
+| Grant lowering, restore count on new slices | `pkg/workloadslicing/workloadslicing.go`, `pkg/controller/jobframework/partial_preemption.go` | `LowerGrantedCounts` on `scaleDownAdmission`; carry `partial-preemption-restore-count` |
 | Partial targets | `pkg/scheduler/preemption/policy/types.go`, `preemption.go`, `classical_strategy.go` | `Target.Reclaim`; partial yielder; spread rule; `IssuePreemptions` branch |
 | Order of attempts, grow-back rule | `pkg/scheduler/scheduler.go` | `getAssignments` steps 1–5 |
 | Expectations | `pkg/scheduler/preemption/expectations` | partial expectation |
