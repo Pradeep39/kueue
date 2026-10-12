@@ -667,7 +667,7 @@ func TestIssuePartialPreemptionKeepsRestoreCount(t *testing.T) {
 	if got.Annotations[constants.PartialPreemptionRestoreCountAnnotation] != "6" || got.Annotations[constants.PartialPreemptionTargetAnnotation] != "3" {
 		t.Errorf("Unexpected annotations %v", got.Annotations)
 	}
-	if got.Annotations[constants.PartialPreemptionDeadlineAnnotation] != now.Add(150*time.Second).UTC().Format(time.RFC3339) {
+	if got.Annotations[constants.PartialPreemptionDeadlineAnnotation] != now.Add(90*time.Second).UTC().Format(time.RFC3339) {
 		t.Errorf("Deadline %q does not use the default timeout", got.Annotations[constants.PartialPreemptionDeadlineAnnotation])
 	}
 }

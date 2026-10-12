@@ -21,7 +21,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"maps"
 	"slices"
 	"strings"
 	"testing"
@@ -386,7 +385,7 @@ func (s *Scheduler) schedule(ctx context.Context) wait.SpeedSignal {
 	// head got admitted that should be scheduled in the cohort before the heads
 	// of other clusterQueues.
 	phaseStartTime = s.clock.Now()
-	preemptedWorkloads := make(preemption.PreemptedWorkloads)
+	preemptedWorkloads := make(preemption.PreemptedTargets)
 	skippedPreemptions := make(map[kueue.ClusterQueueReference]int)
 	refill := s.newRefillPass(iterator, snapshot)
 	for iterator.hasNext() {
@@ -465,7 +464,7 @@ func (s *Scheduler) processEntry(
 	ctx context.Context,
 	e *entry,
 	snapshot *schdcache.Snapshot,
-	preemptedWorkloads preemption.PreemptedWorkloads,
+	preemptedWorkloads preemption.PreemptedTargets,
 	skippedPreemptions map[kueue.ClusterQueueReference]int,
 ) {
 	cq := snapshot.ClusterQueue(e.ClusterQueue)
@@ -766,7 +765,7 @@ func (e *entry) bookedUsage(log logr.Logger) (workload.Usage, *workload.Info) {
 	return usage, target.WorkloadInfo
 }
 
-func (e *entry) checkFits(log logr.Logger, snapshot *schdcache.Snapshot, cq *schdcache.ClusterQueueSnapshot, preemptedWorkloads preemption.PreemptedWorkloads) schdcache.FitsCheck {
+func (e *entry) checkFits(log logr.Logger, snapshot *schdcache.Snapshot, cq *schdcache.ClusterQueueSnapshot, preemptedWorkloads preemption.PreemptedTargets) schdcache.FitsCheck {
 	usage, _ := e.bookedUsage(log)
 	return fits(snapshot, cq, &usage, preemptedWorkloads, e.preemptionTargets)
 }
@@ -884,7 +883,7 @@ func (s *Scheduler) updateAssignmentIfNeeded(
 	e *entry,
 	snapshot *schdcache.Snapshot,
 	cq *schdcache.ClusterQueueSnapshot,
-	preemptedWorkloads preemption.PreemptedWorkloads) (bool, error) {
+	preemptedWorkloads preemption.PreemptedTargets) (bool, error) {
 	fitsCheck := e.checkFits(log, snapshot, cq, preemptedWorkloads)
 
 	needsTASRecompute := fitsCheck == schdcache.FitsCheckNoTAS && features.Enabled(features.TASRecomputeAssignmentWithinSchedulingCycle)
@@ -952,10 +951,11 @@ func (s *Scheduler) updateAssignmentIfNeeded(
 	return schdcache.FitsCheckOk == fitsCheck, nil
 }
 
-func fits(snapshot *schdcache.Snapshot, cq *schdcache.ClusterQueueSnapshot, usage *workload.Usage, preemptedWorkloads preemption.PreemptedWorkloads,
+func fits(snapshot *schdcache.Snapshot, cq *schdcache.ClusterQueueSnapshot, usage *workload.Usage, preemptedWorkloads preemption.PreemptedTargets,
 	newTargets []*preemption.Target) schdcache.FitsCheck {
 	merged := preemptedWorkloads.MergeWithTargets(newTargets)
-	revertUsage := snapshot.SimulateWorkloadUsageRemoval(merged.Workloads())
+	// A partial target frees only its reclaimed Pods, not the victim's whole usage (§5.6, SC-1).
+	revertUsage := merged.SimulateUsageRemoval(snapshot)
 	defer revertUsage()
 	return cq.Fits(*usage)
 }
@@ -1035,14 +1035,8 @@ func (s *Scheduler) evictWorkloadAfterFailedTASReplacement(ctx context.Context, 
 // simulateOtherPreemptions projects the victims of preemptions already decided this cycle
 // out of the snapshot and returns the single undo. Freeing their quota is not enough:
 // until the simulator is told, it still reports their Pods and their host ports.
-func simulateOtherPreemptions(ctx context.Context, log logr.Logger, snapshot *schdcache.Snapshot, preemptedWorkloads preemption.PreemptedWorkloads) func() {
-	victims := slices.Collect(maps.Values(preemptedWorkloads))
-	revertUsage := snapshot.SimulateWorkloadRemoval(victims)
-	revertPods := snapshot.SimulatePodRemoval(ctx, log, victims)
-	return func() {
-		revertPods()
-		revertUsage()
-	}
+func simulateOtherPreemptions(ctx context.Context, log logr.Logger, snapshot *schdcache.Snapshot, preemptedWorkloads preemption.PreemptedTargets) func() {
+	return preemptedWorkloads.SimulateRemoval(ctx, log, snapshot)
 }
 
 // admit sets the admitting clusterQueue and flavors into the workload of
