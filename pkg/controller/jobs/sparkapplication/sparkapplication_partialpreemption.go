@@ -75,8 +75,11 @@ const (
 	sparkConfDecommissionMaxFailures       = "spark.storage.decommission.maxReplicationFailuresPerBlock"
 	decommissionReattemptIntervalSeconds   = 5
 	// Spark's defaults allow a block 3 attempts 30s apart: 90s of retries. The attempt count is
-	// derived from the interval in effect so that window is kept, never going below Spark's 3.
+	// derived from the interval in effect to approach that window, but capped at
+	// decommissionMaxReplicationFailures (at 5s, 9 attempts already outlast the 30s grace period)
+	// and never below Spark's 3.
 	decommissionRetryWindowSeconds     = 90
+	decommissionMaxReplicationFailures = 9
 	sparkDefaultMaxReplicationFailures = 3
 )
 

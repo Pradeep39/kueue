@@ -475,7 +475,7 @@ PodSet, the Spark webhook defaults these settings when the application is create
 |---|---|
 | `spark.decommission.enabled` | `"true"` |
 | `spark.storage.decommission.replicationReattemptInterval` | `5s` |
-| `spark.storage.decommission.maxReplicationFailuresPerBlock` | 90s ÷ interval, at least 3 (`18` at 5s) |
+| `spark.storage.decommission.maxReplicationFailuresPerBlock` | 90s ÷ interval, capped at 9, at least 3 (`9` at 5s) |
 | `spark.storage.decommission.enabled` | `"true"` |
 | `spark.storage.decommission.shuffleBlocks.enabled` | `"true"` |
 | `spark.storage.decommission.rddBlocks.enabled` | `"true"` |
@@ -488,9 +488,11 @@ PodSet, the Spark webhook defaults these settings when the application is create
   `spark.storage.decommission.replicationReattemptInterval` (Spark's default 30s), so a reclaimed
   executor lingers up to 30s after its data has moved. On the cluster, migration of ~70 MiB of shuffle
   per executor took about a second (`validation/…/experiments/shuffle-migration`). The webhook defaults
-  the interval to **5s** and sets `spark.storage.decommission.maxReplicationFailuresPerBlock` to keep
-  Spark's 90s retry window: 90s ÷ interval, never below Spark's 3, so 18 at 5s. An app that sets its
-  own interval gets attempts derived from it; explicit values are kept. Both are Spark-internal
+  the interval to **5s**, which cut a reclaimed executor's exit from 30s to 11s on the cluster. It
+  sets `spark.storage.decommission.maxReplicationFailuresPerBlock` from the interval: 90s ÷ interval,
+  capped at **9** and never below Spark's 3. At 5s that is 9 attempts, about 45s of retries, already
+  longer than the 30s grace period. An app that sets its own interval gets attempts derived from it;
+  explicit values are kept. Both are Spark-internal
   settings.
 - **Both grace-period settings are needed.** From Spark 4.1, `spark.kubernetes.executor.terminationGracePeriodSeconds`
   (default 30s) is written onto every executor Pod and overrides the template

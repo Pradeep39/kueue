@@ -635,19 +635,20 @@ func TestPartialPreemptionWarnings(t *testing.T) {
 	}
 }
 
-// The migration-round interval defaults to 5s and the per-block attempt count follows it, keeping
-// Spark's 90s retry window and never going below Spark's 3. Explicit values are kept.
+// The migration-round interval defaults to 5s and the per-block attempt count follows it: 90s of
+// retries divided by the interval, capped at 9 and never below Spark's 3. Explicit values are kept.
 func TestDecommissionRetryDefaults(t *testing.T) {
 	cases := map[string]struct {
 		conf                       map[string]string
 		wantInterval, wantFailures string
 	}{
-		"neither set":                                          {wantInterval: "5s", wantFailures: "18"},
+		"neither set: capped at 9":                             {wantInterval: "5s", wantFailures: "9"},
 		"interval set: attempts follow":                        {conf: map[string]string{sparkConfDecommissionReattemptInterval: "10s"}, wantInterval: "10s", wantFailures: "9"},
-		"interval in ms: rounded up to 1s":                     {conf: map[string]string{sparkConfDecommissionReattemptInterval: "500ms"}, wantInterval: "500ms", wantFailures: "90"},
+		"interval in ms: capped at 9":                          {conf: map[string]string{sparkConfDecommissionReattemptInterval: "500ms"}, wantInterval: "500ms", wantFailures: "9"},
+		"20s interval: 90/20 rounds up":                        {conf: map[string]string{sparkConfDecommissionReattemptInterval: "20s"}, wantInterval: "20s", wantFailures: "5"},
 		"long interval: never below 3":                         {conf: map[string]string{sparkConfDecommissionReattemptInterval: "2m"}, wantInterval: "2m", wantFailures: "3"},
 		"attempts set: kept":                                   {conf: map[string]string{sparkConfDecommissionMaxFailures: "7"}, wantInterval: "5s", wantFailures: "7"},
-		"unparsable interval: kept, attempts from the default": {conf: map[string]string{sparkConfDecommissionReattemptInterval: "soon"}, wantInterval: "soon", wantFailures: "18"},
+		"unparsable interval: kept, attempts from the default": {conf: map[string]string{sparkConfDecommissionReattemptInterval: "soon"}, wantInterval: "soon", wantFailures: "9"},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
