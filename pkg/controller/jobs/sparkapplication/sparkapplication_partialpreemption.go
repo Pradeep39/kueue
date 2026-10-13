@@ -67,17 +67,18 @@ var decommissionSparkConfDefaults = []string{
 
 // A decommissioning executor exits only once every block is migrated and a migration round has
 // run since its last task finished. Rounds run every replicationReattemptInterval (Spark's default
-// 30s), so a reclaimed executor typically lingers up to 30s after its data has moved, and the
-// preemptor waits that long. Measured on a cluster: migration took about a second; the exit
-// waited for the next 30s round. Both settings are Spark-internal.
+// 30s), so a reclaimed executor typically lingers up to one round after its data has moved, and the
+// preemptor waits that long. A shorter round speeds reclaims, but the executor keeps serving its
+// shuffle files only until it exits: at 5s, tasks already scheduled with its old block locations
+// failed to fetch and Spark resubmitted their stages (measured on a cluster). 15s balances the two.
+// Both settings are Spark-internal.
 const (
 	sparkConfDecommissionReattemptInterval = "spark.storage.decommission.replicationReattemptInterval"
 	sparkConfDecommissionMaxFailures       = "spark.storage.decommission.maxReplicationFailuresPerBlock"
-	decommissionReattemptIntervalSeconds   = 5
+	decommissionReattemptIntervalSeconds   = 15
 	// Spark's defaults allow a block 3 attempts 30s apart: 90s of retries. The attempt count is
-	// derived from the interval in effect to approach that window, but capped at
-	// decommissionMaxReplicationFailures (at 5s, 9 attempts already outlast the 30s grace period)
-	// and never below Spark's 3.
+	// derived from the interval in effect to approach that window (6 at the 15s default), capped
+	// at decommissionMaxReplicationFailures and never below Spark's 3.
 	decommissionRetryWindowSeconds     = 90
 	decommissionMaxReplicationFailures = 9
 	sparkDefaultMaxReplicationFailures = 3

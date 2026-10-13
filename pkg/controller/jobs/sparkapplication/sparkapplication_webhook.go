@@ -171,7 +171,7 @@ func applyDecommissionDefaults(job *SparkApplication) {
 		}
 		job.Spec.SparkConf[key] = "true"
 	}
-	// Shorten the migration round so a reclaimed executor exits seconds, not ~30s, after its data
+	// Shorten the migration round so a reclaimed executor exits sooner than ~30s after its data
 	// has moved, and scale the per-block attempt count with it (capped at 9, at least Spark's 3).
 	interval := int64(decommissionReattemptIntervalSeconds)
 	if v, set := job.Spec.SparkConf[sparkConfDecommissionReattemptInterval]; set {
