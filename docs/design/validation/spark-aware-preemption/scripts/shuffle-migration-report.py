@@ -65,6 +65,7 @@ reloc = [strip(l) for l in drv if "Updating map output" in l]
 resub = [strip(l) for l in drv if re.search(r"Resubmitt|FetchFailed|fetch failure|Lost task|TaskKilled", l)]
 lostf = [strip(l) for l in drv if "Shuffle files lost for executor" in l]
 reasons = [strip(l) for l in drv if "Remove reason statistics" in l]
+decom_after = re.findall(r"Executor (\d+) on \S+ is decommissioned after ([\d.]+) s", "\n".join(drv))
 failed = [strip(l) for l in drv if "new failed executors" in l]
 done = [strip(l) for l in drv if re.search(r"Job \d+ finished|Job \d+ failed|Exception in thread", l)]
 print("\n  driver:")
@@ -72,6 +73,8 @@ print(f"    map outputs relocated to another executor ('Updating map output'): {
 print(f"    'Shuffle files lost for executor' lines: {len(lostf)}  (logged on every executor loss; harmless when outputs were relocated first)")
 print(f"    resubmitted stages / fetch failures / lost or killed tasks: {len(resub)}")
 print(f"    executor failures counted: {len(failed)}")
+if decom_after:
+    print("    time from decommission signal to exit, per executor: " + ", ".join(f"{e}: {t}s" for e, t in decom_after))
 if reasons:
     print(f"    last remove-reason tally: {reasons[-1].split('Remove reason statistics: ')[-1]}")
 if done:

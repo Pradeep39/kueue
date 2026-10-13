@@ -26,19 +26,25 @@ decommissioning:
 
 ## Results
 
-| | Run 1 | Run 2 |
-|---|---|---|
-| Shuffle files per executor at the trigger | 23–42 MiB | 44–72 MiB |
-| Executors reclaimed by partial preemption | 3 (5, 6, 10) | 3 (8, 9, 10) |
-| Shuffle blocks migrated, from the executors' own logs | — (logs not captured¹) | 123 + 134 + 165 blocks = **252 MiB**, 0 failures |
-| Cached RDD blocks migrated | — | 4 per executor, all "migrated successfully" |
-| Map outputs relocated to surviving executors (driver) | 247 | 422 |
-| Resubmitted stages / fetch failures / lost tasks / executor failures | 0 / 0 / 0 / 0 | 0 / 0 / 0 / 0 |
-| Victim job | finished normally (46s) | finished normally (40s) |
-| SC-1 / SC-1b / SC-2 | held | held |
+| | Run 1 | Run 2 | Run 3: 5s migration round |
+|---|---|---|---|
+| `replicationReattemptInterval` / `maxReplicationFailuresPerBlock` | Spark defaults (30s / 3) | Spark defaults | **5s** / 18² |
+| Shuffle files per executor at the trigger | 23–42 MiB | 44–72 MiB | 23–42 MiB |
+| Executors reclaimed by partial preemption | 3 (5, 6, 10) | 3 (8, 9, 10) | 3 (4, 9, 10) |
+| Shuffle blocks migrated, from the executors' own logs | — (logs not captured¹) | 123 + 134 + 165 blocks = **252 MiB**, 0 failures | 73 + 82 + 98 blocks, 0 failures |
+| Cached RDD blocks migrated | — | 4 per executor, all "migrated successfully" | 4 per executor |
+| Map outputs relocated to surviving executors (driver) | 247 | 422 | 253 |
+| **Decommission signal → executor exit** | **30.0s** each (the grace cap) | — (the job ended first, at 19s) | **11.0s** each |
+| **Reclaim issued → quota released to the preemptor** | **33s** | — | **12s** |
+| Resubmitted stages / fetch failures / lost tasks / executor failures | 0 / 0 / 0 / 0 | 0 / 0 / 0 / 0 | 0 / 0 / 0 / 0 |
+| Victim job | finished normally (46s) | finished normally (40s) | finished normally (41s) |
+| SC-1 / SC-1b / SC-2 | held | held | held |
 
 ¹ Run 1's log streamer used a bash 4 associative array, which macOS's bash 3.2 lacks, so it exited.
 Fixed for run 2. Run 1's evidence is the driver log only.
+
+² Run 3 was made before the attempt count was capped at 9. Nothing failed to migrate, so the count
+made no difference.
 
 **Evidence:**
 
@@ -67,12 +73,34 @@ This is the ~31s per reclaim seen elsewhere. In run 1 it coincided with the 30s 
 executors were stopped at the cap just as they would have exited. That was harmless, because everything
 had already been migrated.
 
-Lowering `spark.storage.decommission.replicationReattemptInterval` would shorten that wait. It is an
-`internal()` Spark setting.
+**Fix.** Kueue's webhook now defaults `spark.storage.decommission.replicationReattemptInterval` to
+**5s** for reclaimable apps, and `spark.storage.decommission.maxReplicationFailuresPerBlock` to
+90s ÷ interval, capped at 9 and never below 3 (`9` at 5s). Explicit values are kept.
+
+Run 3 sets the same values explicitly on the current image:
+
+- Each reclaimed executor exited **11s** after the signal, instead of 30s.
+- The preemptor got its quota **12s** after the reclaim was issued, instead of 33s.
+- Migration was still complete.
+
+Both settings are `internal()` in Spark.
+
+## Checking shuffle data per executor
+
+[`shuffle-per-executor.sh`](../../scripts/shuffle-per-executor.sh) prints each running executor's node,
+shuffle file count and MiB on disk, and whether it is decommissioning. Add `--watch` to refresh every 5s.
+
+```bash
+./shuffle-per-executor.sh pr-victim [namespace] [--watch]
+```
+
+The driver's Spark UI (Executors tab, *Shuffle Write*) shows lifetime totals instead. Reach it with
+`kubectl port-forward pod/<app>-driver 4040`.
 
 ## Rerunning
 
 ```bash
 # from a working copy of ../../scripts with runs/ beside it
 ./run-shuffle-migration.sh 15          # 15 = MiB of shuffle files every executor must hold before the trigger
+EXTRA_CONF="spark.storage.decommission.replicationReattemptInterval=5s" ./run-shuffle-migration.sh 15   # run 3
 ```

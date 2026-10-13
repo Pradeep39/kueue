@@ -6,7 +6,7 @@
 # at least THRESH_MB of shuffle files (measured with du in the executor), a high-priority app is
 # submitted, Kueue reclaims executors, and their own logs (streamed from start to exit) show whether
 # Spark's decommissioner migrated the blocks.
-#   run-shuffle-migration.sh [THRESH_MB]
+#   [EXTRA_CONF=key=value,key=value] run-shuffle-migration.sh [THRESH_MB]
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 NS=batch-ns-uno; SA=sparkapplications.sparkoperator.k8s.io
@@ -27,7 +27,8 @@ y = y.replace("    \"spark.kubernetes.executor.podNamePrefix\"",
   "    \"spark.kubernetes.executor.terminationGracePeriodSeconds\": \"30s\"\n"
   "    \"spark.sql.files.maxPartitionBytes\": \"2m\"\n"
   "    \"spark.default.parallelism\": \"40\"\n"
-  "    \"spark.kubernetes.executor.podNamePrefix\"", 1)
+  + "".join("    \"%s\": \"%s\"\n" % tuple(kv.split("=", 1)) for kv in sys.argv[2].split(",") if kv)
+  + "    \"spark.kubernetes.executor.podNamePrefix\"", 1)
 init = ("    initContainers:\n    - name: gen-edges\n      image: docker.io/library/spark:4.0.1\n"
         "      command: [\"sh\", \"-c\", %r]\n      volumeMounts: [{name: data, mountPath: /data}]\n"
         "      securityContext: {runAsUser: 185, runAsNonRoot: true, allowPrivilegeEscalation: false, "
@@ -35,7 +36,7 @@ init = ("    initContainers:\n    - name: gen-edges\n      image: docker.io/libr
         "    volumeMounts: [{name: data, mountPath: /data}]\n") % gen
 y = y.replace("  driver:\n", "  volumes: [{name: data, emptyDir: {}}]\n  driver:\n" + init, 1)
 y = y.replace("  executor:\n", "  executor:\n" + init, 1)
-print(y)' "$GEN"
+print(y)' "$GEN" "${EXTRA_CONF:-}"
 }
 
 [ "${1:-}" = "--yaml" ] && { victim_yaml; exit 0; }
