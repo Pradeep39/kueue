@@ -15,7 +15,7 @@ usage() {
 usage: [EXTRA_CONF=key=value,...] [ITERS=N] [FORCE=1] run-shuffle-migration.sh [THRESH_MB]
   THRESH_MB  MiB of shuffle files every victim executor must hold before the preemptor is
              submitted (default 15). This runs the experiment; it takes no application name.
-  ITERS=N    PageRank iterations for the victim (default 120, about 3 minutes)
+  ITERS=N    PageRank iterations for the victim (default 100, about 2.5 minutes)
   FORCE=1    delete other SparkApplications in $NS before starting (otherwise refuse).
 To analyse a finished run:   shuffle-migration-report.py runs/SHUF-<stamp>
 To see shuffle data now:     shuffle-per-executor.sh <app> [namespace] [--watch]
@@ -29,9 +29,11 @@ esac
 THRESH_MB=${1:-15}
 STAMP=$(date +%m%d-%H%M); OUT="$HERE/runs/SHUF-$STAMP"
 VICTIM=pr-victim; EXECS=10; FLOOR=2
-# Long enough that the victim is still running well after the reclaim completes (PageRank's
-# lineage is not truncated, so thousands of iterations overflow the scheduler's stack).
-ITERS=${ITERS:-120}
+# Long enough that the victim is still running well after the reclaim completes. PageRank never
+# truncates its lineage, so each iteration deepens the RDD chain: 120 iterations overflowed the
+# driver's default thread stack (StackOverflowError), so the stack is raised below and the default
+# kept at 100.
+ITERS=${ITERS:-100}
 GEN='awk "BEGIN{srand(42); for(i=0;i<2000000;i++) print int(rand()*200000), int(rand()*200000)}" > /data/edges.txt'
 
 log() { printf '%s %s\n' "$(date +%H:%M:%S)" "$*" | tee -a "$OUT/runner.log"; }
@@ -46,6 +48,8 @@ y = y.replace("    \"spark.kubernetes.executor.podNamePrefix\"",
   "    \"spark.kubernetes.executor.terminationGracePeriodSeconds\": \"30s\"\n"
   "    \"spark.sql.files.maxPartitionBytes\": \"2m\"\n"
   "    \"spark.default.parallelism\": \"40\"\n"
+  "    \"spark.driver.extraJavaOptions\": \"-Xss64m\"\n"
+  "    \"spark.executor.extraJavaOptions\": \"-Xss64m\"\n"
   + "".join("    \"%s\": \"%s\"\n" % tuple(kv.split("=", 1)) for kv in sys.argv[2].split(",") if kv)
   + "    \"spark.kubernetes.executor.podNamePrefix\"", 1)
 init = ("    initContainers:\n    - name: gen-edges\n      image: docker.io/library/spark:4.0.1\n"
@@ -59,6 +63,14 @@ print(y)' "$GEN" "${EXTRA_CONF:-}"
 }
 
 [ "${1:-}" = "--yaml" ] && { victim_yaml; exit 0; }
+mkdir -p "$HERE/runs"
+# One run at a time: a second run's cleanup would delete the first run's apps mid-experiment.
+LOCK="$HERE/runs/.shuffle-migration.lock"
+if ! mkdir "$LOCK" 2>/dev/null; then
+  echo "refusing to start: another run-shuffle-migration.sh is in progress (remove $LOCK if it is not)" >&2
+  exit 3
+fi
+trap 'rmdir "$LOCK" 2>/dev/null' EXIT
 mkdir -p "$OUT/exec-logs"
 echo "$(victim_yaml)" > "$OUT/victim.yaml"
 python3 -I "$HERE/gen-apps.py" urgent:high --partial --cap 2 --idle 5s > "$OUT/urgent.yaml"
@@ -69,13 +81,6 @@ if [ -n "$others" ] && [ "${FORCE:-0}" != 1 ]; then
   echo "refusing to start: $NS has other SparkApplications ($(echo $others | tr '\n' ' ')); this experiment deletes everything in $NS. Rerun with FORCE=1 to allow it." >&2
   exit 3
 fi
-# One run at a time: a second run's cleanup would delete the first run's apps mid-experiment.
-LOCK="$HERE/runs/.shuffle-migration.lock"
-if ! mkdir "$LOCK" 2>/dev/null; then
-  echo "refusing to start: another run-shuffle-migration.sh is in progress (remove $LOCK if it is not)" >&2
-  exit 3
-fi
-trap 'rmdir "$LOCK" 2>/dev/null' EXIT
 log "cleaning namespace"
 kubectl -n $NS delete $SA --all --wait=true >/dev/null 2>&1
 for _ in $(seq 1 60); do [ "$(kubectl -n $NS get workloads,pods --no-headers 2>/dev/null | wc -l | tr -d ' ')" = 0 ] && break; sleep 3; done
