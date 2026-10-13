@@ -118,6 +118,17 @@ def first(pred):
     return ts[0] if ts else None
 
 
+# Events outlive a run (1h TTL) and runs reuse names: only count events from this run's trigger on.
+trig_local = next((l[:8] for l in runner if "TRIGGER" in l), None)
+since = None
+if trig_local and start:
+    from datetime import datetime, timezone
+    day = datetime.fromtimestamp(float(start), timezone.utc)
+    local = datetime.fromtimestamp(float(start))
+    hh, mm, ss = map(int, trig_local.split(":"))
+    t_local = local.replace(hour=hh, minute=mm, second=ss)
+    since = datetime.fromtimestamp(t_local.timestamp(), timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    events = [e for e in events if (e.get("t") or "") >= since]
 trig = first(lambda e: e["reason"] == "PartiallyPreempted" and "pr-victim" in (e.get("obj") or ""))
 freed = first(lambda e: e["reason"] in ("PartialPreemptionComplete", "PartialPreemptionTimedOut") and "pr-victim" in (e.get("msg") or "") and (trig is None or e["t"] >= trig))
 admit = first(lambda e: e["reason"] == "Admitted" and (e.get("obj") or "").startswith("sparkapplication-urgent") and (trig is None or e["t"] >= trig))
