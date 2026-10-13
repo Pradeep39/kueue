@@ -73,17 +73,23 @@ This is the ~31s per reclaim seen elsewhere. In run 1 it coincided with the 30s 
 executors were stopped at the cap just as they would have exited. That was harmless, because everything
 had already been migrated.
 
-**Fix.** Kueue's webhook now defaults `spark.storage.decommission.replicationReattemptInterval` to
-**5s** for reclaimable apps, and `spark.storage.decommission.maxReplicationFailuresPerBlock` to
-90s ÷ interval, capped at 9 and never below 3 (`9` at 5s). Explicit values are kept.
+**What was tried.** Shorter rounds were set explicitly in the victim's `sparkConf`:
 
-Run 3 sets the same values explicitly on the current image:
+| Round | Runs | Executor exit after the signal | First reclaim → quota released | Fetch failures / resubmits |
+|---|---|---|---|---|
+| 30s (Spark's default) | 2 | 30s (6 of 6 executors) | 31–33s | none |
+| 15s | 3 | 16s for 3 of 10 executors, 30s for 7 | 31s in all 3 runs | none |
+| 5s | 3 | ~11s | ~12s | **2 of 3 runs** |
 
-- Each reclaimed executor exited **11s** after the signal, instead of 30s.
-- The preemptor got its quota **12s** after the reclaim was issued, instead of 33s.
-- Migration was still complete.
+- **5s was fastest, but raced with running stages.** A decommissioning executor serves its shuffle
+  files only until it exits. Tasks already scheduled with its old block locations then failed to
+  fetch, and Spark resubmitted their stages. In one run that turned an 88s job into a 246s one.
+- **15s avoided the race but barely helped.** Most busy executors still needed the round at 30s, where
+  the 30s grace period ends them.
 
-Both settings are `internal()` in Spark.
+**Decision: leave the round at Spark's default.** These runs used a small shuffle footprint. For
+large footprints, migration time dominates, and the setting that matters is the grace period, which
+caps how long migration may take. An application can still set the round itself.
 
 ## Checking shuffle data per executor
 

@@ -171,21 +171,6 @@ func applyDecommissionDefaults(job *SparkApplication) {
 		}
 		job.Spec.SparkConf[key] = "true"
 	}
-	// Shorten the migration round so a reclaimed executor exits sooner than ~30s after its data
-	// has moved, and scale the per-block attempt count with it (capped at 9, at least Spark's 3).
-	interval := int64(decommissionReattemptIntervalSeconds)
-	if v, set := job.Spec.SparkConf[sparkConfDecommissionReattemptInterval]; set {
-		if seconds, ok := sparkTimeSeconds(v); ok {
-			interval = max(seconds, 1)
-		}
-	} else {
-		job.Spec.SparkConf[sparkConfDecommissionReattemptInterval] = strconv.FormatInt(interval, 10) + "s"
-	}
-	if _, set := job.Spec.SparkConf[sparkConfDecommissionMaxFailures]; !set {
-		attempts := min(max((decommissionRetryWindowSeconds+interval-1)/interval, sparkDefaultMaxReplicationFailures),
-			decommissionMaxReplicationFailures)
-		job.Spec.SparkConf[sparkConfDecommissionMaxFailures] = strconv.FormatInt(attempts, 10)
-	}
 	if job.Spec.Executor.Template == nil {
 		job.Spec.Executor.Template = emptyExecutorPodTemplateSpec.DeepCopy()
 	}

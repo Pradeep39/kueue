@@ -474,8 +474,6 @@ PodSet, the Spark webhook defaults these settings when the application is create
 | Setting | Defaulted to |
 |---|---|
 | `spark.decommission.enabled` | `"true"` |
-| `spark.storage.decommission.replicationReattemptInterval` | `15s` |
-| `spark.storage.decommission.maxReplicationFailuresPerBlock` | 90s ÷ interval, capped at 9, at least 3 (`6` at 15s) |
 | `spark.storage.decommission.enabled` | `"true"` |
 | `spark.storage.decommission.shuffleBlocks.enabled` | `"true"` |
 | `spark.storage.decommission.rddBlocks.enabled` | `"true"` |
@@ -483,18 +481,20 @@ PodSet, the Spark webhook defaults these settings when the application is create
 
 - **It is safe.** This is the same one-time write before the application exists that injects the
   executor gate, which EQM §9.4 shows is safe under the operator's resubmission rule (C-1).
-- **A shorter migration round.** A decommissioning executor exits only once every block is
-  migrated and a round has run since its last task finished. Rounds run every
+- **The migration round is left at Spark's default.** A decommissioning executor exits only once
+  every block is migrated and a round has run since its last task finished. Rounds run every
   `spark.storage.decommission.replicationReattemptInterval` (Spark's default 30s), so a reclaimed
-  executor lingers up to one round after its data has moved. On the cluster, migrating ~70 MiB of
-  shuffle per executor took about a second (`validation/…/experiments/shuffle-migration`). The
-  webhook defaults the interval to **15s**. A first version used 5s, which cut reclaims from 30s to
-  about 11s, but an executor keeps serving its shuffle files only until it exits: tasks already
-  scheduled with its old block locations then failed to fetch, and Spark resubmitted their stages
-  (2 of 3 runs). 15s keeps reclaims well under 30s while the executor serves in-flight reads for
-  longer. `spark.storage.decommission.maxReplicationFailuresPerBlock` follows the interval:
-  90s ÷ interval, capped at 9 and never below Spark's 3, so **6** at 15s. An app that sets its own
-  interval gets attempts derived from it; explicit values are kept. Both are Spark-internal settings.
+  executor lingers up to one round after its data has moved. Shorter rounds were tried and dropped
+  (`validation/…/experiments/shuffle-migration`):
+  - **5s** cut reclaims to about 11s. But an executor serves its shuffle files only until it exits,
+    and in 2 of 3 runs tasks already scheduled with its old block locations failed to fetch, so Spark
+    resubmitted their stages.
+  - **15s** had no fetch failures, but the first reclaim still took about 31s: most busy executors
+    needed the 30s round, where the grace period ends them.
+
+  The measurements used a small shuffle footprint (about 70 MiB per executor). Spark's default is
+  the safer general choice across shuffle sizes, so Kueue does not override it. An application may
+  still set it, and `spark.storage.decommission.maxReplicationFailuresPerBlock`, itself.
 - **Both grace-period settings are needed.** From Spark 4.1, `spark.kubernetes.executor.terminationGracePeriodSeconds`
   (default 30s) is written onto every executor Pod and overrides the template
   (`BasicExecutorFeatureStep.scala:309-310`, branch-4.2). Before 4.1 that property does not exist and
