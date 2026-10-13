@@ -17,6 +17,7 @@ limitations under the License.
 package sparkapplication
 
 import (
+	"fmt"
 	"strconv"
 	"strings"
 
@@ -232,7 +233,34 @@ func (w *SparkApplicationWebhook) ValidateCreate(ctx context.Context, obj *spark
 	if err != nil {
 		return nil, err
 	}
-	return nil, validationErrs.ToAggregate()
+	return w.partialPreemptionWarnings(nil, obj), validationErrs.ToAggregate()
+}
+
+// partialPreemptionWarnings warns, without rejecting, about a partial-preemption floor that
+// will be ignored: spark.kueue.preemption.minExecutors only takes effect on the elastic path,
+// so on an application without the elastic-job annotation it silently does nothing, and the
+// application is preempted whole. Found in testing: the property alone looks like an opt-in.
+// On update it warns only when the property is added or changed.
+func (w *SparkApplicationWebhook) partialPreemptionWarnings(oldJob, job *sparkv1beta2.SparkApplication) admission.Warnings {
+	if !features.Enabled(features.SparkPartialPreemption) {
+		return nil
+	}
+	if !w.manageJobsWithoutQueueName && jobframework.QueueName(fromObject(job)) == "" {
+		return nil
+	}
+	if _, set := job.Spec.SparkConf[sparkConfPreemptionMinExecutors]; !set || isAnElasticJob(job) {
+		return nil
+	}
+	if oldJob != nil && !preemptionMinExecutorsChanged(oldJob, job) {
+		return nil
+	}
+	return admission.Warnings{floorIgnoredWarning()}
+}
+
+func floorIgnoredWarning() string {
+	return fmt.Sprintf(
+		"sparkConf %q has no effect without the %s: %q annotation; this application is not partially preempted and will be preempted whole",
+		sparkConfPreemptionMinExecutors, workloadslicing.EnabledAnnotationKey, workloadslicing.EnabledAnnotationValue)
 }
 
 // returns whether the SparkApplication is an elastic job or not
@@ -374,7 +402,7 @@ func (w *SparkApplicationWebhook) ValidateUpdate(ctx context.Context, oldSparkAp
 		return nil, err
 	}
 	allErrors = append(allErrors, validationErrs...)
-	return nil, allErrors.ToAggregate()
+	return w.partialPreemptionWarnings(oldSparkApp, newSparkApp), allErrors.ToAggregate()
 }
 
 // ValidateDelete implements webhook.CustomValidator so a webhook will be registered for the type

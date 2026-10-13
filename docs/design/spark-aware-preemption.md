@@ -227,6 +227,11 @@ Serverless Spark passes all other `spark.*` keys through.
 - **Why `minExecutors` is not used for static applications.** It is inert there: Spark reads it only in
   `ExecutorAllocationManager` and in branches taken when Dynamic Allocation is on
   (`SchedulerBackendUtils.scala:34-35`, Spark 4.0 and master). Serverless Spark strips it anyway.
+- **The property needs the elastic path.** On an application without
+  `kueue.x-k8s.io/elastic-job: "true"` the floor is ignored and the application is preempted whole, as
+  before. Because the property alone looks like an opt-in, the webhook returns an admission warning
+  (never a rejection) when it is set without the annotation, on create and whenever an update adds or
+  changes it.
 - **Malformed values.** The Kubeflow webhook rejects a malformed value, as it does a malformed
   `spark.executor.instances`. kueue-workload, whose webhook never rejects, treats it as unset and
   emits an event.

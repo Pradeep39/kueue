@@ -585,3 +585,52 @@ func TestSparkTimeSeconds(t *testing.T) {
 		})
 	}
 }
+
+// The floor property only takes effect on the elastic path; on an application without the
+// elastic-job annotation the webhook warns (never rejects) that it will be ignored.
+func TestPartialPreemptionWarnings(t *testing.T) {
+	const floor = "3"
+	static := func(annotate bool) *sparkapplicationtesting.SparkApplicationWrapper {
+		w := sparkapplicationtesting.MakeSparkApplication("app", "ns").Queue("local-queue").ExecutorInstances(11)
+		if annotate {
+			w = w.Annotation(workloadslicing.EnabledAnnotationKey, workloadslicing.EnabledAnnotationValue)
+		}
+		return w
+	}
+	withFloor := func(w *sparkapplicationtesting.SparkApplicationWrapper) *sparkv1beta2.SparkApplication {
+		return withSparkConf(w.Obj(), map[string]string{sparkConfPreemptionMinExecutors: floor})
+	}
+	cases := map[string]struct {
+		gates    map[featuregate.Feature]bool
+		old, job *sparkv1beta2.SparkApplication
+		wantWarn bool
+	}{
+		"floor without the elastic annotation warns":   {gates: partialPreemptionGates, job: withFloor(static(false)), wantWarn: true},
+		"floor with the elastic annotation is silent":  {gates: partialPreemptionGates, job: withFloor(static(true))},
+		"no floor is silent":                           {gates: partialPreemptionGates, job: static(false).Obj()},
+		"gate off is silent":                           {gates: map[featuregate.Feature]bool{features.SparkPartialPreemption: false}, job: withFloor(static(false))},
+		"not managed by Kueue is silent":               {gates: partialPreemptionGates, job: withSparkConf(sparkapplicationtesting.MakeSparkApplication("app", "ns").ExecutorInstances(11).Obj(), map[string]string{sparkConfPreemptionMinExecutors: floor})},
+		"update adding the floor warns":                {gates: partialPreemptionGates, old: static(false).Obj(), job: withFloor(static(false)), wantWarn: true},
+		"update leaving the floor unchanged is silent": {gates: partialPreemptionGates, old: withFloor(static(false)), job: withFloor(static(false))},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			features.SetFeatureGatesDuringTest(t, tc.gates)
+			w := &SparkApplicationWebhook{}
+			var warns []string
+			if tc.old == nil {
+				ctx, _ := utiltesting.ContextWithLog(t)
+				got, _ := w.ValidateCreate(ctx, tc.job)
+				warns = got
+			} else {
+				warns = w.partialPreemptionWarnings(tc.old, tc.job)
+			}
+			if got := len(warns) > 0; got != tc.wantWarn {
+				t.Fatalf("warnings = %q, want a warning: %v", warns, tc.wantWarn)
+			}
+			if tc.wantWarn && !strings.Contains(warns[0], workloadslicing.EnabledAnnotationKey) {
+				t.Errorf("warning %q does not name the annotation", warns[0])
+			}
+		})
+	}
+}

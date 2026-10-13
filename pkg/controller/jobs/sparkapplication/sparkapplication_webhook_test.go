@@ -49,6 +49,7 @@ func TestValidateCreate(t *testing.T) {
 		sparkApp     *sparkappv1beta2.SparkApplication
 		featureGates map[featuregate.Feature]bool
 		wantErr      error
+		wantWarns    admission.Warnings
 	}{
 		"base": {
 			sparkApp: testSparkApp.Clone().Queue("local-queue").Obj(),
@@ -109,7 +110,8 @@ func TestValidateCreate(t *testing.T) {
 			featureGates: map[featuregate.Feature]bool{features.SparkPartialPreemption: true},
 			sparkApp: withSparkConf(testSparkApp.Clone().Queue("local-queue").Obj(),
 				map[string]string{sparkConfPreemptionMinExecutors: "0"}),
-			wantErr: nil,
+			wantErr:   nil,
+			wantWarns: admission.Warnings{floorIgnoredWarning()},
 		},
 		"non-integer spark.kueue.preemption.minExecutors": {
 			featureGates: map[featuregate.Feature]bool{features.SparkPartialPreemption: true},
@@ -118,6 +120,7 @@ func TestValidateCreate(t *testing.T) {
 			wantErr: field.ErrorList{field.Invalid(
 				sparkConfPath.Key(sparkConfPreemptionMinExecutors), "two", "must be a non-negative integer",
 			)}.ToAggregate(),
+			wantWarns: admission.Warnings{floorIgnoredWarning()},
 		},
 		"negative spark.kueue.preemption.minExecutors": {
 			featureGates: map[featuregate.Feature]bool{features.SparkPartialPreemption: true},
@@ -126,6 +129,7 @@ func TestValidateCreate(t *testing.T) {
 			wantErr: field.ErrorList{field.Invalid(
 				sparkConfPath.Key(sparkConfPreemptionMinExecutors), "-1", "must be a non-negative integer",
 			)}.ToAggregate(),
+			wantWarns: admission.Warnings{floorIgnoredWarning()},
 		},
 		"malformed spark.kueue.preemption.minExecutors with SparkPartialPreemption off": {
 			sparkApp: withSparkConf(testSparkApp.Clone().Queue("local-queue").Obj(),
@@ -167,7 +171,7 @@ func TestValidateCreate(t *testing.T) {
 			if diff := cmp.Diff(tc.wantErr, gotErr); diff != "" {
 				t.Errorf("validateCreate() errors mismatch (-want +got):\n%s", diff)
 			}
-			if diff := cmp.Diff(admission.Warnings(nil), warns); diff != "" {
+			if diff := cmp.Diff(tc.wantWarns, warns); diff != "" {
 				t.Errorf("validateCreate() warnings mismatch (-want +got):\n%s", diff)
 			}
 		})
@@ -182,6 +186,7 @@ func TestValidateUpdate(t *testing.T) {
 		defaultLqExist       bool
 		featureGates         map[featuregate.Feature]bool
 		wantErr              error
+		wantWarns            admission.Warnings
 		maxTimeoutOnWorkload *metav1.Duration
 	}{
 		"queue name unchanged while unsuspended": {
@@ -260,6 +265,7 @@ func TestValidateUpdate(t *testing.T) {
 			wantErr: field.ErrorList{field.Invalid(
 				sparkConfPath.Key(sparkConfPreemptionMinExecutors), "-3", "must be a non-negative integer",
 			)}.ToAggregate(),
+			wantWarns: admission.Warnings{floorIgnoredWarning()},
 		},
 		"unchanged wait-for-pods-ready annotation exceeding maxTimeoutOnWorkload is not re-validated on update": {
 			oldSparkApp: testSparkApp.Clone().Queue("local-queue").
@@ -309,7 +315,7 @@ func TestValidateUpdate(t *testing.T) {
 			if diff := cmp.Diff(tc.wantErr, gotErr); diff != "" {
 				t.Errorf("ValidateUpdate() error mismatch (-want +got):\n%s", diff)
 			}
-			if diff := cmp.Diff(admission.Warnings(nil), warnings); diff != "" {
+			if diff := cmp.Diff(tc.wantWarns, warnings); diff != "" {
 				t.Errorf("ValidateUpdate() warnings mismatch (-want +got):\n%s", diff)
 			}
 		})
