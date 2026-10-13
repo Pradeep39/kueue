@@ -23,7 +23,7 @@ spec:
   mode: cluster
   image: docker.io/library/spark:4.0.1
   imagePullPolicy: IfNotPresent
-  mainClass: org.apache.spark.examples.SparkALS
+  mainClass: {main_class}
   mainApplicationFile: local:///opt/spark/examples/jars/spark-examples.jar
   arguments: {als_args}
   sparkVersion: 4.0.1
@@ -59,7 +59,8 @@ ap.add_argument("apps")
 ap.add_argument("--partial", action="store_true")
 ap.add_argument("--cap", type=int)
 ap.add_argument("--idle", default="5s")
-ap.add_argument("--als-args", default="1500 1500 12 15 200", help="SparkALS arguments: M U F iterations slices")
+ap.add_argument("--als-args", default="1500 1500 12 15 200", help="the example's arguments (SparkALS: M U F iterations slices)")
+ap.add_argument("--main", default="org.apache.spark.examples.SparkALS", help="example main class, e.g. org.apache.spark.examples.GroupByTest")
 ap.add_argument("--backlog", default="2s")
 ap.add_argument("--static", type=int, metavar="N", help="no Dynamic Allocation: spark.executor.instances N, not elastic")
 ap.add_argument("--static-elastic", type=int, metavar="N", help="no Dynamic Allocation: spark.executor.instances N, but keep the elastic opt-in")
@@ -71,7 +72,7 @@ docs = []
 for spec in a.apps.split(","):
     name, prio = spec.split(":")
     docs.append(TEMPLATE.format(
-        name=name, idle=a.idle, backlog=a.backlog, als_args=json.dumps(a.als_args.split()),
+        name=name, idle=a.idle, backlog=a.backlog, als_args=json.dumps(a.als_args.split()), main_class=a.main,
         partial='\n    kueue.x-k8s.io/elastic-job-scale-up-strategy: "partial"' if a.partial else "",
         priority=f"\n    kueue.x-k8s.io/priority-class: {prio}" if prio != "-" else "",
         cap=f'\n    "spark.kubernetes.allocation.maxPendingPods": "{a.cap}"' if a.cap else "",

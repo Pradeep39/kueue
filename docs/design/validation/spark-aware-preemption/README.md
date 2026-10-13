@@ -26,6 +26,7 @@ defaults have since been lowered to 30s and 60s. The runs showed busy executors 
 | [`scenarios/`](./scenarios/) | One manifest per scenario, both waves; the header records its setup and checks |
 | [`scripts/`](./scripts/) | Capture, analyzers, scenario generator, suite runners, results archiver |
 | [`results/`](./results/) | Per-run verdicts (`*.txt`), timelines (`*.timeline.csv`), suite logs |
+| [`experiments/shuffle-migration/`](./experiments/shuffle-migration/) | Does a reclaimed executor move its shuffle data? SparkPageRank under partial preemption: 252 MiB of shuffle blocks and the cached RDD blocks migrated, 0 recomputation |
 | [`demo/`](./demo/) | A live demo for Lens and KueueViz: `demo.sh` (scenarios A–D and a live terminal view) and the presenter guide [`DEMO.md`](./demo/DEMO.md) |
 
 ---
@@ -157,10 +158,12 @@ and last at most the 60s executor grace period. With the default 90s timeout thi
 | Spread across victims | ✅ | P8: six decisions of one executor each, rotating across all four victims (2/2/2/3 reclaims each) |
 | Quota released when an application finishes | ✅ | No leak in any r2/r3 run. Bug 4 below was the r1 failure |
 | R-1..R-13 (EQM) with the gate on | ✅ | S1–S5: every R- check passes. S6: R-9 and R-10 pass |
-| Spark decommissioning | ✅ | Reclaimed executors reported "gracefully decommissioned" by Spark. With it off (P4) they report "unexpectedly exited", still with 0 failures |
+| Spark decommissioning | ✅ | Reclaimed executors reported "gracefully decommissioned" by Spark. With it off (P4) they report "unexpectedly exited", still with 0 failures. **Shuffle and cached-RDD migration** is shown by [`experiments/shuffle-migration/`](./experiments/shuffle-migration/): every block moved, nothing recomputed |
 
 **Not exercised:**
 
+- **Shuffle migration in the main scenarios.** SparkALS writes no shuffle data, so the main scenarios show
+  graceful decommissioning only. The shuffle-migration experiment covers migration.
 - **The `pod-deletion-cost` sweep.** Spark 4.0.1 never writes the annotation, so the marked-executor
   sweep ran with every executor at cost 0. It is covered by unit tests only.
 - **Metrics (§5.7).** These are not implemented yet.

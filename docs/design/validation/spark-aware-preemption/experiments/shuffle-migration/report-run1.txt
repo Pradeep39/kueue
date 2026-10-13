@@ -1,0 +1,32 @@
+== SHUF-1012-2139
+  21:39:32 victim pr-victim applied (10 executors, floor 2, PageRank 50 iterations, grace 30s)
+  21:40:05 TRIGGER: urgent applied; min per-executor shuffle 23 MiB
+  shuffle MiB per executor at trigger: 1:23 10:23 2:26 3:27 4:30 5:33 6:35 7:36 8:42 9:42
+
+  executors Spark was told to decommission: 10, 5, 6
+
+  per decommissioned executor (from its own log):
+  executor   decom-signal shuffle-migrated rdd-migrated  finished                 exit
+  10                    0                0            0        no                    -
+  5                     0                0            0        no                    -
+  6                     0                0            0        no                    -
+
+  driver:
+    map outputs relocated to another executor ('Updating map output'): 247
+    'Shuffle files lost for executor' lines: 3  (logged on every executor loss; harmless when outputs were relocated first)
+    resubmitted stages / fetch failures / lost or killed tasks: 0
+    executor failures counted: 0
+    last job line: 02:40:36 INFO DAGScheduler: Job 0 finished: collect at SparkPageRank.scala:79, took 46427.651485 ms
+
+  sample executor lines (first decommissioned executor):
+
+  sample driver relocation lines:
+    02:40:05 INFO ShuffleStatus: Updating map output for 747 to BlockManagerId(7, <pod-ip>, 44963, None)
+    02:40:05 INFO ShuffleStatus: Updating map output for 744 to BlockManagerId(6, <pod-ip>, 45239, None)
+    02:40:05 INFO ShuffleStatus: Updating map output for 667 to BlockManagerId(4, <pod-ip>, 45655, None)
+    02:40:05 INFO ShuffleStatus: Updating map output for 722 to BlockManagerId(3, <pod-ip>, 44381, None)
+    02:40:05 INFO ShuffleStatus: Updating map output for 692 to BlockManagerId(8, <pod-ip>, 43641, None)
+PASS  SC-1 quota is a ceiling                                    SC-1 quota ceiling (12 cpu): HELD on 243 samples
+PASS  SC-1b live Pods within quota                               SC-1b real capacity (ungated live pods x 1cpu <= 12): HELD
+PASS  SC-2 every running worker has a grant (R-3, R-6)           SC-2 every running executor has a grant: HELD (332 checks, grace 3s)
+PASS  capture integrity                                          watch starts: pods=1 workloads=1 (1 = no restart)
