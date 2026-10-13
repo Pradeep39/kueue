@@ -10,6 +10,21 @@
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 NS=batch-ns-uno; SA=sparkapplications.sparkoperator.k8s.io
+usage() {
+  cat <<USAGE
+usage: [EXTRA_CONF=key=value,...] [FORCE=1] run-shuffle-migration.sh [THRESH_MB]
+  THRESH_MB  MiB of shuffle files every victim executor must hold before the preemptor is
+             submitted (default 15). This runs the experiment; it takes no application name.
+  FORCE=1    delete other SparkApplications in $NS before starting (otherwise refuse).
+To analyse a finished run:   shuffle-migration-report.py runs/SHUF-<stamp>
+To see shuffle data now:     shuffle-per-executor.sh <app> [namespace] [--watch]
+USAGE
+}
+case "${1:-15}" in
+  --yaml) ;;
+  -h|--help) usage; exit 0 ;;
+  *[!0-9]*|"") echo "run-shuffle-migration.sh: THRESH_MB must be a whole number of MiB, got '${1}'" >&2; usage >&2; exit 2 ;;
+esac
 THRESH_MB=${1:-15}
 STAMP=$(date +%m%d-%H%M); OUT="$HERE/runs/SHUF-$STAMP"
 VICTIM=pr-victim; EXECS=10; FLOOR=2; ITERS=50
@@ -45,6 +60,18 @@ echo "$(victim_yaml)" > "$OUT/victim.yaml"
 python3 -I "$HERE/gen-apps.py" urgent:high --partial --cap 2 --idle 5s > "$OUT/urgent.yaml"
 kubectl apply --dry-run=client -f "$OUT/victim.yaml" >/dev/null || { echo "victim.yaml invalid"; exit 1; }
 
+others=$(kubectl -n $NS get $SA -o name 2>/dev/null | sed 's#.*/##' | grep -vxE "$VICTIM|urgent" || true)
+if [ -n "$others" ] && [ "${FORCE:-0}" != 1 ]; then
+  echo "refusing to start: $NS has other SparkApplications ($(echo $others | tr '\n' ' ')); this experiment deletes everything in $NS. Rerun with FORCE=1 to allow it." >&2
+  exit 3
+fi
+# One run at a time: a second run's cleanup would delete the first run's apps mid-experiment.
+LOCK="$HERE/runs/.shuffle-migration.lock"
+if ! mkdir "$LOCK" 2>/dev/null; then
+  echo "refusing to start: another run-shuffle-migration.sh is in progress (remove $LOCK if it is not)" >&2
+  exit 3
+fi
+trap 'rmdir "$LOCK" 2>/dev/null' EXIT
 log "cleaning namespace"
 kubectl -n $NS delete $SA --all --wait=true >/dev/null 2>&1
 for _ in $(seq 1 60); do [ "$(kubectl -n $NS get workloads,pods --no-headers 2>/dev/null | wc -l | tr -d ' ')" = 0 ] && break; sleep 3; done
