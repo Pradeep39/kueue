@@ -95,10 +95,10 @@ The cohort has 12 slots, where one slot is 1 executor or driver.
    |---|---|
    | `spark.decommission.enabled` | `"true"` |
    | `spark.storage.decommission.*` | `"true"` |
-   | `spark.kubernetes.executor.terminationGracePeriodSeconds` | `60s` |
+   | `spark.kubernetes.executor.terminationGracePeriodSeconds` | `30s` |
 
    > **Say:** "When Kueue takes an executor, Spark gets the signal first and moves its shuffle data to the
-   > executors that stay. That's what the 60 seconds is for."
+   > executors that stay. That's what the 30 seconds is for. An app can set its own grace period if it needs longer."
 2. **Lens → Pods → any batch-a executor:**
    - Containers → Lifecycle: `preStop: /opt/decom.sh`
    - Termination grace period: 60
@@ -113,7 +113,7 @@ The cohort has 12 slots, where one slot is 1 executor or driver.
    `PartiallyPreempted: Partially preempted 1 Pod(s) of PodSet executor, from 3 to 2`.
    > **Say:** "One executor, not one application."
 5. **Lens → Pods:**
-   - The reclaimed executor goes Terminating and stays there 30–60s while it decommissions.
+   - The reclaimed executor goes Terminating and stays there up to 30s while it decommissions.
    - **Both batch drivers stay Running the entire time.** Point at them.
 6. **Lens → batch-a's Workload:**
    - annotation `partial-preemption-target: "2"`
@@ -177,7 +177,7 @@ Then run `./demo.sh reset`, which restores the 12-slot baseline.
 | Does the job fail? | No. A deleted executor isn't an application failure, and with decommissioning its shuffle data moves first. Spark reports them as "gracefully decommissioned". |
 | What about jobs without Dynamic Allocation? | They work too, with `kueue.x-k8s.io/elastic-job: "true"` and a floor. Their executor count is fixed, so they grow back to it. |
 | What about jobs that don't opt in? | Exactly today's behaviour (scenario A). |
-| What if executors never stop? | After a timeout (90s by default, set per ClusterQueue) Kueue lowers the grant anyway, so the urgent job's wait is bounded. |
+| What if executors never stop? | After a timeout (60s by default, set per ClusterQueue) Kueue lowers the grant anyway, so the urgent job's wait is bounded. |
 | Can I keep whole eviction off entirely? | Yes. Set the ClusterQueue annotation `kueue.x-k8s.io/partial-preemption-fallback: Wait` and a first admission waits instead of evicting. |
 | Is it on by default? | No. It sits behind the alpha feature gate `SparkPartialPreemption`. |
 | Where's the evidence? | The [validation report](../README.md): every scenario, results and requirement verdicts. |

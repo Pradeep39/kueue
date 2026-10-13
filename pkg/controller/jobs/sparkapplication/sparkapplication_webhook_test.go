@@ -399,7 +399,7 @@ func TestDefault(t *testing.T) {
 				Spec: corev1.PodSpec{
 					Containers:                    []corev1.Container{{Name: sparkcommon.Spark3DefaultExecutorContainerName}},
 					SchedulingGates:               []corev1.PodSchedulingGate{{Name: kueue.ElasticJobSchedulingGate}},
-					TerminationGracePeriodSeconds: new(int64(60)),
+					TerminationGracePeriodSeconds: new(int64(30)),
 				},
 			}).Obj(), map[string]string{
 				sparkConfPreemptionMinExecutors:                    "1",
@@ -407,7 +407,7 @@ func TestDefault(t *testing.T) {
 				"spark.storage.decommission.enabled":               "true",
 				"spark.storage.decommission.shuffleBlocks.enabled": "true",
 				"spark.storage.decommission.rddBlocks.enabled":     "true",
-				sparkConfExecutorTerminationGracePeriod:            "60s",
+				sparkConfExecutorTerminationGracePeriod:            "30s",
 			}),
 			featureGates: partialPreemptionGates,
 		},
@@ -421,14 +421,14 @@ func TestDefault(t *testing.T) {
 				Spec: corev1.PodSpec{
 					Containers:                    []corev1.Container{{Name: sparkcommon.Spark3DefaultExecutorContainerName}},
 					SchedulingGates:               []corev1.PodSchedulingGate{{Name: kueue.ElasticJobSchedulingGate}},
-					TerminationGracePeriodSeconds: new(int64(60)),
+					TerminationGracePeriodSeconds: new(int64(30)),
 				},
 			}).Obj(), map[string]string{
 				"spark.decommission.enabled":                       "true",
 				"spark.storage.decommission.enabled":               "true",
 				"spark.storage.decommission.shuffleBlocks.enabled": "true",
 				"spark.storage.decommission.rddBlocks.enabled":     "true",
-				sparkConfExecutorTerminationGracePeriod:            "60s",
+				sparkConfExecutorTerminationGracePeriod:            "30s",
 			}),
 			featureGates: partialPreemptionGates,
 		},
@@ -436,7 +436,7 @@ func TestDefault(t *testing.T) {
 			sparkApp: withSparkConf(testSparkApp.Clone().Queue(testLocalQueue.Name).Annotation(
 				workloadslicing.EnabledAnnotationKey, workloadslicing.EnabledAnnotationValue,
 			).ExecutorInstances(3).ExecutorTemplate(&corev1.PodTemplateSpec{
-				Spec: corev1.PodSpec{TerminationGracePeriodSeconds: new(int64(30))},
+				Spec: corev1.PodSpec{TerminationGracePeriodSeconds: new(int64(90))},
 			}).Obj(), map[string]string{
 				sparkConfPreemptionMinExecutors:      "1",
 				"spark.decommission.enabled":         "false",
@@ -447,7 +447,7 @@ func TestDefault(t *testing.T) {
 			).ExecutorInstances(3).Suspend(true).ExecutorTemplate(&corev1.PodTemplateSpec{
 				Spec: corev1.PodSpec{
 					SchedulingGates:               []corev1.PodSchedulingGate{{Name: kueue.ElasticJobSchedulingGate}},
-					TerminationGracePeriodSeconds: new(int64(30)),
+					TerminationGracePeriodSeconds: new(int64(90)),
 				},
 			}).Obj(), map[string]string{
 				sparkConfPreemptionMinExecutors:                    "1",
@@ -455,7 +455,7 @@ func TestDefault(t *testing.T) {
 				"spark.storage.decommission.enabled":               "FALSE",
 				"spark.storage.decommission.shuffleBlocks.enabled": "true",
 				"spark.storage.decommission.rddBlocks.enabled":     "true",
-				sparkConfExecutorTerminationGracePeriod:            "30s",
+				sparkConfExecutorTerminationGracePeriod:            "90s",
 			}),
 			featureGates: partialPreemptionGates,
 		},

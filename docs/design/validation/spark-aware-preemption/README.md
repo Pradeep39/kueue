@@ -16,6 +16,10 @@ The runs found four bugs. All are fixed on the branch, and each fix has a negati
 - three in partial preemption
 - one already present in Kueue's elastic slicing, which these runs exposed
 
+**Defaults at the time.** These runs used a 60s executor grace period and a 90s reclaim timeout. The
+defaults have since been lowered to 30s and 60s. The runs showed busy executors draining in about
+30s, so the lower cap rarely binds.
+
 | | |
 |---|---|
 | [`setup/`](./setup/) | Cohort, ClusterQueues, LocalQueue, WorkloadPriorityClasses (12-slot baseline) |
