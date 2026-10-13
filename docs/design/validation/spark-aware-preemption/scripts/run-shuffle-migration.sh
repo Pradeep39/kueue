@@ -119,8 +119,21 @@ for _ in $(seq 1 120); do
 done
 [ $TRIGGERED = 1 ] || log "never triggered"
 
+# As soon as the victim finishes, say how to analyse it; the capture keeps running for the
+# invariant checks, but the executor and driver logs the report needs are already complete.
+while kill -0 $CAP 2>/dev/null; do
+  state=$(kubectl -n $NS get $SA $VICTIM -o jsonpath='{.status.applicationState.state}' 2>/dev/null)
+  case "$state" in
+    COMPLETED|FAILED)
+      log "victim $VICTIM $state. Analyse it now with:"
+      log "  python3 -I $HERE/shuffle-migration-report.py $OUT"
+      break ;;
+  esac
+  sleep 5
+done
+
 wait $CAP
 kill $STREAMER 2>/dev/null; pkill -f "logs -f $VICTIM-exec" 2>/dev/null
 cp "$OUT/capture/logs/driver-$VICTIM-driver.log" "$OUT/driver.log" 2>/dev/null || kubectl -n $NS logs "$VICTIM-driver" > "$OUT/driver.log" 2>/dev/null
-log "capture done; analysing"
+log "capture done; analysing (rerun any time: python3 -I $HERE/shuffle-migration-report.py $OUT)"
 python3 -I "$HERE/shuffle-migration-report.py" "$OUT" | tee "$OUT/report.txt"

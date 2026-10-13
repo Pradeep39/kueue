@@ -37,7 +37,8 @@ if trig:
     print("  shuffle MiB per executor at trigger:" + trig[0])
 
 # Which executors did Kueue reclaim? Spark logs the decommission on the driver.
-drv = lines(f"{d}/driver.log")
+# driver.log is written when the run ends; until then read the capture's live copy.
+drv = lines(f"{d}/driver.log") or lines(f"{d}/capture/logs/driver-pr-victim-driver.log")
 decom_ids = []
 for l in drv:
     m = re.search(r"Decommission executors: ([\d, ]+)", l)
