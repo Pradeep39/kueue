@@ -634,3 +634,34 @@ func TestPartialPreemptionWarnings(t *testing.T) {
 		})
 	}
 }
+
+// The migration-round interval defaults to 5s and the per-block attempt count follows it, keeping
+// Spark's 90s retry window and never going below Spark's 3. Explicit values are kept.
+func TestDecommissionRetryDefaults(t *testing.T) {
+	cases := map[string]struct {
+		conf                       map[string]string
+		wantInterval, wantFailures string
+	}{
+		"neither set":                                          {wantInterval: "5s", wantFailures: "18"},
+		"interval set: attempts follow":                        {conf: map[string]string{sparkConfDecommissionReattemptInterval: "10s"}, wantInterval: "10s", wantFailures: "9"},
+		"interval in ms: rounded up to 1s":                     {conf: map[string]string{sparkConfDecommissionReattemptInterval: "500ms"}, wantInterval: "500ms", wantFailures: "90"},
+		"long interval: never below 3":                         {conf: map[string]string{sparkConfDecommissionReattemptInterval: "2m"}, wantInterval: "2m", wantFailures: "3"},
+		"attempts set: kept":                                   {conf: map[string]string{sparkConfDecommissionMaxFailures: "7"}, wantInterval: "5s", wantFailures: "7"},
+		"unparsable interval: kept, attempts from the default": {conf: map[string]string{sparkConfDecommissionReattemptInterval: "soon"}, wantInterval: "soon", wantFailures: "18"},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			app := fromObject(withSparkConf(elasticApp().Obj(), tc.conf))
+			if app.Spec.SparkConf == nil {
+				app.Spec.SparkConf = map[string]string{}
+			}
+			applyDecommissionDefaults(app)
+			if got := app.Spec.SparkConf[sparkConfDecommissionReattemptInterval]; got != tc.wantInterval {
+				t.Errorf("interval = %q, want %q", got, tc.wantInterval)
+			}
+			if got := app.Spec.SparkConf[sparkConfDecommissionMaxFailures]; got != tc.wantFailures {
+				t.Errorf("max failures = %q, want %q", got, tc.wantFailures)
+			}
+		})
+	}
+}

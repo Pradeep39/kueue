@@ -65,6 +65,21 @@ var decommissionSparkConfDefaults = []string{
 	"spark.storage.decommission.rddBlocks.enabled",
 }
 
+// A decommissioning executor exits only once every block is migrated and a migration round has
+// run since its last task finished. Rounds run every replicationReattemptInterval (Spark's default
+// 30s), so a reclaimed executor typically lingers up to 30s after its data has moved, and the
+// preemptor waits that long. Measured on a cluster: migration took about a second; the exit
+// waited for the next 30s round. Both settings are Spark-internal.
+const (
+	sparkConfDecommissionReattemptInterval = "spark.storage.decommission.replicationReattemptInterval"
+	sparkConfDecommissionMaxFailures       = "spark.storage.decommission.maxReplicationFailuresPerBlock"
+	decommissionReattemptIntervalSeconds   = 5
+	// Spark's defaults allow a block 3 attempts 30s apart: 90s of retries. The attempt count is
+	// derived from the interval in effect so that window is kept, never going below Spark's 3.
+	decommissionRetryWindowSeconds     = 90
+	sparkDefaultMaxReplicationFailures = 3
+)
+
 var _ jobframework.JobWithPartialPreemption = (*SparkApplication)(nil)
 
 // partialPreemptionEnabled reports whether j may declare a reclaimable executor PodSet: the
