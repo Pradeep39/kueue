@@ -83,6 +83,57 @@ if done:
 for l in resub[:6]:
     print(f"      {l[:160]}")
 
+# Timeline: did the preemptor run while the victim was still running on what it kept?
+events = []
+try:
+    with open(f"{d}/capture/watch/events.jsonl") as f:
+        for line in f:
+            try:
+                events.append(json.loads(line))
+            except json.JSONDecodeError:
+                pass
+except OSError:
+    pass
+apps = {}
+try:
+    with open(f"{d}/capture/watch/sparkapps.jsonl") as f:
+        for line in f:
+            try:
+                a = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if a.get("name") and a.get("state") in ("RUNNING", "COMPLETED", "FAILED"):
+                apps.setdefault((a["name"], a["state"]), a["t"])
+except OSError:
+    pass
+start = None
+try:
+    start = open(f"{d}/capture/start.epoch").read().strip()
+except OSError:
+    pass
+
+
+def first(pred):
+    ts = sorted(e["t"] for e in events if e.get("reason") and pred(e))
+    return ts[0] if ts else None
+
+
+trig = first(lambda e: e["reason"] == "PartiallyPreempted" and "pr-victim" in (e.get("obj") or ""))
+freed = first(lambda e: e["reason"] in ("PartialPreemptionComplete", "PartialPreemptionTimedOut") and "pr-victim" in (e.get("msg") or "") and (trig is None or e["t"] >= trig))
+admit = first(lambda e: e["reason"] == "Admitted" and (e.get("obj") or "").startswith("sparkapplication-urgent") and (trig is None or e["t"] >= trig))
+urgent_run = apps.get(("urgent", "RUNNING"))
+victim_end = apps.get(("pr-victim", "COMPLETED")) or apps.get(("pr-victim", "FAILED"))
+print("\n  timeline (UTC):")
+for label, t in [("reclaim issued", trig), ("reclaimed executors gone, quota released", freed),
+                 ("urgent admitted", admit), ("urgent running", urgent_run), ("victim finished", victim_end)]:
+    print(f"    {label:42} {t[11:19] if t else '-'}")
+if admit and victim_end:
+    from datetime import datetime
+    sec = lambda t: datetime.fromisoformat(t.replace("Z", "+00:00")).timestamp()
+    gap = sec(victim_end) - sec(admit)
+    print(f"    urgent admitted {gap:.0f}s {'before' if gap >= 0 else 'after'} the victim finished"
+          + (" (the victim kept running on the executors it kept)" if gap > 0 else ""))
+
 print("\n  sample executor lines (first decommissioned executor):")
 if decom_ids:
     for l in detail.get(decom_ids[0], [])[:14]:

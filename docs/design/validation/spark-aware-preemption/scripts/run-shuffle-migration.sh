@@ -12,9 +12,10 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 NS=batch-ns-uno; SA=sparkapplications.sparkoperator.k8s.io
 usage() {
   cat <<USAGE
-usage: [EXTRA_CONF=key=value,...] [FORCE=1] run-shuffle-migration.sh [THRESH_MB]
+usage: [EXTRA_CONF=key=value,...] [ITERS=N] [FORCE=1] run-shuffle-migration.sh [THRESH_MB]
   THRESH_MB  MiB of shuffle files every victim executor must hold before the preemptor is
              submitted (default 15). This runs the experiment; it takes no application name.
+  ITERS=N    PageRank iterations for the victim (default 120, about 3 minutes)
   FORCE=1    delete other SparkApplications in $NS before starting (otherwise refuse).
 To analyse a finished run:   shuffle-migration-report.py runs/SHUF-<stamp>
 To see shuffle data now:     shuffle-per-executor.sh <app> [namespace] [--watch]
@@ -27,7 +28,10 @@ case "${1:-15}" in
 esac
 THRESH_MB=${1:-15}
 STAMP=$(date +%m%d-%H%M); OUT="$HERE/runs/SHUF-$STAMP"
-VICTIM=pr-victim; EXECS=10; FLOOR=2; ITERS=50
+VICTIM=pr-victim; EXECS=10; FLOOR=2
+# Long enough that the victim is still running well after the reclaim completes (PageRank's
+# lineage is not truncated, so thousands of iterations overflow the scheduler's stack).
+ITERS=${ITERS:-120}
 GEN='awk "BEGIN{srand(42); for(i=0;i<2000000;i++) print int(rand()*200000), int(rand()*200000)}" > /data/edges.txt'
 
 log() { printf '%s %s\n' "$(date +%H:%M:%S)" "$*" | tee -a "$OUT/runner.log"; }
