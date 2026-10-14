@@ -1,4 +1,4 @@
-# Speaker notes: Spark-aware partial preemption (~20 min)
+# Speaker notes: Spark-aware partial preemption (~22 min)
 
 Runbook: [`DEMO-SPREAD-SHUFFLE.md`](./DEMO-SPREAD-SHUFFLE.md). Every terminal: `export SPARK_VERSION=3.4.3`.
 
@@ -11,7 +11,19 @@ Runbook: [`DEMO-SPREAD-SHUFFLE.md`](./DEMO-SPREAD-SHUFFLE.md). Every terminal: `
 - **Constraint.** No change to Apache Spark or the Spark Operator. It works on the Spark versions
   people run today. This demo runs on stock **Spark 3.4.3**.
 
-## 1. Shuffle resiliency (~3 min)
+## 1. The problem, live: whole eviction and thrashing (~5 min)
+
+`./run-thrash-demo.sh`
+
+| On screen | Say |
+|---|---|
+| Two PageRank apps running | "Two batch jobs building shuffle data. They have not opted in, so this is Kueue as it works today." |
+| Press Enter; `EVICTED WHOLE` | "An urgent job with Dynamic Allocation arrives. Kueue evicts a whole job: driver killed, shuffle data gone." |
+| Second eviction | "The urgent job grows, and Kueue evicts the other job too." |
+| Victim re-admitted, then `EVICTED WHOLE` again | "When the urgent job shrinks, the batch job comes back and starts over from scratch. The urgent job grows again, and it is evicted again. That's thrashing." |
+| Summary: admitted / evicted counts | "Several evictions in a few minutes, and every one threw away all the work done so far. Now the same kind of job with partial preemption." |
+
+## 2. Shuffle resiliency (~3 min)
 
 `STOP_AFTER_VICTIM=1 ./run-shuffle-migration.sh 40`, then `./shuffle-per-executor.sh pr-victim --watch`
 
@@ -23,7 +35,7 @@ Runbook: [`DEMO-SPREAD-SHUFFLE.md`](./DEMO-SPREAD-SHUFFLE.md). Every terminal: `
 | Urgent app starts ~30s later | "Quota moves only after those executors stop, so the cluster is never over-committed." |
 | Report: blocks migrated, 0 fetch failures, 0 resubmits | "Every block moved. Nothing was recomputed. The job finished as if nothing happened." |
 
-## 2a. Spread the loss: p10s (~2 min)
+## 3a. Spread the loss: p10s (~2 min)
 
 `CAPTURE=0 ./run-p11-demo.sh p10s`
 
@@ -34,7 +46,7 @@ Runbook: [`DEMO-SPREAD-SHUFFLE.md`](./DEMO-SPREAD-SHUFFLE.md). Every terminal: `
 | `deleting` → 0, urgent running | "Every job kept its driver. No restarts." |
 | `gated` admitted, apps back to 2 | "When the urgent job finishes, the executors Spark asked back for are admitted. The jobs grow back on their own." |
 
-## 2b. Round-robin: p11s (~2 min)
+## 3b. Round-robin: p11s (~2 min)
 
 `CAPTURE=0 ./run-p11-demo.sh p11s`
 
@@ -44,7 +56,7 @@ Runbook: [`DEMO-SPREAD-SHUFFLE.md`](./DEMO-SPREAD-SHUFFLE.md). Every terminal: `
 | `3 -> 2` on two apps, `3 -> 1` on three | "Every app gives one before any app gives a second. The loss stays as even as possible." |
 | Grow-back | "And again, they come back without a restart." |
 
-## 3. Close (3 min)
+## 4. Close (3 min)
 
 - **Results.** Whole evictions per run 11–14 → **0**. Low-priority restarts 13 → **0**. Quota invariants
   held in every run (usage ≤ quota; every running executor had a grant).

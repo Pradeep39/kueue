@@ -1,10 +1,10 @@
-# Demo: resilient partial preemption, then spreading the reclaim
+# Demo: whole eviction today, then resilient partial preemption and spreading the reclaim
 
-Two short live demos of Spark-aware partial preemption on stock Spark 3.4.3, about 6 minutes of
-cluster time in total. Speaker notes: [`SPEAKER-NOTES.md`](./SPEAKER-NOTES.md).
+Short live demos on stock Spark 3.4.3, about 11 minutes of cluster time in total. Speaker notes: [`SPEAKER-NOTES.md`](./SPEAKER-NOTES.md).
 
 | Part | Command | What the audience sees | Live time |
 |---|---|---|---|
+| 0. The problem | `./run-thrash-demo.sh` | Two PageRank apps that did not opt in are evicted whole, re-admitted, and evicted again by a growing urgent app | ~4:40 |
 | 1. Shuffle resiliency | `STOP_AFTER_VICTIM=1 ./run-shuffle-migration.sh 40` | Reclaimed executors hand their shuffle data to the survivors; the job finishes with nothing recomputed | ~2:15 |
 | 2a. Spread | `CAPTURE=0 ./run-p11-demo.sh p10s` | Six apps each give exactly one executor; afterwards they grow back | ~1:40 |
 | 2b. Round-robin | `CAPTURE=0 ./run-p11-demo.sh p11s` | Five apps each give one before any gives a second; they grow back | ~1:35 |
@@ -25,6 +25,18 @@ part 2b: on that version the last victims are slower to get their executors back
   `batch-ns-uno` (Pods view); KueueViz on `cluster-queue-uno` (part 1) and `cluster-queue-tres`
   (part 2).
 - Dry-run each part once with `AUTO=1`, so the Spark image is cached on the nodes.
+
+## Part 0: whole eviction and thrashing (today's behaviour)
+
+```bash
+./run-thrash-demo.sh        # sizes cluster-queue-tres to 12 slots, puts it back to 36 on exit
+```
+
+Two low-priority SparkPageRank apps (driver + 4 executors each) without the partial-preemption
+opt-in share the queue with a high-priority SparkALS app using Dynamic Allocation. The script pauses
+before the urgent app (press Enter), then shows a live table and a log of whole evictions, and stops
+when the urgent app finishes or after 240s (`DURATION`). In the test run: 3 whole evictions in about
+3 minutes; one app was admitted 3 times and evicted twice. The exact count varies from run to run.
 
 ## Part 1: the reclaimed executors move their shuffle data
 
@@ -80,7 +92,8 @@ kubectl -n batch-ns-uno delete sparkapplications.sparkoperator.k8s.io --all
 | Symptom | Cause and fix |
 |---|---|
 | `refusing to start: ... other SparkApplications` | Leftover apps: rerun with `FORCE=1`, or reset first |
-| `refusing to start: another ... is in progress` | A run was interrupted: remove `runs/.p11-demo.lock` or `runs/.shuffle-migration.lock` |
+| `refusing to start: another ... is in progress` | A run was interrupted: remove the `runs/.p11-demo.lock`, `runs/.shuffle-migration.lock` or `runs/.thrash-demo.lock` directory |
+| Part 0 shows only one eviction | The urgent app did not scale back down in time: rerun, or raise `DURATION` |
 | Part 1 triggers before terminal 2 is up | Raise the threshold: `./run-shuffle-migration.sh 60` |
 | Part 1 victim finishes before the trigger | Lower the threshold, or `ITERS=150` |
 | Victim executors never all reach `running` | Not enough node capacity: check node readiness in Lens |
