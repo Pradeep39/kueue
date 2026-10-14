@@ -610,7 +610,7 @@ func TestIssuePartialPreemption(t *testing.T) {
 				WorkloadCq:   snapshot.ClusterQueue("cq"),
 				Reclaim:      &policy.PartialReclaim{PodSet: partialPodSet, Count: 2},
 			}}
-			recorder := &utiltesting.EventRecorder{}
+			recorder := &relatedEventRecorder{}
 			store := preemptexpectations.New()
 			preemptor := New(cl, workload.Ordering{}, recorder, nil, false, clocktesting.NewFakeClock(now), nil, store, nil)
 
@@ -649,6 +649,11 @@ func TestIssuePartialPreemption(t *testing.T) {
 			}
 			if diff := cmp.Diff(map[string]int{"PartiallyPreempted": 1, "PartiallyPreemptedWorkload": 1}, reasons); diff != "" {
 				t.Errorf("Unexpected events (-want,+got):\n%s", diff)
+			}
+			// The preemptor's event names the victim as its related object, so events/v1 keeps
+			// one per victim rather than merging them into a series.
+			if got := recorder.related["PartiallyPreemptedWorkload"]; got != victim.Name {
+				t.Errorf("PartiallyPreemptedWorkload related object = %q, want the victim %q", got, victim.Name)
 			}
 			if store.Satisfied(log, client.ObjectKeyFromObject(victim)) {
 				t.Error("The preemption expectation should be pending until the target is observed")
@@ -808,4 +813,20 @@ func TestPreemptedTargetsCreditOnlyReclaimedPods(t *testing.T) {
 		t.Errorf("A whole victim should free all its Pods, got %v", got)
 	}
 	revert()
+}
+
+// relatedEventRecorder records, per reason, the name of the related object of the last event.
+type relatedEventRecorder struct {
+	utiltesting.EventRecorder
+	related map[string]string
+}
+
+func (r *relatedEventRecorder) Eventf(regarding runtime.Object, related runtime.Object, eventtype, reason, action, note string, args ...any) {
+	if r.related == nil {
+		r.related = map[string]string{}
+	}
+	if o, ok := related.(client.Object); ok && o != nil {
+		r.related[reason] = o.GetName()
+	}
+	r.EventRecorder.Eventf(regarding, related, eventtype, reason, action, note, args...)
 }

@@ -124,7 +124,10 @@ func (p *Preemptor) issuePartialPreemption(ctx context.Context, preemptor *workl
 	p.recorder.Eventf(target.WorkloadInfo.Obj, nil, corev1.EventTypeNormal, "PartiallyPreempted", "PartiallyPreempted",
 		api.TruncateEventMessage(message+fmt.Sprintf("; preemptor effective priority: %d (base: %d, boost: %d); preemptee effective priority: %d (base: %d, boost: %d)",
 			preemptorEffPri, preemptorBase, preemptorBoost, targetEffPri, targetBase, targetBoost)))
-	p.recorder.Eventf(preemptor.Obj, nil, corev1.EventTypeNormal, "PartiallyPreemptedWorkload", "PartiallyPreemptedWorkload",
+	// The victim is the related object so each victim gets its own event: events/v1 dedups on
+	// the regarding and related objects and the reason, not the message, so without it a
+	// preemptor taking from many victims in one cycle records one event naming only the first.
+	p.recorder.Eventf(preemptor.Obj, target.WorkloadInfo.Obj, corev1.EventTypeNormal, "PartiallyPreemptedWorkload", "PartiallyPreemptedWorkload",
 		"Partially preempted %d Pod(s) of PodSet %s of workload %s (UID: %s) in ClusterQueue %s",
 		reclaimed, target.Reclaim.PodSet, klog.KObj(target.WorkloadInfo.Obj), target.WorkloadInfo.Obj.UID, target.WorkloadInfo.ClusterQueue)
 	return nil
