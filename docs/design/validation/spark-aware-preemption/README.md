@@ -27,7 +27,7 @@ defaults have since been lowered to 30s and 60s. The runs showed busy executors 
 
 | | |
 |---|---|
-| [`setup/`](./setup/) | Cohort, ClusterQueues, LocalQueue, WorkloadPriorityClasses (12-slot baseline); the 36-slot `cluster-queue-tres` and P12's `PreemptionConfig` (r4) |
+| [`setup/`](./setup/) | Cohort, ClusterQueues, LocalQueue, WorkloadPriorityClasses (12-slot baseline); the 36-slot `cluster-queue-tres` and P12's `PreemptionConfig` (r4); [`queues-setup.yaml`](./setup/queues-setup.yaml) recreates `cluster-queue-dos` and `cluster-queue-tres` with their LocalQueues after a clean deploy |
 | [`scenarios/`](./scenarios/) | One manifest per scenario, both waves; the header records its setup and checks |
 | [`scripts/`](./scripts/) | Capture, analyzers, scenario generator, suite runners, results archiver |
 | [`results/`](./results/) | Per-run verdicts (`*.txt`), timelines (`*.timeline.csv`), suite logs |
