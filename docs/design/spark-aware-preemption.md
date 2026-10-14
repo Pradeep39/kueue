@@ -781,6 +781,24 @@ Where the implementation on this branch differs from, or adds to, the sections a
   is already pending, and fall through to evicting a whole application.
 - **Topology-aware preemptors never use partial reclaim.** The TAS simulation removes victims whole.
   This matches PNG-3.
+- **Configurable preemption's candidates are partial victims too.** A ClusterQueue may preempt only
+  through a `PreemptionConfig` (`kueue.x-k8s.io/preemption-config-name`, with `withinClusterQueue` and
+  `reclaimWithinCohort` set to `Never`). Its `candidateSelectors` then choose the victims, by label,
+  ClusterQueue or numeric label, not necessarily by priority. The planner first drew only on the
+  classical candidates, so on such a ClusterQueue it found none, and the `Evict` fallback evicted the
+  configured candidates whole, opted in or not. The cluster run P12 showed it: a preemptor needing 12
+  slots evicted 3 labeled applications whole while 6 opted-in ones with spare executors were
+  available. The planner now also takes the candidates the config's rules select
+  (`PreemptionEvaluator.CandidateTargets`, which does not touch the snapshot), de-duplicated against
+  the classical ones:
+  - `Always` rules' candidates join the classical ones as the baseline;
+  - `InsufficientQuota` rules' candidates form a later stage, drawn on only once every baseline victim
+    is at its floor, mirroring that trigger's "only when the baseline is not enough";
+  - `QuotaFeasibleAndInsufficientTopology` rules are left out: partial reclaim frees no topology
+    capacity, since it never reduces a PodSet with a topology request.
+
+  The rules have already decided such a victim may be preempted, so the classical validity check is
+  not applied to it. Its target keeps the rule that selected it, for the eviction message.
 - **Decided preemptions are tracked as partial-aware targets** (`preemption.PreemptedTargets`), so a
   partial victim frees only its reclaimed Pods when the scheduler checks later workloads in the same
   cycle (SC-1).

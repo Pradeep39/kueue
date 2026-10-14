@@ -23,9 +23,12 @@ import (
 	"slices"
 	"time"
 
+	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/klog/v2"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
+	kueuealpha "sigs.k8s.io/kueue/apis/kueue/v1alpha1"
 	kueue "sigs.k8s.io/kueue/apis/kueue/v1beta2"
 	"sigs.k8s.io/kueue/pkg/constants"
 	controllerconstants "sigs.k8s.io/kueue/pkg/controller/constants"
@@ -52,6 +55,14 @@ type partialVictim struct {
 	inFlight bool
 	priority int64
 	reserved time.Time
+	// configurable is set for a victim selected by the ClusterQueue's PreemptionConfig rather
+	// than by its classical policy. The rules have already decided it may be preempted, so the
+	// classical validity check does not apply to it.
+	configurable bool
+	// stage orders victims before priority: 0 for the baseline (classical candidates and those of
+	// the PreemptionConfig's Always rules), 1 for those of its InsufficientQuota rules, which
+	// are only drawn on once every baseline victim is at its floor.
+	stage int
 }
 
 func (v *partialVictim) taken() int32 { return v.target.Reclaim.Count }
@@ -102,15 +113,56 @@ func (p *Preemptor) partialPreemptionStrategyIterator(ctx context.Context, pCtx 
 	}
 }
 
-// collect builds the victims from the classical candidates: those that declare partial
-// preemption on a PodSet without a topology request, are not evicted and are not part of
-// the preemptor's own slice chain.
+// partialCandidate is a workload the partial strategy may draw on, from the classical
+// candidates or from the PreemptionConfig.
+type partialCandidate struct {
+	classical classical.Candidate
+	target    *Target // set for a PreemptionConfig candidate
+	stage     int
+}
+
+// partialCandidates lists the classical candidates, then those the ClusterQueue's
+// PreemptionConfig selects that the classical policy did not: first its Always rules', then
+// its InsufficientQuota rules'. Without them, a ClusterQueue that preempts only through a
+// PreemptionConfig (spec.preemption Never) would never partially preempt, and would fall back
+// to evicting the configured candidates whole. QuotaFeasibleAndInsufficientTopology rules are
+// left out: they free topology capacity, and partial preemption never reduces a PodSet with a
+// topology request.
+func (pp *partialPlanner) partialCandidates() []partialCandidate {
+	var out []partialCandidate
+	seen := sets.New[types.UID]()
+	for _, cand := range pp.candidates.Candidates() {
+		seen.Insert(cand.WorkloadInfo.Obj.UID)
+		out = append(out, partialCandidate{classical: cand})
+	}
+	if !features.Enabled(features.ConfigurablePreemptions) {
+		return out
+	}
+	for stage, trigger := range []kueuealpha.PreemptionConfigActivationTrigger{kueuealpha.Always, kueuealpha.InsufficientQuota} {
+		for _, t := range pp.pCtx.configurableEvaluator.CandidateTargets(pp.pCtx.snapshot, &pp.pCtx.preemptor, pp.pCtx.frsNeedPreemption, trigger) {
+			if seen.Has(t.WorkloadInfo.Obj.UID) {
+				continue
+			}
+			seen.Insert(t.WorkloadInfo.Obj.UID)
+			out = append(out, partialCandidate{target: t, stage: stage})
+		}
+	}
+	return out
+}
+
+// collect builds the victims from the candidates (partialCandidates): those that declare
+// partial preemption on a PodSet without a topology request, are not evicted and are not part
+// of the preemptor's own slice chain.
 func (pp *partialPlanner) collect(ctx context.Context) {
 	logger := log.FromContext(ctx)
 	now := pp.pCtx.clock.Now()
 	pp.victims = nil
 	pp.byTarget = make(map[*Target]*partialVictim)
-	for _, cand := range pp.candidates.Candidates() {
+	for _, pc := range pp.partialCandidates() {
+		cand := pc.classical
+		if pc.target != nil {
+			cand = classical.Candidate{WorkloadInfo: pc.target.WorkloadInfo, Reason: pc.target.Reason}
+		}
 		wl := cand.WorkloadInfo
 		if workloadevict.IsEvicted(wl.Obj) || inPreemptorChain(pp.pCtx.preemptor.Obj, wl.Obj) {
 			continue
@@ -120,9 +172,11 @@ func (pp *partialPlanner) collect(ctx context.Context) {
 			continue
 		}
 		v := &partialVictim{
-			candidate: cand,
-			priority:  priority.EffectivePriority(logger, wl.Obj),
-			reserved:  policy.QuotaReservationTime(wl.Obj, now),
+			candidate:    cand,
+			priority:     priority.EffectivePriority(logger, wl.Obj),
+			reserved:     policy.QuotaReservationTime(wl.Obj, now),
+			configurable: pc.target != nil,
+			stage:        pc.stage,
 		}
 		if target, pending := workload.PartialPreemptionTarget(wl.Obj); pending {
 			granted, admitted := workload.GrantedCount(wl.Obj, spec.PodSet)
@@ -146,6 +200,9 @@ func (pp *partialPlanner) collect(ctx context.Context) {
 			Reason:       cand.Reason,
 			WorkloadCq:   pp.pCtx.snapshot.ClusterQueue(wl.ClusterQueue),
 			Reclaim:      &policy.PartialReclaim{PodSet: spec.PodSet},
+		}
+		if pc.target != nil {
+			v.target.ConfigurablePreemptionReasonData = pc.target.ConfigurablePreemptionReasonData
 		}
 		pp.victims = append(pp.victims, v)
 		pp.byTarget[v.target] = v
@@ -185,7 +242,7 @@ func (pp *partialPlanner) iterate(ctx context.Context) iter.Seq[*Target] {
 	}
 }
 
-// tiers groups the victims that are not in flight by priority, lowest first.
+// tiers groups the victims that are not in flight by stage, then by priority, lowest first.
 func (pp *partialPlanner) tiers() [][]*partialVictim {
 	var rest []*partialVictim
 	for _, v := range pp.victims {
@@ -193,11 +250,13 @@ func (pp *partialPlanner) tiers() [][]*partialVictim {
 			rest = append(rest, v)
 		}
 	}
-	slices.SortStableFunc(rest, func(a, b *partialVictim) int { return cmp.Compare(a.priority, b.priority) })
+	slices.SortStableFunc(rest, func(a, b *partialVictim) int {
+		return cmp.Or(cmp.Compare(a.stage, b.stage), cmp.Compare(a.priority, b.priority))
+	})
 	var tiers [][]*partialVictim
 	for i := 0; i < len(rest); {
 		j := i
-		for j < len(rest) && rest[j].priority == rest[i].priority {
+		for j < len(rest) && rest[j].stage == rest[i].stage && rest[j].priority == rest[i].priority {
 			j++
 		}
 		tiers = append(tiers, rest[i:j])
@@ -221,7 +280,7 @@ func (pp *partialPlanner) roundRobin(tier []*partialVictim, limit func(*partialV
 		})
 		progressed := false
 		for _, v := range order {
-			if v.taken() >= limit(v) || !pp.candidates.IsValid(v.candidate, pp.allowBorrowing) {
+			if v.taken() >= limit(v) || (!v.configurable && !pp.candidates.IsValid(v.candidate, pp.allowBorrowing)) {
 				continue
 			}
 			pp.setTaken(v, v.taken()+1)

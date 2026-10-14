@@ -34,6 +34,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
+	kueuealpha "sigs.k8s.io/kueue/apis/kueue/v1alpha1"
 	kueue "sigs.k8s.io/kueue/apis/kueue/v1beta2"
 	schdcache "sigs.k8s.io/kueue/pkg/cache/scheduler"
 	"sigs.k8s.io/kueue/pkg/constants"
@@ -68,6 +69,7 @@ type partialVictimSpec struct {
 	// undeclared victims carry no partial-preemption annotations.
 	undeclared  bool
 	annotations map[string]string
+	labels      map[string]string
 	evicted     bool
 }
 
@@ -102,6 +104,9 @@ func (v partialVictimSpec) workload(now time.Time) *kueue.Workload {
 	for k, val := range v.annotations {
 		w.Annotation(k, val)
 	}
+	for k, val := range v.labels {
+		w.Label(k, val)
+	}
 	if v.evicted {
 		w.Condition(metav1.Condition{Type: kueue.WorkloadEvicted, Status: metav1.ConditionTrue, Reason: kueue.WorkloadEvictedByPreemption})
 	}
@@ -116,6 +121,10 @@ type partialCase struct {
 	disabled bool // SparkPartialPreemption off
 	// cqDisabled turns partial preemption off in the preemptor's ClusterQueue snapshot.
 	cqDisabled bool
+	// config, when set, is stored and the ConfigurablePreemptions gate turned on, unless
+	// configurableDisabled.
+	config               *kueuealpha.PreemptionConfig
+	configurableDisabled bool
 }
 
 func partialCQ(name string, cpu string, cohort kueue.CohortReference) *kueue.ClusterQueue {
@@ -136,13 +145,18 @@ func partialCQ(name string, cpu string, cohort kueue.CohortReference) *kueue.Clu
 func runPartial(t *testing.T, tc partialCase) (map[string]int32, []*Target) {
 	t.Helper()
 	features.SetFeatureGateDuringTest(t, features.SparkPartialPreemption, !tc.disabled)
+	features.SetFeatureGateDuringTest(t, features.ConfigurablePreemptions, tc.config != nil && !tc.configurableDisabled)
 	ctx, log := utiltesting.ContextWithLog(t)
 	now := time.Now().Truncate(time.Second)
 	var objs []kueue.Workload
 	for _, v := range tc.victims {
 		objs = append(objs, *v.workload(now))
 	}
-	cl := utiltesting.NewClientBuilder().WithLists(&kueue.WorkloadList{Items: objs}).Build()
+	builder := utiltesting.NewClientBuilder().WithLists(&kueue.WorkloadList{Items: objs})
+	if tc.config != nil {
+		builder = builder.WithLists(&kueuealpha.PreemptionConfigList{Items: []kueuealpha.PreemptionConfig{*tc.config}})
+	}
+	cl := builder.Build()
 	cqCache := schdcache.New(cl)
 	cqCache.AddOrUpdateResourceFlavor(log, utiltestingapi.MakeResourceFlavor("default").Obj())
 	for _, cq := range tc.cqs {
@@ -168,6 +182,7 @@ func runPartial(t *testing.T, tc partialCase) (map[string]int32, []*Target) {
 		UID(types.UID(in.name)).
 		Priority(in.priority).
 		Annotations(in.annotations).
+		Labels(in.labels).
 		PodSets(*utiltestingapi.MakePodSet(partialPodSet, int(in.pods)).Request(corev1.ResourceCPU, fmt.Sprintf("%dm", milli)).Obj()).
 		Obj()
 	wlInfo := workload.NewInfo(log, incoming)
