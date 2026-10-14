@@ -259,13 +259,16 @@ type PartialPreemptionSettings struct {
 	// FallbackWait is true when the ClusterQueue chose "Wait": a preemptor whose minimum
 	// partial preemption cannot fit stays pending instead of falling back to whole eviction.
 	FallbackWait bool
-	// Timeout bounds how long a partial preemption waits for the reclaimed Pods to stop.
+	// Timeout bounds how long a partial preemption waits for the reclaimed Pods to stop. 0
+	// means the ClusterQueue sets none, and the timeout is derived from the grace period.
 	Timeout time.Duration
+	// TerminationGracePeriod is the grace period reclaimed Pods are deleted with when their job
+	// declares none. nil means the ClusterQueue sets none.
+	TerminationGracePeriod *time.Duration
 }
 
 func parsePartialPreemptionSettings(in *kueue.ClusterQueue) PartialPreemptionSettings {
 	settings := PartialPreemptionSettings{Enabled: true}
-	settings.Timeout, _ = time.ParseDuration(constants.DefaultPartialPreemptionTimeout)
 	if in.Annotations == nil {
 		return settings
 	}
@@ -273,6 +276,11 @@ func parsePartialPreemptionSettings(in *kueue.ClusterQueue) PartialPreemptionSet
 	if v, ok := in.Annotations[constants.PartialPreemptionTimeoutAnnotation]; ok {
 		if d, err := time.ParseDuration(v); err == nil && d > 0 {
 			settings.Timeout = d
+		}
+	}
+	if v, ok := in.Annotations[constants.PartialPreemptionTerminationGracePeriodAnnotation]; ok {
+		if d, ok := workload.ParseGracePeriod(v); ok {
+			settings.TerminationGracePeriod = &d
 		}
 	}
 	return settings

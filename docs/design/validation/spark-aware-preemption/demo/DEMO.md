@@ -95,17 +95,19 @@ The cohort has 12 slots, where one slot is 1 executor or driver.
    |---|---|
    | `spark.decommission.enabled` | `"true"` |
    | `spark.storage.decommission.*` | `"true"` |
-   | `spark.kubernetes.executor.terminationGracePeriodSeconds` | `30s` |
 
    > **Say:** "When Kueue takes an executor, Spark gets the signal first and moves its shuffle data to the
-   > executors that stay. That's what the 30 seconds is for. An app can set its own grace period if it needs longer."
+   > executors that stay. Kueue gives it the grace period to do that: 30 seconds by default, longer if
+   > the app sets its own or the ClusterQueue raises it."
 2. **Lens → Pods → any batch-a executor:**
    - Containers → Lifecycle: `preStop: /opt/decom.sh`
-   - Termination grace period: 60
+   - Termination grace period: 30 (Kubernetes' default; Kueue doesn't write one)
 3. **Lens → Workloads → batch-a's Workload → Annotations:**
    - `kueue.x-k8s.io/partial-preemption-podset: executor`, so only executors are reclaimable and the
      driver never is
    - `…-min-count: "1"`, the floor
+   - after a reclaim is issued, `…-reclaim-grace-period: 30s`, the grace period the executors are
+     deleted with
 
 **Press Enter, then show:**
 

@@ -163,3 +163,33 @@ func IsGrowBack(wl *kueue.Workload) bool {
 	// A pending scale-up slice has no grant yet; it is grow-back while the restore count stands.
 	return true
 }
+
+// ParseGracePeriod parses a partial-preemption grace period annotation value: a Go duration
+// that is not negative.
+func ParseGracePeriod(s string) (time.Duration, bool) {
+	d, err := time.ParseDuration(s)
+	if err != nil || d < 0 {
+		return 0, false
+	}
+	return d, true
+}
+
+// PartialPreemptionTerminationGracePeriod returns the termination grace period the Workload's
+// job declared for its reclaimable PodSet. ok is false when the job declared none.
+func PartialPreemptionTerminationGracePeriod(wl *kueue.Workload) (time.Duration, bool) {
+	s, has := wl.GetAnnotations()[constants.PartialPreemptionTerminationGracePeriodAnnotation]
+	if !has {
+		return 0, false
+	}
+	return ParseGracePeriod(s)
+}
+
+// PartialPreemptionReclaimGracePeriod returns the termination grace period an outstanding
+// partial preemption deletes Pods with. ok is false when the scheduler recorded none.
+func PartialPreemptionReclaimGracePeriod(wl *kueue.Workload) (time.Duration, bool) {
+	s, has := wl.GetAnnotations()[constants.PartialPreemptionReclaimGracePeriodAnnotation]
+	if !has {
+		return 0, false
+	}
+	return ParseGracePeriod(s)
+}

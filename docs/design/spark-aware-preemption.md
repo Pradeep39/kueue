@@ -385,8 +385,22 @@ The victim's job reconciler sees the target and runs the reclaim:
    This is the same rule a ReplicaSet uses to scale down (KEP-2255), and Karpenter reads the same
    annotation. So any producer of costs is honoured, and Kueue never polls Spark metrics.
 
-   Each Pod is deleted with its own `terminationGracePeriodSeconds`. Deletion is how the executor
-   learns it is being evicted (below).
+   Each Pod is deleted with the reclaim's termination grace period (`DeleteOptions.GracePeriodSeconds`),
+   resolved by the scheduler when it issues the target and recorded on the victim as
+   `kueue.x-k8s.io/partial-preemption-reclaim-grace-period`:
+
+   1. the grace period the job sets for the reclaimable PodSet, which the job declares onto its
+      Workload as `kueue.x-k8s.io/partial-preemption-termination-grace-period` (for Spark: the executor
+      template, else `spark.kubernetes.executor.terminationGracePeriodSeconds`);
+   2. else the same annotation on the victim's ClusterQueue;
+   3. else 30s, Kubernetes' own Pod default.
+
+   Passing it explicitly keeps the Pods' grace period and the reclaim timeout computed from the same
+   number. Left to each Pod's own value, a grace period raised outside the job spec (a platform
+   webhook, say) would outlast a timeout derived from 30s, and the grant would be lowered while the
+   Pods still ran. The cost is that such an out-of-band value is overridden; a platform that wants it
+   sets the ClusterQueue annotation instead. Deletion is how the executor learns it is being evicted
+   (below).
 2. **Wait for the decommission to finish.** It waits until those Pods are terminal or gone. The ungater counts deleting Pods as still
    ungated, so while the grant is still high, `room = granted − ungated` cannot rise and nothing new is
    ungated.
@@ -402,8 +416,16 @@ the preemptor while they still run. That is the SC-2 breach EQM §12's `IsActive
 prevent.
 
 **Timeout.** If the reclaimed Pods are not gone within the timeout, the grant is lowered anyway, with a
-warning event. The timeout is `kueue.x-k8s.io/partial-preemption-timeout` on the ClusterQueue, and
-defaults to 60s: the 30s executor grace period plus 30s.
+warning event. The timeout is `kueue.x-k8s.io/partial-preemption-timeout` on the ClusterQueue. When
+that is not set, it is the reclaim's grace period plus 30s, so 60s for the default grace period and
+150s for a 120s one.
+
+The two clocks differ. The grace period is the kubelet's: it starts when a Pod is deleted and bounds
+the executor's shutdown and migration. The timeout is Kueue's: it starts when the scheduler issues the
+target and is a safety net for Pods that never stop. The 30s cushion covers what the grace period does
+not: the time between issuing the target and deleting the Pods, the kubelet's teardown and status
+update, and the job reconciler's 5s poll. Erring long only costs time in the failure case, since the
+grant is lowered as soon as the Pods are gone.
 
 This matches `IsActive()`'s treatment of Pods stuck terminating on a lost node, which do not pin quota.
 It bounds the preemptor's wait, as #16233 asks. Escalating to whole eviction would not help, because
@@ -477,7 +499,9 @@ PodSet, the Spark webhook defaults these settings when the application is create
 | `spark.storage.decommission.enabled` | `"true"` |
 | `spark.storage.decommission.shuffleBlocks.enabled` | `"true"` |
 | `spark.storage.decommission.rddBlocks.enabled` | `"true"` |
-| Executor grace period: the Pod template's `terminationGracePeriodSeconds` and `spark.kubernetes.executor.terminationGracePeriodSeconds` | `30` seconds, in both |
+
+The executor grace period is not defaulted. Kubernetes and Spark 4.1+ both default it to 30s, and the
+reclaim deletes Pods with its own resolved grace period anyway (§5.4 step 1).
 
 - **It is safe.** This is the same one-time write before the application exists that injects the
   executor gate, which EQM §9.4 shows is safe under the operator's resubmission rule (C-1).
@@ -495,16 +519,19 @@ PodSet, the Spark webhook defaults these settings when the application is create
   The measurements used a small shuffle footprint (about 70 MiB per executor). Spark's default is
   the safer general choice across shuffle sizes, so Kueue does not override it. An application may
   still set it, and `spark.storage.decommission.maxReplicationFailuresPerBlock`, itself.
-- **Both grace-period settings are needed.** From Spark 4.1, `spark.kubernetes.executor.terminationGracePeriodSeconds`
+- **A grace period the application sets is mirrored.** From Spark 4.1, `spark.kubernetes.executor.terminationGracePeriodSeconds`
   (default 30s) is written onto every executor Pod and overrides the template
   (`BasicExecutorFeatureStep.scala:309-310`, branch-4.2). Before 4.1 that property does not exist and
-  the template applies. So the webhook sets both. If the application sets either, the other takes its
-  value, so every executor gets the same grace period on any Spark version.
-- **Why 30 seconds.** The grace period caps how long a preemptor waits for a reclaimed executor.
-  On the cluster, busy executors finished their running tasks and migrated their blocks in about 30s
-  (idle ones in about 1s), so the cap rarely binds. An executor still draining at 30s is killed, and the
-  work it had not handed off is recomputed. An application with large shuffle output per executor
-  should raise it; a first version defaulted to 60s.
+  the template applies. If the application sets only one, the webhook copies it to the other, so the
+  value holds on any Spark version, including for executors Spark itself removes.
+- **Why 30 seconds is the default.** The grace period caps how long a preemptor waits for a reclaimed
+  executor. On the cluster, busy executors finished their running tasks and migrated their blocks in
+  about 30s (idle ones in about 1s), so the cap rarely binds. An executor still draining at the cap is
+  killed, and the work it had not handed off is recomputed. An application with large shuffle output
+  per executor should raise its own grace period; a cluster that runs many such applications can raise
+  the ClusterQueue's. A first version defaulted the grace period to 60s, and a second wrote 30s into
+  every application; both were dropped, the second because it duplicated Kubernetes' default and
+  looked like a value the application had chosen.
 - **It is a default, not an override.** Any value the application sets explicitly, including `"false"`,
   is left alone. An application that opts out of decommissioning still gets partial reclaim. It just
   loses the reclaimed executors' shuffle output, which Spark then recomputes.
@@ -598,11 +625,12 @@ and lowering the tip's grant keeps the chain accounting unchanged.
 | `SparkPartialPreemption` | Kueue feature gate | off |
 | `spark.kueue.preemption.minExecutors` | application `sparkConf` | `minExecutors` (at least 1) with Dynamic Allocation, else `spark.executor.instances` |
 | `kueue.x-k8s.io/partial-preemption-fallback` | ClusterQueue annotation | `Evict` |
-| `kueue.x-k8s.io/partial-preemption-timeout` | ClusterQueue annotation | `60s` (the 30s executor grace period + 30s) |
+| `kueue.x-k8s.io/partial-preemption-timeout` | ClusterQueue annotation | the reclaim's grace period + 30s (`60s` by default) |
+| `kueue.x-k8s.io/partial-preemption-termination-grace-period` | ClusterQueue annotation (queue default); Workload annotation (declared by the job, wins) | `30s`, Kubernetes' Pod default |
 | Preemptor limit (step 4 of §5.3) | always on with the gate | on |
 
 | `spark.decommission.enabled` and `spark.storage.decommission.{enabled,shuffleBlocks.enabled,rddBlocks.enabled}` | defaulted by the Spark webhook at create time for reclaimable applications (§5.4) | `"true"`, unless set explicitly |
-| Executor grace period (template and `spark.kubernetes.executor.terminationGracePeriodSeconds`) | defaulted by the same webhook | `30` seconds; if the application sets one, the other follows it |
+| Executor grace period (template and `spark.kubernetes.executor.terminationGracePeriodSeconds`) | application; not defaulted | unset (so the ClusterQueue's, else 30s, applies to reclaims); if the application sets one, the webhook copies it to the other |
 
 **What an application sets.** Only the floor, and only if the default does not suit it:
 
@@ -614,8 +642,13 @@ spec:
 
 Decommissioning is defaulted for it (§5.4). An application that writes large shuffle output per
 executor should raise `spark.kubernetes.executor.terminationGracePeriodSeconds` so that migration
-finishes inside the grace period. The webhook copies it to the Pod template, and the ClusterQueue's
-timeout should be raised to match.
+finishes inside the grace period. The webhook copies it to the Pod template, and the reclaim timeout
+follows it unless the ClusterQueue pins one.
+
+**Naming.** The ClusterQueue annotations are integration-neutral, following Kueue's convention: policy
+that means the same for every job kind is named after the feature (`partial-preemption-*`,
+`elastic-job`, `podset-*-topology`), and only settings whose meaning belongs to one job kind carry its
+name (`pod-group-*`, `raycluster-*`). Spark-specific choices stay in the application's `sparkConf`.
 
 # 7. Alternatives considered
 
@@ -648,7 +681,7 @@ timeout should be raised to match.
 |---|---|
 | Spark classifies a deleted executor as failed, if the Pod reports `Running` after its container exits 143 (likelier with sidecars). That counts toward `spark.executor.maxNumFailures`. | Decommissioning, defaulted on, exits 0. Verify on a cluster (§9). The failure limit defaults to max(3, 2 × maxExecutors). |
 | Shuffle loss makes a reclaim costly late in a job. | Decommissioning with block migration, defaulted on (§5.4). Choose the newest executors first. |
-| Migration does not finish within the grace period. | Unmigrated blocks are recomputed, as without decommissioning. The grace period is configurable per application. The reclaim timeout follows it (§5.4). |
+| Migration does not finish within the grace period. | Unmigrated blocks are recomputed, as without decommissioning. The grace period is configurable per application and per ClusterQueue. The reclaim timeout follows it (§5.4). |
 | The image lacks the decommission script (`/opt/decom.sh` in Spark's own images). The preStop hook then fails, and the Pod is killed without migrating. | Check the platform's Spark images (§9). `spark.kubernetes.decommission.script` points elsewhere if needed. |
 | Publishing `partial-preemption-marked-pods` adds Workload writes as Dynamic Allocation marks and unmarks executors. | Written only when the count changes, through the debounced Pod watch (EQM §8.6). |
 | A victim with very little headroom gives up its only spare executor in a round. | Expected under round-robin, and bounded by its floor. Grow-back returns it first-come by chain age (§5.5). |
@@ -669,8 +702,10 @@ EQM §13. Coverage:
   from the largest losers first
 - the cost sweep: marked executors taken across victims before any round-robin, ascending cost,
   floors respected; Pods without the annotation treated as 0; tie-breaks
-- webhook defaulting of the decommission settings and grace period, including explicit values (and
-  `"false"`) left alone
+- webhook defaulting of the decommission settings, including explicit values (and `"false"`) left
+  alone; the grace period left unset, and mirrored when the application sets one
+- grace-period resolution (job, then ClusterQueue, then 30s), its use on delete, and the derived
+  timeout
 - the two-phase ordering, with the grant lowered only after Pods are gone (a negative control lowers
   it first and must breach SC-2)
 - timeout

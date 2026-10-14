@@ -53,7 +53,8 @@ func (p *Preemptor) issuePartialPreemption(ctx context.Context, preemptor *workl
 	log := ctrl.LoggerFrom(ctx)
 	wl := target.WorkloadInfo.Obj.DeepCopy()
 	now := p.clock.Now()
-	timeout := partialPreemptionTimeout(target)
+	grace := partialPreemptionGracePeriod(target)
+	timeout := partialPreemptionTimeout(target, grace)
 
 	var newTarget, granted int32
 	issued := false
@@ -77,10 +78,11 @@ func (p *Preemptor) issuePartialPreemption(ctx context.Context, preemptor *workl
 		}
 		ann := wl.GetAnnotations()
 		if ann == nil {
-			ann = make(map[string]string, 3)
+			ann = make(map[string]string, 4)
 		}
 		ann[constants.PartialPreemptionTargetAnnotation] = strconv.FormatInt(int64(newTarget), 10)
 		ann[constants.PartialPreemptionDeadlineAnnotation] = now.Add(timeout).UTC().Format(time.RFC3339)
+		ann[constants.PartialPreemptionReclaimGracePeriodAnnotation] = grace.String()
 		if _, has := ann[constants.PartialPreemptionRestoreCountAnnotation]; !has {
 			ann[constants.PartialPreemptionRestoreCountAnnotation] = strconv.FormatInt(int64(granted), 10)
 		}
@@ -128,11 +130,24 @@ func (p *Preemptor) issuePartialPreemption(ctx context.Context, preemptor *workl
 	return nil
 }
 
-// partialPreemptionTimeout is the victim ClusterQueue's partial-preemption timeout.
-func partialPreemptionTimeout(target *Target) time.Duration {
+// partialPreemptionGracePeriod is the termination grace period the victim's reclaimed Pods are
+// deleted with: the one its job declared, else its ClusterQueue's, else Kubernetes' default.
+func partialPreemptionGracePeriod(target *Target) time.Duration {
+	if d, ok := workload.PartialPreemptionTerminationGracePeriod(target.WorkloadInfo.Obj); ok {
+		return d
+	}
+	if target.WorkloadCq != nil && target.WorkloadCq.PartialPreemption.TerminationGracePeriod != nil {
+		return *target.WorkloadCq.PartialPreemption.TerminationGracePeriod
+	}
+	return constants.DefaultPartialPreemptionTerminationGracePeriod
+}
+
+// partialPreemptionTimeout is the victim ClusterQueue's partial-preemption timeout or, when it
+// sets none, the reclaim's grace period plus a cushion, so a timeout never cuts short Pods that
+// are still within their grace period.
+func partialPreemptionTimeout(target *Target, grace time.Duration) time.Duration {
 	if target.WorkloadCq != nil && target.WorkloadCq.PartialPreemption.Timeout > 0 {
 		return target.WorkloadCq.PartialPreemption.Timeout
 	}
-	d, _ := time.ParseDuration(constants.DefaultPartialPreemptionTimeout)
-	return d
+	return grace + constants.PartialPreemptionTimeoutCushion
 }

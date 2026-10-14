@@ -65,10 +65,14 @@ type ppJob struct {
 	floorOK     bool
 	marked      int32
 	markedOK    bool
+	grace       time.Duration
+	graceOK     bool
 
 	running        int32
 	stopAfterCalls int
 	reclaimCalls   []int32
+	// reclaimGraces records the grace period each ReclaimPods call was given.
+	reclaimGraces []*time.Duration
 	// observed records the stored executor grant, and the executors still holding
 	// resources, each time ReclaimPods is called.
 	observed []ppObservation
@@ -84,8 +88,13 @@ func (j *ppJob) PartialPreemptionFloor() (kueue.PodSetReference, int32, bool) {
 
 func (j *ppJob) PartialPreemptionMarkedPods() (int32, bool) { return j.marked, j.markedOK }
 
-func (j *ppJob) ReclaimPods(ctx context.Context, c client.Client, podSet kueue.PodSetReference, keep int32) (bool, error) {
+func (j *ppJob) PartialPreemptionTerminationGracePeriod() (time.Duration, bool) {
+	return j.grace, j.graceOK
+}
+
+func (j *ppJob) ReclaimPods(ctx context.Context, c client.Client, podSet kueue.PodSetReference, keep int32, gracePeriod *time.Duration) (bool, error) {
 	j.reclaimCalls = append(j.reclaimCalls, keep)
+	j.reclaimGraces = append(j.reclaimGraces, gracePeriod)
 	wl := &kueue.Workload{}
 	if err := c.Get(ctx, client.ObjectKey{Namespace: "ns", Name: ppTipName}, wl); err == nil {
 		g, _ := workload.GrantedCount(wl, podSet)
@@ -433,6 +442,68 @@ func TestPartialPreemptionReclaimOrchestration(t *testing.T) {
 	}
 }
 
+// TestPartialPreemptionReclaimGracePeriod checks that the reclaim deletes Pods with the grace
+// period the scheduler recorded, and that a reclaim without a deadline annotation times out at
+// that grace period plus the cushion.
+func TestPartialPreemptionReclaimGracePeriod(t *testing.T) {
+	now := time.Now().Truncate(time.Second)
+	cases := map[string]struct {
+		grace        string
+		hasDeadline  bool
+		issued       time.Time
+		wantGrace    *time.Duration
+		wantTimedOut bool
+	}{
+		"recorded grace period is passed to ReclaimPods": {
+			grace: "45s", hasDeadline: true, issued: now, wantGrace: new(45 * time.Second),
+		},
+		"no recorded grace period: the Pods' own applies": {
+			hasDeadline: true, issued: now,
+		},
+		"no deadline: still within the recorded grace period plus the cushion": {
+			grace: "2m", issued: now.Add(-149 * time.Second), wantGrace: new(2 * time.Minute),
+		},
+		"no deadline: past the recorded grace period plus the cushion": {
+			grace: "2m", issued: now.Add(-150 * time.Second), wantGrace: new(2 * time.Minute), wantTimedOut: true,
+		},
+		"no deadline and no grace period: past the default grace period plus the cushion": {
+			issued: now.Add(-60 * time.Second), wantTimedOut: true,
+		},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			enablePPGates(t, true)
+			w := withTarget(makePPTip(now), 2, now.Add(time.Minute), tc.issued)
+			if tc.grace != "" {
+				w = w.Annotation(kueueconstants.PartialPreemptionReclaimGracePeriodAnnotation, tc.grace)
+			}
+			wl := w.Obj()
+			if !tc.hasDeadline {
+				delete(wl.Annotations, kueueconstants.PartialPreemptionDeadlineAnnotation)
+			}
+			env := newPPEnv(t, now, 4, wl)
+			env.job.stopAfterCalls = 99
+			env.reconcile()
+
+			if len(env.job.reclaimGraces) != 1 {
+				t.Fatalf("ReclaimPods calls = %d, want 1", len(env.job.reclaimGraces))
+			}
+			if diff := cmp.Diff(tc.wantGrace, env.job.reclaimGraces[0]); diff != "" {
+				t.Errorf("ReclaimPods grace period (-want,+got):\n%s", diff)
+			}
+			got := env.get(ppTipName)
+			cond := apimeta.FindStatusCondition(got.Status.Conditions, kueueconstants.PartiallyPreemptedCondition)
+			timedOut := cond != nil && cond.Reason == kueueconstants.PartialPreemptionTimedOutReason
+			if timedOut != tc.wantTimedOut {
+				t.Errorf("timed out = %v, want %v (condition %+v)", timedOut, tc.wantTimedOut, cond)
+			}
+			if _, has := got.Annotations[kueueconstants.PartialPreemptionReclaimGracePeriodAnnotation]; has && tc.wantTimedOut {
+				t.Errorf("reclaim grace period annotation not cleared with the target")
+			}
+		})
+	}
+}
+
 // TestPartialPreemptionSC2AcrossReconciles walks a reclaim through several reconciles while the
 // job's own count drops as its Pods are deleted, which is exactly what would make the slice
 // logic lower the grant early if it ran mid-reclaim. SC-2 must hold throughout, and the grant
@@ -529,9 +600,40 @@ func TestPartialPreemptionDeclaration(t *testing.T) {
 		floor       int32
 		marked      int32
 		markedOK    bool
+		grace       time.Duration
+		graceOK     bool
 		want        map[string]string
 		wantPatches int
 	}{
+		"job's own grace period is declared": {
+			wl:      makePPTip(now).Obj(),
+			floorOK: true, floor: 1, marked: 0, markedOK: true, grace: 90 * time.Second, graceOK: true,
+			want: map[string]string{
+				kueueconstants.PartialPreemptionPodSetAnnotation:                 string(ppExecutor),
+				kueueconstants.PartialPreemptionMinCountAnnotation:               "1",
+				kueueconstants.PartialPreemptionMarkedPodsAnnotation:             "0",
+				kueueconstants.PartialPreemptionTerminationGracePeriodAnnotation: "1m30s",
+			},
+			wantPatches: 1,
+		},
+		"grace period the job no longer sets is removed": {
+			wl:      makePPTip(now).Annotation(kueueconstants.PartialPreemptionTerminationGracePeriodAnnotation, "1m30s").Obj(),
+			floorOK: true, floor: 1, marked: 0, markedOK: true,
+			want: map[string]string{
+				kueueconstants.PartialPreemptionPodSetAnnotation:     string(ppExecutor),
+				kueueconstants.PartialPreemptionMinCountAnnotation:   "1",
+				kueueconstants.PartialPreemptionMarkedPodsAnnotation: "0",
+			},
+			wantPatches: 1,
+		},
+		"no floor removes the grace period with the declaration": {
+			wl:          makePPTip(now).Annotation(kueueconstants.PartialPreemptionTerminationGracePeriodAnnotation, "1m30s").Obj(),
+			floorOK:     false,
+			grace:       90 * time.Second,
+			graceOK:     true,
+			want:        map[string]string{},
+			wantPatches: 1,
+		},
 		"declaration added to an admitted slice that has none": {
 			wl: makePPTip(now).Annotations(map[string]string{
 				workloadslicing.EnabledAnnotationKey: workloadslicing.EnabledAnnotationValue,
@@ -615,12 +717,14 @@ func TestPartialPreemptionDeclaration(t *testing.T) {
 		kueueconstants.PartialPreemptionMarkedPodsAnnotation,
 		kueueconstants.PartialPreemptionRestoreCountAnnotation,
 		kueueconstants.PartialPreemptionTargetAnnotation,
+		kueueconstants.PartialPreemptionTerminationGracePeriodAnnotation,
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
 			enablePPGates(t, !tc.gateOff)
 			env := newPPEnv(t, now, 4, tc.wl)
 			env.job.floorOK, env.job.floor, env.job.marked, env.job.markedOK = tc.floorOK, tc.floor, tc.marked, tc.markedOK
+			env.job.grace, env.job.graceOK = tc.grace, tc.graceOK
 			env.reconcile()
 			got := map[string]string{}
 			ann := env.get(ppTipName).Annotations

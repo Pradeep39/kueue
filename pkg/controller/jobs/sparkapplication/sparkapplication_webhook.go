@@ -171,30 +171,32 @@ func applyDecommissionDefaults(job *SparkApplication) {
 		}
 		job.Spec.SparkConf[key] = "true"
 	}
-	if job.Spec.Executor.Template == nil {
-		job.Spec.Executor.Template = emptyExecutorPodTemplateSpec.DeepCopy()
+	mirrorExecutorTerminationGracePeriod(job)
+}
+
+// mirrorExecutorTerminationGracePeriod copies an executor grace period the application sets in
+// one place to the other: the Pod template (Spark before 4.1) and
+// spark.kubernetes.executor.terminationGracePeriodSeconds (Spark 4.1+, which overrides the
+// template). An application that sets neither is left alone: Kubernetes and Spark both default
+// to 30s, and partial preemption applies its own grace period when it deletes the Pods.
+func mirrorExecutorTerminationGracePeriod(job *SparkApplication) {
+	var templateGrace *int64
+	if t := job.Spec.Executor.Template; t != nil {
+		templateGrace = t.Spec.TerminationGracePeriodSeconds
 	}
-	// The grace period lives in two places: the Pod template (Spark before 4.1) and
-	// spark.kubernetes.executor.terminationGracePeriodSeconds (Spark 4.1+, which overrides the
-	// template and defaults to 30s). Default whichever is unset to the other's value, or to
-	// decommissionTerminationGracePeriodSeconds when neither is set, so every Spark version
-	// gives a terminating executor the same grace period.
-	templateGrace := job.Spec.Executor.Template.Spec.TerminationGracePeriodSeconds
 	confGrace, confSet := job.Spec.SparkConf[sparkConfExecutorTerminationGracePeriod]
-	grace := decommissionTerminationGracePeriodSeconds
 	switch {
-	case templateGrace != nil:
-		grace = *templateGrace
-	case confSet:
-		if seconds, ok := sparkTimeSeconds(confGrace); ok {
-			grace = seconds
+	case templateGrace != nil && !confSet:
+		job.Spec.SparkConf[sparkConfExecutorTerminationGracePeriod] = strconv.FormatInt(*templateGrace, 10) + "s"
+	case templateGrace == nil && confSet:
+		seconds, ok := sparkTimeSeconds(confGrace)
+		if !ok {
+			return
 		}
-	}
-	if templateGrace == nil {
-		job.Spec.Executor.Template.Spec.TerminationGracePeriodSeconds = ptr.To(grace)
-	}
-	if !confSet {
-		job.Spec.SparkConf[sparkConfExecutorTerminationGracePeriod] = strconv.FormatInt(grace, 10) + "s"
+		if job.Spec.Executor.Template == nil {
+			job.Spec.Executor.Template = emptyExecutorPodTemplateSpec.DeepCopy()
+		}
+		job.Spec.Executor.Template.Spec.TerminationGracePeriodSeconds = ptr.To(seconds)
 	}
 }
 

@@ -137,11 +137,18 @@ const (
 	PartialPreemptionFallbackEvict      = "Evict"
 	PartialPreemptionFallbackWait       = "Wait"
 	// PartialPreemptionTimeoutAnnotation, on a ClusterQueue, is a Go duration bounding how
-	// long a partial preemption waits for the reclaimed Pods to stop.
+	// long a partial preemption waits for the reclaimed Pods to stop. When it is not set, the
+	// timeout is the reclaim's termination grace period plus PartialPreemptionTimeoutCushion.
 	PartialPreemptionTimeoutAnnotation = "kueue.x-k8s.io/partial-preemption-timeout"
-	// DefaultPartialPreemptionTimeout applies when the ClusterQueue sets no timeout. It covers
-	// the 30s executor grace period the Spark webhook defaults, plus 30s.
-	DefaultPartialPreemptionTimeout = "60s"
+	// PartialPreemptionTerminationGracePeriodAnnotation is a Go duration: the termination grace
+	// period Pods reclaimed by partial preemption are deleted with. On a ClusterQueue it is the
+	// default for the Workloads admitted to it. On a Workload it is declared by the job, when the
+	// job sets a grace period of its own for the reclaimable PodSet, and takes precedence.
+	PartialPreemptionTerminationGracePeriodAnnotation = "kueue.x-k8s.io/partial-preemption-termination-grace-period"
+	// PartialPreemptionReclaimGracePeriodAnnotation, on a victim Workload, is the termination
+	// grace period the outstanding partial preemption deletes Pods with, as a Go duration. Set by
+	// the scheduler with the target; cleared with it.
+	PartialPreemptionReclaimGracePeriodAnnotation = "kueue.x-k8s.io/partial-preemption-reclaim-grace-period"
 
 	// PartiallyPreemptedCondition is the Workload condition a partial preemption sets on its
 	// victim: True while the reclaim is outstanding, False with reason
@@ -155,4 +162,15 @@ const (
 	// PodDeletionCostAnnotation is Kubernetes' ReplicaSet scale-down hint (KEP-2255). Lower
 	// values are removed first; a Pod without it counts as 0.
 	PodDeletionCostAnnotation = "controller.kubernetes.io/pod-deletion-cost"
+)
+
+const (
+	// DefaultPartialPreemptionTerminationGracePeriod is the termination grace period of a reclaim
+	// when neither the job nor its ClusterQueue sets one. It is Kubernetes' own Pod default.
+	DefaultPartialPreemptionTerminationGracePeriod = 30 * time.Second
+	// PartialPreemptionTimeoutCushion is added to a reclaim's grace period to derive its timeout
+	// when the ClusterQueue sets none. It covers what the grace period does not: the time between
+	// issuing the reclaim and deleting the Pods, the kubelet's teardown and status update, and the
+	// job reconciler's poll interval.
+	PartialPreemptionTimeoutCushion = 30 * time.Second
 )

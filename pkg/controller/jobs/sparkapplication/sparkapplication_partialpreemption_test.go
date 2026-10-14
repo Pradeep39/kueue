@@ -482,7 +482,7 @@ func TestReclaimPods(t *testing.T) {
 				podSet = executorPodSetName
 			}
 
-			done, err := fromObject(tc.app).ReclaimPods(t.Context(), c, podSet, tc.keep)
+			done, err := fromObject(tc.app).ReclaimPods(t.Context(), c, podSet, tc.keep, nil)
 			if (err != nil) != tc.wantErr {
 				t.Fatalf("ReclaimPods() error = %v, wantErr %v", err, tc.wantErr)
 			}
@@ -498,7 +498,7 @@ func TestReclaimPods(t *testing.T) {
 
 			// Level-based: a second call, with the first call's deletions still in
 			// flight, deletes nothing more.
-			if _, err := fromObject(tc.app).ReclaimPods(t.Context(), c, podSet, tc.keep); err != nil {
+			if _, err := fromObject(tc.app).ReclaimPods(t.Context(), c, podSet, tc.keep, nil); err != nil {
 				t.Fatalf("second ReclaimPods() returned an unexpected error: %v", err)
 			}
 			if diff := cmp.Diff(tc.wantDeleted, deletedPods(t, c)); diff != "" {
@@ -520,7 +520,7 @@ func TestReclaimPodsCompletes(t *testing.T) {
 	c := utiltesting.NewClientBuilder().WithObjects(objs...).Build()
 	job := fromObject(withSparkConf(elasticApp().ExecutorInstances(3).Obj(), map[string]string{sparkConfPreemptionMinExecutors: "1"}))
 
-	done, err := job.ReclaimPods(t.Context(), c, executorPodSetName, 2)
+	done, err := job.ReclaimPods(t.Context(), c, executorPodSetName, 2, nil)
 	if err != nil || done {
 		t.Fatalf("first ReclaimPods() = (%v, %v), want (false, nil)", done, err)
 	}
@@ -536,9 +536,86 @@ func TestReclaimPodsCompletes(t *testing.T) {
 	if err := c.Update(t.Context(), pod); err != nil {
 		t.Fatalf("Update() failed: %v", err)
 	}
-	done, err = job.ReclaimPods(t.Context(), c, executorPodSetName, 2)
+	done, err = job.ReclaimPods(t.Context(), c, executorPodSetName, 2, nil)
 	if err != nil || !done {
 		t.Fatalf("second ReclaimPods() = (%v, %v), want (true, nil)", done, err)
+	}
+}
+
+// TestReclaimPodsGracePeriod checks that Pods are deleted with the reclaim's grace period,
+// rounded up to whole seconds, and with none when the reclaim has none.
+func TestReclaimPodsGracePeriod(t *testing.T) {
+	cases := map[string]struct {
+		grace *time.Duration
+		want  *int64
+	}{
+		"no grace period: the Pod's own applies": {},
+		"whole seconds":                          {grace: new(45 * time.Second), want: new(int64(45))},
+		"sub-second remainder rounds up":         {grace: new(1500 * time.Millisecond), want: new(int64(2))},
+		"zero":                                   {grace: new(time.Duration(0)), want: new(int64(0))},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			features.SetFeatureGatesDuringTest(t, partialPreemptionGates)
+			var got []*int64
+			c := utiltesting.NewClientBuilder().
+				WithObjects(ppPod{name: "e1", node: "n1"}.obj(), ppPod{name: "e2", node: "n1"}.obj()).
+				WithInterceptorFuncs(interceptor.Funcs{Delete: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.DeleteOption) error {
+					o := &client.DeleteOptions{}
+					o.ApplyOptions(opts)
+					got = append(got, o.GracePeriodSeconds)
+					return c.Delete(ctx, obj, opts...)
+				}}).Build()
+			job := fromObject(withSparkConf(elasticApp().ExecutorInstances(2).Obj(), map[string]string{sparkConfPreemptionMinExecutors: "1"}))
+			if _, err := job.ReclaimPods(t.Context(), c, executorPodSetName, 1, tc.grace); err != nil {
+				t.Fatalf("ReclaimPods() error = %v", err)
+			}
+			if diff := cmp.Diff([]*int64{tc.want}, got); diff != "" {
+				t.Errorf("Delete grace period (-want +got):\n%s", diff)
+			}
+		})
+	}
+}
+
+func TestPartialPreemptionTerminationGracePeriod(t *testing.T) {
+	cases := map[string]struct {
+		template  *corev1.PodTemplateSpec
+		conf      map[string]string
+		want      time.Duration
+		wantFound bool
+	}{
+		"neither set": {},
+		"template": {
+			template: &corev1.PodTemplateSpec{Spec: corev1.PodSpec{TerminationGracePeriodSeconds: new(int64(90))}},
+			want:     90 * time.Second, wantFound: true,
+		},
+		"Spark property": {
+			conf: map[string]string{sparkConfExecutorTerminationGracePeriod: "2m"},
+			want: 2 * time.Minute, wantFound: true,
+		},
+		"template wins over the Spark property": {
+			template: &corev1.PodTemplateSpec{Spec: corev1.PodSpec{TerminationGracePeriodSeconds: new(int64(90))}},
+			conf:     map[string]string{sparkConfExecutorTerminationGracePeriod: "2m"},
+			want:     90 * time.Second, wantFound: true,
+		},
+		"malformed Spark property is ignored": {
+			conf: map[string]string{sparkConfExecutorTerminationGracePeriod: "soon"},
+		},
+		"template without a grace period": {
+			template: &corev1.PodTemplateSpec{},
+		},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			w := elasticApp().ExecutorInstances(3)
+			if tc.template != nil {
+				w = w.ExecutorTemplate(tc.template)
+			}
+			got, found := fromObject(withSparkConf(w.Obj(), tc.conf)).PartialPreemptionTerminationGracePeriod()
+			if got != tc.want || found != tc.wantFound {
+				t.Errorf("PartialPreemptionTerminationGracePeriod() = (%v, %v), want (%v, %v)", got, found, tc.want, tc.wantFound)
+			}
+		})
 	}
 }
 

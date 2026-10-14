@@ -623,9 +623,10 @@ func TestIssuePartialPreemption(t *testing.T) {
 				t.Fatal(err)
 			}
 			wantAnn := map[string]string{
-				constants.PartialPreemptionTargetAnnotation:       "3",
-				constants.PartialPreemptionDeadlineAnnotation:     now.Add(90 * time.Second).UTC().Format(time.RFC3339),
-				constants.PartialPreemptionRestoreCountAnnotation: "5",
+				constants.PartialPreemptionTargetAnnotation:             "3",
+				constants.PartialPreemptionDeadlineAnnotation:           now.Add(90 * time.Second).UTC().Format(time.RFC3339),
+				constants.PartialPreemptionRestoreCountAnnotation:       "5",
+				constants.PartialPreemptionReclaimGracePeriodAnnotation: "30s",
 			}
 			for k, want := range wantAnn {
 				if got.Annotations[k] != want {

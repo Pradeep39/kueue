@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"slices"
 	"strconv"
+	"time"
 
 	sparkcommon "github.com/kubeflow/spark-operator/v2/pkg/common"
 	corev1 "k8s.io/api/core/v1"
@@ -42,17 +43,11 @@ import (
 // spark-aware-preemption.md §5.2). Kueue reads it but never writes it.
 const sparkConfPreemptionMinExecutors = "spark.kueue.preemption.minExecutors"
 
-// decommissionTerminationGracePeriodSeconds is the executor grace period the webhook defaults
-// for a reclaimable application, bounding Spark's decommission hand-off (§5.4). It caps how long a
-// preemptor waits for a reclaimed executor; an executor still draining at the cap is killed and
-// its unmigrated work recomputed. An application that needs longer sets the grace period itself
-// (the template or spark.kubernetes.executor.terminationGracePeriodSeconds), which is kept.
-const decommissionTerminationGracePeriodSeconds int64 = 30
-
 // sparkConfExecutorTerminationGracePeriod is Spark's executor grace period property. From
 // Spark 4.1 it is written onto every executor Pod (BasicExecutorFeatureStep), overriding the
 // Pod template's terminationGracePeriodSeconds, and defaults to 30s. Before 4.1 it does not
-// exist and the template's value applies. The webhook therefore sets both, to the same value.
+// exist and the template's value applies. When an application sets only one of the two, the
+// webhook copies it to the other, so every Spark version uses it.
 const sparkConfExecutorTerminationGracePeriod = "spark.kubernetes.executor.terminationGracePeriodSeconds"
 
 // decommissionSparkConfDefaults are the Spark properties the webhook defaults to "true" for a
@@ -129,6 +124,23 @@ func (j *SparkApplication) PartialPreemptionFloor() (kueue.PodSetReference, int3
 		return "", 0, false
 	}
 	return executorPodSetName, min(floor, count), true
+}
+
+// PartialPreemptionTerminationGracePeriod implements jobframework.JobWithPartialPreemption: the
+// executor grace period the application sets, from the executor Pod template or, failing that,
+// spark.kubernetes.executor.terminationGracePeriodSeconds. It bounds Spark's decommission
+// hand-off (§5.4): an executor still migrating blocks when it ends is killed, and its
+// unmigrated work recomputed.
+func (j *SparkApplication) PartialPreemptionTerminationGracePeriod() (time.Duration, bool) {
+	if t := j.Spec.Executor.Template; t != nil && t.Spec.TerminationGracePeriodSeconds != nil {
+		return time.Duration(*t.Spec.TerminationGracePeriodSeconds) * time.Second, true
+	}
+	if v, ok := j.Spec.SparkConf[sparkConfExecutorTerminationGracePeriod]; ok {
+		if seconds, ok := sparkTimeSeconds(v); ok {
+			return time.Duration(seconds) * time.Second, true
+		}
+	}
+	return 0, false
 }
 
 // PartialPreemptionMarkedPods implements jobframework.JobWithPartialPreemption. The count is
@@ -235,7 +247,7 @@ func compareReclaimOrder(a, b *corev1.Pod) int {
 // already being deleted, and deletes only enough more to bring that count to keep. Calling
 // it again while deletions are in flight deletes nothing more. The driver is never listed,
 // gated Pods hold no grant and are never touched, and keep is never below the floor.
-func (j *SparkApplication) ReclaimPods(ctx context.Context, c client.Client, podSet kueue.PodSetReference, keep int32) (bool, error) {
+func (j *SparkApplication) ReclaimPods(ctx context.Context, c client.Client, podSet kueue.PodSetReference, keep int32, gracePeriod *time.Duration) (bool, error) {
 	if podSet != executorPodSetName {
 		return false, fmt.Errorf("partial preemption of PodSet %q is not supported, only %q", podSet, executorPodSetName)
 	}
@@ -274,10 +286,15 @@ func (j *SparkApplication) ReclaimPods(ctx context.Context, c client.Client, pod
 		return false, nil
 	}
 	slices.SortFunc(candidates, compareReclaimOrder)
+	var opts []client.DeleteOption
+	if gracePeriod != nil {
+		// Whole seconds, rounded up so a sub-second remainder is never cut.
+		opts = append(opts, client.GracePeriodSeconds(int64((*gracePeriod+time.Second-1)/time.Second)))
+	}
 	log := ctrl.LoggerFrom(ctx)
 	for _, p := range candidates[:min(toDelete, len(candidates))] {
 		log.V(3).Info("Deleting executor Pod for partial preemption", "pod", klog.KObj(p), "keep", keep, "holding", holding)
-		if err := c.Delete(ctx, p); client.IgnoreNotFound(err) != nil {
+		if err := c.Delete(ctx, p, opts...); client.IgnoreNotFound(err) != nil {
 			return false, err
 		}
 	}

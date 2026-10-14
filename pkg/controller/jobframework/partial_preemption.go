@@ -93,11 +93,17 @@ func applyPartialPreemptionDeclaration(wl *kueue.Workload, pp JobWithPartialPree
 	if !ok || podSet == "" {
 		changed := setOrDeleteAnnotation(wl, constants.PartialPreemptionPodSetAnnotation, nil)
 		changed = setOrDeleteAnnotation(wl, constants.PartialPreemptionMinCountAnnotation, nil) || changed
+		changed = setOrDeleteAnnotation(wl, constants.PartialPreemptionTerminationGracePeriodAnnotation, nil) || changed
 		return setOrDeleteAnnotation(wl, constants.PartialPreemptionMarkedPodsAnnotation, nil) || changed
 	}
 	ps := string(podSet)
 	changed := setOrDeleteAnnotation(wl, constants.PartialPreemptionPodSetAnnotation, &ps)
 	changed = setOrDeleteAnnotation(wl, constants.PartialPreemptionMinCountAnnotation, int32String(minCount)) || changed
+	var grace *string
+	if d, declared := pp.PartialPreemptionTerminationGracePeriod(); declared {
+		grace = new(d.String())
+	}
+	changed = setOrDeleteAnnotation(wl, constants.PartialPreemptionTerminationGracePeriodAnnotation, grace) || changed
 	if marked, observed := pp.PartialPreemptionMarkedPods(); observed {
 		changed = setOrDeleteAnnotation(wl, constants.PartialPreemptionMarkedPodsAnnotation, int32String(marked)) || changed
 	}
@@ -250,7 +256,11 @@ func (r *JobReconciler) executePartialPreemption(ctx context.Context, job Generi
 	}
 
 	// Steps 1 and 2: delete the Pods and see whether they have stopped.
-	done, err := pp.ReclaimPods(ctx, r.client, podSet, target)
+	var grace *time.Duration
+	if d, ok := workload.PartialPreemptionReclaimGracePeriod(wl); ok {
+		grace = &d
+	}
+	done, err := pp.ReclaimPods(ctx, r.client, podSet, target, grace)
 	if err != nil {
 		return ctrl.Result{}, true, fmt.Errorf("reclaiming pods of podset %q: %w", podSet, err)
 	}
@@ -322,6 +332,7 @@ func (r *JobReconciler) abandonPartialPreemption(ctx context.Context, job Generi
 func clearPartialPreemptionTarget(ctx context.Context, c client.Client, wl *kueue.Workload) error {
 	if err := clientutil.Patch(ctx, c, wl, func() (bool, error) {
 		changed := setOrDeleteAnnotation(wl, constants.PartialPreemptionTargetAnnotation, nil)
+		changed = setOrDeleteAnnotation(wl, constants.PartialPreemptionReclaimGracePeriodAnnotation, nil) || changed
 		return setOrDeleteAnnotation(wl, constants.PartialPreemptionDeadlineAnnotation, nil) || changed, nil
 	}, clientutil.WithRetryOnConflict()); err != nil {
 		return fmt.Errorf("clearing partial preemption target: %w", err)
@@ -354,7 +365,8 @@ func (r *JobReconciler) resolvePartiallyPreempted(ctx context.Context, wl *kueue
 }
 
 // partialPreemptionDeadline is the deadline annotation, or, when the scheduler wrote none, the
-// default timeout from when the PartiallyPreempted condition was set.
+// default timeout (the recorded or default grace period plus the cushion) from when the
+// PartiallyPreempted condition was set.
 func partialPreemptionDeadline(wl *kueue.Workload) (time.Time, bool) {
 	if deadline, ok := workload.PartialPreemptionDeadline(wl); ok {
 		return deadline, true
@@ -363,9 +375,9 @@ func partialPreemptionDeadline(wl *kueue.Workload) (time.Time, bool) {
 	if cond == nil || cond.Status != metav1.ConditionTrue {
 		return time.Time{}, false
 	}
-	timeout, err := time.ParseDuration(constants.DefaultPartialPreemptionTimeout)
-	if err != nil {
-		return time.Time{}, false
+	grace, ok := workload.PartialPreemptionReclaimGracePeriod(wl)
+	if !ok {
+		grace = constants.DefaultPartialPreemptionTerminationGracePeriod
 	}
-	return cond.LastTransitionTime.Add(timeout), true
+	return cond.LastTransitionTime.Add(grace + constants.PartialPreemptionTimeoutCushion), true
 }
