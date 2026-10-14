@@ -126,7 +126,7 @@ The cohort has 12 slots, where one slot is 1 executor or driver.
    > shares capacity with a running executor."
 7. **Lens → Pods.** Spark immediately tries to replace the lost executor, and the new Pod shows
    **`SchedulingGated`**. In the terminal it's counted under GATED.
-   > **Say:** "Spark asks for it back, and Kueue holds it until there's quota. No thrash."
+   > **Say:** "Spark asks for it back, and Kueue holds it until there's quota. No repeated evictions."
 8. **Lens → batch-a driver → Logs.** Search for `decommission`. You'll see
    `Decommission executors: …` and `Executor N … is decommissioned after 31.0 s`.
 9. **KueueViz → Cluster Queues.** Usage shifts to `urgent` with nothing restarting.
