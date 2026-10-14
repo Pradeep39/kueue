@@ -50,4 +50,5 @@ for a in apps:
     used += (g or 0) + (1 if g is not None else 0)
     note = f"-> {pp[a]}" if a in pp else ""
     print(f"  {a:10} {prio.get(a, ""):8} {k["driver"]:>6} {k["running"]:>7} {("-" if g is None else g):>7} {k["gated"]:>5} {k["deleting"]:>8}  {note}")
-print(f"  slots granted: {used} of 36")
+quota = sys.argv[3] if len(sys.argv) > 3 else "36"
+print(f"  slots granted: {used} of {quota}")

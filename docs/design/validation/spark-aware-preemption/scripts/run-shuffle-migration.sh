@@ -12,11 +12,13 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 NS=batch-ns-uno; SA=sparkapplications.sparkoperator.k8s.io
 usage() {
   cat <<USAGE
-usage: [EXTRA_CONF=key=value,...] [ITERS=N] [FORCE=1] run-shuffle-migration.sh [THRESH_MB]
+usage: [EXTRA_CONF=key=value,...] [ITERS=N] [FORCE=1] [STOP_AFTER_VICTIM=1] run-shuffle-migration.sh [THRESH_MB]
   THRESH_MB  MiB of shuffle files every victim executor must hold before the preemptor is
              submitted (default 15). This runs the experiment; it takes no application name.
   ITERS=N    PageRank iterations for the victim (default 100, about 2.5 minutes)
   FORCE=1    delete other SparkApplications in $NS before starting (otherwise refuse).
+  STOP_AFTER_VICTIM=1  end the capture and print the report as soon as the victim finishes,
+             instead of after the capture's 10 minutes (for demos).
 To analyse a finished run:   shuffle-migration-report.py runs/SHUF-<stamp>
 To see shuffle data now:     shuffle-per-executor.sh <app> [namespace] [--watch]
 USAGE
@@ -136,6 +138,8 @@ while kill -0 $CAP 2>/dev/null; do
     COMPLETED|FAILED)
       log "victim $VICTIM $state. Analyse it now with:"
       log "  python3 -I $HERE/shuffle-migration-report.py $OUT"
+      # The executor and driver logs the report needs are complete once the victim has finished.
+      [ "${STOP_AFTER_VICTIM:-0}" = 1 ] && { log "STOP_AFTER_VICTIM: ending the capture now"; touch "$OUT/capture/.stop"; }
       break ;;
   esac
   sleep 5
