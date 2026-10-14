@@ -4,10 +4,10 @@ Short live demos on stock Spark 3.4.3, about 11 minutes of cluster time in total
 
 | Part | Command | What the audience sees | Live time |
 |---|---|---|---|
-| 0. The problem | `./run-thrash-demo.sh` | Two PageRank apps that did not opt in are evicted whole, re-admitted, and evicted again by a growing urgent app | ~4:40 |
+| 0. The problem | `./run-whole-workload-preemption.sh` | Two PageRank apps that did not opt in are evicted whole, re-admitted, and evicted again by a growing urgent app | ~4:40 |
 | 1. Shuffle resiliency | `STOP_AFTER_VICTIM=1 ./run-shuffle-migration.sh 40` | Reclaimed executors hand their shuffle data to the survivors; the job finishes with nothing recomputed | ~2:15 |
-| 2a. Spread | `CAPTURE=0 ./run-p11-demo.sh p10s` | Six apps each give exactly one executor; afterwards they grow back | ~1:40 |
-| 2b. Round-robin | `CAPTURE=0 ./run-p11-demo.sh p11s` | Five apps each give one before any gives a second; they grow back | ~1:35 |
+| 2a. Spread | `CAPTURE=0 ./run-partial-preemption-spread.sh p10s` | Six apps each give exactly one executor; afterwards they grow back | ~1:40 |
+| 2b. Round-robin | `CAPTURE=0 ./run-partial-preemption-spread.sh p11s` | Five apps each give one before any gives a second; they grow back | ~1:35 |
 
 Measured on the cluster with `AUTO=1`. Spark 4.0.1 works the same but took ~2 minutes longer in
 part 2b: on that version the last victims are slower to get their executors back.
@@ -26,10 +26,10 @@ part 2b: on that version the last victims are slower to get their executors back
   (part 2).
 - Dry-run each part once with `AUTO=1`, so the Spark image is cached on the nodes.
 
-## Part 0: whole eviction and thrashing (today's behaviour)
+## Part 0: whole-workload preemption (today's behaviour)
 
 ```bash
-./run-thrash-demo.sh        # sizes cluster-queue-tres to 12 slots, puts it back to 36 on exit
+./run-whole-workload-preemption.sh        # sizes cluster-queue-tres to 12 slots, puts it back to 36 on exit
 ```
 
 Two low-priority SparkPageRank apps (driver + 4 executors each) without the partial-preemption
@@ -61,13 +61,13 @@ files (about a minute in), and prints the report as soon as the victim finishes.
 ## Part 2: spread the loss (p10s, then p11s)
 
 ```bash
-CAPTURE=0 ./run-p11-demo.sh p10s    # 6 apps x (driver + 2); the urgent app needs 6 slots
-CAPTURE=0 ./run-p11-demo.sh p11s    # 5 apps x (driver + 3); the urgent app needs 8 slots
+CAPTURE=0 ./run-partial-preemption-spread.sh p10s    # 6 apps x (driver + 2); the urgent app needs 6 slots
+CAPTURE=0 ./run-partial-preemption-spread.sh p11s    # 5 apps x (driver + 3); the urgent app needs 8 slots
 ```
 
 Each run sizes `cluster-queue-tres` to exactly what the victims fill (18 or 20 slots) and puts it back
 to 36 on exit. It pauses before the urgent app arrives (press Enter), then follows the reclaim and
-the grow-back, and deletes its apps when it ends. `./run-p11-demo.sh watch` shows the same table on a
+the grow-back, and deletes its apps when it ends. `./run-partial-preemption-spread.sh watch` shows the same table on a
 second screen.
 
 1. **The queue fills (~20s).** Every app shows its driver and executors running; `slots granted: 18 of 18`.
@@ -92,7 +92,7 @@ kubectl -n batch-ns-uno delete sparkapplications.sparkoperator.k8s.io --all
 | Symptom | Cause and fix |
 |---|---|
 | `refusing to start: ... other SparkApplications` | Leftover apps: rerun with `FORCE=1`, or reset first |
-| `refusing to start: another ... is in progress` | A run was interrupted: remove the `runs/.p11-demo.lock`, `runs/.shuffle-migration.lock` or `runs/.thrash-demo.lock` directory |
+| `refusing to start: another ... is in progress` | A run was interrupted: remove the `runs/.partial-preemption-spread.lock`, `runs/.shuffle-migration.lock` or `runs/.whole-workload-preemption.lock` directory |
 | Part 0 shows only one eviction | The urgent app did not scale back down in time: rerun, or raise `DURATION` |
 | Part 1 triggers before terminal 2 is up | Raise the threshold: `./run-shuffle-migration.sh 60` |
 | Part 1 victim finishes before the trigger | Lower the threshold, or `ITERS=150` |

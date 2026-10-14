@@ -3,9 +3,9 @@
 # NOT opted in to partial preemption share a 12-slot queue with a high-priority app using Dynamic
 # Allocation. Each time the urgent app is admitted or scales up, Kueue evicts a whole low-priority app:
 # its driver dies, its shuffle data is lost, and when the urgent app scales down the victim is
-# readmitted and starts over from scratch, only to be evicted again (thrashing).
+# readmitted and starts over from scratch, only to be evicted again.
 #
-#   [AUTO=1] [FORCE=1] [DURATION=240] run-thrash-demo.sh
+#   [AUTO=1] [FORCE=1] [DURATION=240] run-whole-workload-preemption.sh
 #     AUTO=1       submit the urgent app as soon as both victims run (no Enter prompt)
 #     FORCE=1      delete other SparkApplications in batch-ns-uno before starting (otherwise refuse)
 #     DURATION=N   stop watching N seconds after the urgent app arrives (default 240), or earlier
@@ -18,7 +18,7 @@
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 NS=batch-ns-uno; SA=sparkapplications.sparkoperator.k8s.io; CQ=cluster-queue-tres; LQ=batch-queue-tres
-VICTIMS="thrash-a thrash-b"; EXECS=4; QUOTA=12
+VICTIMS="workload-a workload-b"; EXECS=4; QUOTA=12
 ITERS=${ITERS:-100}
 URGENT_ARGS="1500 1500 12 ${URGENT_ITERS:-10} 200"
 GEN='awk "BEGIN{srand(42); for(i=0;i<2000000;i++) print int(rand()*200000), int(rand()*200000)}" > /data/edges.txt'
@@ -75,7 +75,7 @@ for e in sorted(json.load(sys.stdin)["items"], key=lambda e: e.get("lastTimestam
         lines.append(f"  {t[11:19]}  {app:9} EVICTED WHOLE: driver killed, shuffle data lost")
 print("  app        admitted  evicted whole")
 for a in sorted(set(adm) | set(ev)):
-    if a.startswith("thrash-"):
+    if a.startswith("workload-"):
         print(f"  {a:10} {adm[a]:>8}  {ev[a]:>13}")
 print()
 print("\n".join(lines[-8:]) or "  (no evictions yet)")
@@ -86,7 +86,7 @@ table() {
   local tmp; tmp=$(mktemp -d)
   kubectl -n $NS get pods -l spark-role -o json > "$tmp/pods.json" 2>/dev/null
   kubectl -n $NS get workloads -o json > "$tmp/wls.json" 2>/dev/null
-  python3 -I "$HERE/p11-table.py" "$tmp/pods.json" "$tmp/wls.json" $QUOTA | grep -v "^  als-"
+  python3 -I "$HERE/demo-table.py" "$tmp/pods.json" "$tmp/wls.json" $QUOTA | grep -v "^  als-"
   rm -rf "$tmp"
 }
 
@@ -99,7 +99,7 @@ live() { # live UNTIL_CMD
 }
 
 victims_running() {
-  [ "$(kubectl -n $NS get pods -l spark-role=executor --field-selector=status.phase=Running --no-headers 2>/dev/null | grep -c '^thrash-')" -ge $((2 * EXECS)) ]
+  [ "$(kubectl -n $NS get pods -l spark-role=executor --field-selector=status.phase=Running --no-headers 2>/dev/null | grep -c '^workload-')" -ge $((2 * EXECS)) ]
 }
 urgent_done_or_timeout() {
   [ "$(date +%s)" -ge "$DEADLINE" ] && return 0
@@ -113,10 +113,10 @@ say "Preflight"
 echo "  Kueue: $(kubectl -n kueue-system get deploy kueue-controller-manager -o jsonpath='{.spec.template.spec.containers[0].image}')"
 kubectl get clusterqueue $CQ >/dev/null 2>&1 || kubectl apply -f "$HERE/queues-setup.yaml" >/dev/null || exit 1
 mkdir -p "$HERE/runs"
-LOCK="$HERE/runs/.thrash-demo.lock"
-mkdir "$LOCK" 2>/dev/null || { echo "  refusing to start: another run-thrash-demo.sh is in progress (remove $LOCK if not)" >&2; exit 3; }
+LOCK="$HERE/runs/.whole-workload-preemption.lock"
+mkdir "$LOCK" 2>/dev/null || { echo "  refusing to start: another run-whole-workload-preemption.sh is in progress (remove $LOCK if not)" >&2; exit 3; }
 trap 'set_quota 36; rmdir "$LOCK" 2>/dev/null' EXIT
-others=$(kubectl -n $NS get $SA -o name 2>/dev/null | sed 's#.*/##' | grep -vxE 'thrash-a|thrash-b|urgent' || true)
+others=$(kubectl -n $NS get $SA -o name 2>/dev/null | sed 's#.*/##' | grep -vxE 'workload-a|workload-b|urgent' || true)
 if [ -n "$others" ] && [ "${FORCE:-0}" != 1 ]; then
   echo "  refusing to start: $NS has other SparkApplications ($(echo $others | tr '\n' ' ')). Rerun with FORCE=1 to delete them." >&2
   exit 3

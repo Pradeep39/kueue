@@ -9,15 +9,15 @@
 #   p10s  6 victims x (driver + 2); urgent needs 6: exactly 1 from each (18-slot queue)
 #   p11s  5 victims x (driver + 3); urgent needs 8: 1 from each, then a second from 3 (20-slot queue)
 #
-#   [AUTO=1] [FORCE=1] [CAPTURE=0] [GROWBACK=0] run-p11-demo.sh [p10|p11|p10s|p11s]
-#   VICTIMS=N EXECS=N URGENT_EXECS=N run-p11-demo.sh   any other shape (victims x (EXECS+1) <= 36)
+#   [AUTO=1] [FORCE=1] [CAPTURE=0] [GROWBACK=0] run-partial-preemption-spread.sh [p10|p11|p10s|p11s]
+#   VICTIMS=N EXECS=N URGENT_EXECS=N run-partial-preemption-spread.sh   any other shape (victims x (EXECS+1) <= 36)
 #     AUTO=1        submit the urgent app as soon as every victim executor runs (no Enter prompt)
 #     FORCE=1       delete other SparkApplications in batch-ns-uno before starting (otherwise refuse)
 #     CAPTURE=0     skip the background capture (then no report at the end)
 #     GROWBACK=0    stop once the urgent app runs, instead of waiting for the victims to grow back
 #     VICTIM_ITERS / URGENT_ITERS   SparkALS iterations (default 10 / 4: ~4 min / ~1 min jobs)
 #   The queue is sized to exactly what the victims fill, and put back to 36 slots on exit.
-#   run-p11-demo.sh watch      the live table only, e.g. on a second screen
+#   run-partial-preemption-spread.sh watch      the live table only, e.g. on a second screen
 #
 # Needs: Kueue with SparkPartialPreemption=true, cluster-queue-tres and batch-queue-tres
 # (queues-setup.yaml), and gen-apps.py / capture.sh / req-check.py / pp-analyze.py beside it.
@@ -48,7 +48,7 @@ table() {
   local tmp; tmp=$(mktemp -d)
   kubectl -n $NS get pods -l spark-role -o json > "$tmp/pods.json" 2>/dev/null
   kubectl -n $NS get workloads -o json > "$tmp/wls.json" 2>/dev/null
-  python3 -I "$HERE/p11-table.py" "$tmp/pods.json" "$tmp/wls.json" "${QUOTA:-36}"
+  python3 -I "$HERE/demo-table.py" "$tmp/pods.json" "$tmp/wls.json" "${QUOTA:-36}"
   rm -rf "$tmp"
 }
 
@@ -111,8 +111,8 @@ if ! kubectl get clusterqueue $CQ >/dev/null 2>&1 || ! kubectl -n $NS get localq
 fi
 echo "  $CQ: $(kubectl get clusterqueue $CQ -o jsonpath='{.spec.resourceGroups[0].flavors[0].resources[0].nominalQuota}') CPU, preemption $(kubectl get clusterqueue $CQ -o jsonpath='{.spec.preemption.withinClusterQueue}')"
 mkdir -p "$HERE/runs"
-LOCK="$HERE/runs/.p11-demo.lock"
-mkdir "$LOCK" 2>/dev/null || { echo "  refusing to start: another run-p11-demo.sh is in progress (remove $LOCK if not)" >&2; exit 3; }
+LOCK="$HERE/runs/.partial-preemption-spread.lock"
+mkdir "$LOCK" 2>/dev/null || { echo "  refusing to start: another run-partial-preemption-spread.sh is in progress (remove $LOCK if not)" >&2; exit 3; }
 CAP=""
 # set_quota SLOTS: one slot = 1 CPU + 896Mi
 set_quota() {

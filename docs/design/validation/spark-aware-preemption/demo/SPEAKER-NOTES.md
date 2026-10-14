@@ -11,16 +11,16 @@ Runbook: [`DEMO-SPREAD-SHUFFLE.md`](./DEMO-SPREAD-SHUFFLE.md). Every terminal: `
 - **Constraint.** No change to Apache Spark or the Spark Operator. It works on the Spark versions
   people run today. This demo runs on stock **Spark 3.4.3**.
 
-## 1. The problem, live: whole eviction and thrashing (~5 min)
+## 1. The problem, live: whole-workload preemption (~5 min)
 
-`./run-thrash-demo.sh`
+`./run-whole-workload-preemption.sh`
 
 | On screen | Say |
 |---|---|
 | Two PageRank apps running | "Two batch jobs building shuffle data. They have not opted in, so this is Kueue as it works today." |
 | Press Enter; `EVICTED WHOLE` | "An urgent job with Dynamic Allocation arrives. Kueue evicts a whole job: driver killed, shuffle data gone." |
 | Second eviction | "The urgent job grows, and Kueue evicts the other job too." |
-| Victim re-admitted, then `EVICTED WHOLE` again | "When the urgent job shrinks, the batch job comes back and starts over from scratch. The urgent job grows again, and it is evicted again. That's thrashing." |
+| Victim re-admitted, then `EVICTED WHOLE` again | "When the urgent job shrinks, the batch job comes back and starts over from scratch. The urgent job grows again, and it is evicted again, repeatedly." |
 | Summary: admitted / evicted counts | "Several evictions in a few minutes, and every one threw away all the work done so far. Now the same kind of job with partial preemption." |
 
 ## 2. Shuffle resiliency (~3 min)
@@ -37,7 +37,7 @@ Runbook: [`DEMO-SPREAD-SHUFFLE.md`](./DEMO-SPREAD-SHUFFLE.md). Every terminal: `
 
 ## 3a. Spread the loss: p10s (~2 min)
 
-`CAPTURE=0 ./run-p11-demo.sh p10s`
+`CAPTURE=0 ./run-partial-preemption-spread.sh p10s`
 
 | On screen | Say |
 |---|---|
@@ -48,7 +48,7 @@ Runbook: [`DEMO-SPREAD-SHUFFLE.md`](./DEMO-SPREAD-SHUFFLE.md). Every terminal: `
 
 ## 3b. Round-robin: p11s (~2 min)
 
-`CAPTURE=0 ./run-p11-demo.sh p11s`
+`CAPTURE=0 ./run-partial-preemption-spread.sh p11s`
 
 | On screen | Say |
 |---|---|

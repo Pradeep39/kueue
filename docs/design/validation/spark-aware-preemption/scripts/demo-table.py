@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Live table for run-p11-demo.sh: per app, executors running / granted / gated / being deleted.
+"""Live table for run-partial-preemption-spread.sh: per app, executors running / granted / gated / being deleted.
 
-  p11-table.py PODS_JSON WORKLOADS_JSON
+  demo-table.py PODS_JSON WORKLOADS_JSON
 """
 import json, sys, collections
 def items(path):

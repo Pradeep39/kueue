@@ -34,7 +34,7 @@ defaults have since been lowered to 30s and 60s. The runs showed busy executors 
 | [`scripts/`](./scripts/) | Capture, analyzers, scenario generator, suite runners, results archiver |
 | [`results/`](./results/) | Per-run verdicts (`*.txt`), timelines (`*.timeline.csv`), suite logs |
 | [`experiments/shuffle-migration/`](./experiments/shuffle-migration/) | Does a reclaimed executor move its shuffle data? SparkPageRank under partial preemption: 252 MiB of shuffle blocks and the cached RDD blocks migrated, 0 recomputation |
-| [`demo/`](./demo/) | A live demo for Lens and KueueViz: `demo.sh` (scenarios A–D and a live terminal view) and the presenter guide [`DEMO.md`](./demo/DEMO.md); a second demo, [`DEMO-SPREAD-SHUFFLE.md`](./demo/DEMO-SPREAD-SHUFFLE.md), runs P10/P11 (`scripts/run-p11-demo.sh`) and the shuffle experiment |
+| [`demo/`](./demo/) | A live demo for Lens and KueueViz: `demo.sh` (scenarios A–D and a live terminal view) and the presenter guide [`DEMO.md`](./demo/DEMO.md); a second demo, [`DEMO-SPREAD-SHUFFLE.md`](./demo/DEMO-SPREAD-SHUFFLE.md), runs P10/P11 (`scripts/run-partial-preemption-spread.sh`) and the shuffle experiment |
 
 ---
 
