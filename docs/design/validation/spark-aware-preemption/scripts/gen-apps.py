@@ -8,6 +8,7 @@ workload as apps.yaml, so runs stay comparable.
 """
 import argparse
 import json
+import os
 
 TEMPLATE = '''apiVersion: sparkoperator.k8s.io/v1beta2
 kind: SparkApplication
@@ -21,12 +22,12 @@ metadata:
 spec:
   type: Scala
   mode: cluster
-  image: docker.io/library/spark:4.0.1
+  image: docker.io/library/spark:{spark_version}
   imagePullPolicy: IfNotPresent
   mainClass: {main_class}
-  mainApplicationFile: local:///opt/spark/examples/jars/spark-examples.jar
+  mainApplicationFile: local:///opt/spark/examples/jars/{examples_jar}
   arguments: {als_args}
-  sparkVersion: 4.0.1
+  sparkVersion: {spark_version}
   sparkConf:
     "spark.kubernetes.executor.podNamePrefix": "{name}"
     "spark.dynamicAllocation.enabled": "true"
@@ -68,12 +69,16 @@ ap.add_argument("--static-elastic", type=int, metavar="N", help="no Dynamic Allo
 ap.add_argument("--floor", type=int, metavar="N", help="spark.kueue.preemption.minExecutors N (partial-preemption floor)")
 ap.add_argument("--no-decom", action="store_true", help="explicitly disable Spark decommissioning")
 a = ap.parse_args()
+# SPARK_VERSION picks the official spark image tag. The 4.x images ship spark-examples.jar; the 3.x
+# images name it after the Scala build (spark-examples_2.12-<version>.jar).
+spark_version = os.environ.get("SPARK_VERSION", "4.0.1")
+examples_jar = "spark-examples.jar" if spark_version.startswith("4.") else f"spark-examples_2.12-{spark_version}.jar"
 
 docs = []
 for spec in a.apps.split(","):
     name, prio = spec.split(":")
     docs.append(TEMPLATE.format(
-        name=name, queue=a.queue, idle=a.idle, backlog=a.backlog, als_args=json.dumps(a.als_args.split()), main_class=a.main,
+        name=name, queue=a.queue, spark_version=spark_version, examples_jar=examples_jar, idle=a.idle, backlog=a.backlog, als_args=json.dumps(a.als_args.split()), main_class=a.main,
         partial='\n    kueue.x-k8s.io/elastic-job-scale-up-strategy: "partial"' if a.partial else "",
         priority=f"\n    kueue.x-k8s.io/priority-class: {prio}" if prio != "-" else "",
         cap=f'\n    "spark.kubernetes.allocation.maxPendingPods": "{a.cap}"' if a.cap else "",

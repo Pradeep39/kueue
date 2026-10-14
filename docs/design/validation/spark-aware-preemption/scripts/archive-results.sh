@@ -71,5 +71,7 @@ REQ-1014-0716-S2-equal-control|r4-adc8c5cbd-REQ-S2-equal-control||-
 REQ-1014-0716-S3-aggressive-partial|r4-adc8c5cbd-REQ-S3-aggressive-partial|--cap 2 --partial|-
 REQ-1014-0716-S4-preempt-partial-cap2|r4-adc8c5cbd-REQ-S4-preempt-partial-cap2|--cap 2 --partial --preemption|--floor 3 --expect-whole 0
 REQ-1014-0716-S5-preempt-atomic|r4-adc8c5cbd-REQ-S5-preempt-atomic|--preemption|--floor 3 --expect-whole 0
+P10-DEMO-1014-1635|r5-spark343-P10-12-victims-1-each|--slots 36 --preemption|--floor 1 --expect-whole 0
+P11-DEMO-1014-1650|r5-spark343-P11-9-victims-round-robin|--slots 36 --preemption|--floor 1 --expect-whole 0
 MAP
 echo "archived into $OUT"

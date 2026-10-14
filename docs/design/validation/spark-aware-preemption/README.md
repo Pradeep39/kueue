@@ -17,6 +17,8 @@ The runs found six bugs. All are fixed on the branch, and each fix has a negativ
 - one in its events: the preemptor's event named only the first of several victims (r4)
 - one already present in Kueue's elastic slicing, which these runs exposed
 
+**Spark 3.4.3 (2026-10-14).** The demo scenarios (P10, P11 and the shuffle experiment) also pass unchanged on Spark 3.4.3, with graceful decommissioning and shuffle migration. See §3.4.
+
 **Round r4 (2026-10-14)** reran everything on the final build (`adc8c5cbd`) and added three scenarios:
 many small victims (P10, P11) and preemption chosen only by a `PreemptionConfig` (P12). P12 found a fifth
 partial-preemption bug, now fixed, and P10 a reporting one. See §3.3.
@@ -230,6 +232,28 @@ passes R-9 and R-10.
 - **REQ S3's R-12** reported 3s of idle capacity against a 2s threshold. The same value appears on
   `096f6ff72`, before partial preemption existed, so it is the elastic scale-up's existing timing, not a
   regression. REQ S4/S5's R-1/R-4 show the reclaim hold of §3.2 (36–38s).
+
+### 3.4 Spark 3.4.3
+
+The demo scenarios were rerun with Spark 3.4.3 (`docker.io/library/spark:3.4.3`, Java 11) on the same
+build (`adc8c5cbd`) and the same Kubeflow Spark Operator (2.5.2), selected with `SPARK_VERSION=3.4.3`
+in `gen-apps.py`. Nothing else changed: no Kueue, operator or application change was needed. Results
+in `results/r5-spark343-*` and
+[`experiments/shuffle-migration/report-spark343.txt`](./experiments/shuffle-migration/report-spark343.txt).
+
+| Scenario | Whole evictions | Partial preemptions | Timeouts | Restarts | SC-1 | SC-1b | SC-2 |
+|---|---|---|---|---|---|---|---|
+| P10 | **0** | 12, one per victim (2 → 1) | 0 | **0** | ✅ | ✅ | ✅ |
+| P11 | **0** | 9: 15 executors, 6 victims gave 2 and 3 gave 1 | 0 | **0** | ✅ | ✅ | ✅ |
+| Shuffle migration | **0** | 5 executors reclaimed | 0 | **0** | – | – | – |
+
+PR-1..PR-6 pass in P10 and P11. Spark 3.4.3 added the decommission hook to every executor, and the
+reclaimed executors were decommissioned gracefully. In the shuffle experiment (SparkPageRank, 24–46
+MiB of shuffle files per executor at the trigger) the five reclaimed executors migrated 80–647
+shuffle blocks each, plus their cached RDD blocks, and the driver relocated 1348 map outputs, with 0
+fetch failures, 0 resubmitted stages and 0 executor failures. Quota was released 32s after the
+reclaim was issued, and the urgent application ran 66s before the victim finished. The input graph's
+init container still used the 4.0.1 image; it only runs `awk`.
 
 ---
 

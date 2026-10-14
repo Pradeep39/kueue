@@ -55,6 +55,13 @@ made no difference.
 
 Pod IPs and local paths are redacted.
 
+## Spark 3.4.3
+
+Rerun on Spark 3.4.3 (Kueue `adc8c5cbd`, `SPARK_VERSION=3.4.3`): the five reclaimed executors
+migrated 80–647 shuffle blocks each and their cached RDD blocks, the driver relocated 1348 map
+outputs, and nothing was recomputed (0 fetch failures, 0 resubmitted stages). The job finished
+normally. [`report-spark343.txt`](./report-spark343.txt).
+
 ## Finding: the exit waits for Spark's next migration round
 
 The migration itself took about a second. On every decommission the executor logged:
