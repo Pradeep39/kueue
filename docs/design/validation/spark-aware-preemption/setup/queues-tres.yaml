@@ -1,0 +1,31 @@
+# Many-victims scenarios (P10, P11): a standalone 36-slot ClusterQueue (one slot = 1 CPU + 896Mi),
+# reached from batch-ns-uno through its own LocalQueue so the Spark operator setup is unchanged.
+---
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: ClusterQueue
+metadata:
+  name: cluster-queue-tres
+spec:
+  namespaceSelector: {}
+  preemption:
+    withinClusterQueue: LowerPriority
+  queueingStrategy: BestEffortFIFO
+  resourceGroups:
+  - coveredResources: [cpu, memory]
+    flavors:
+    - name: default-flavor
+      resources:
+      - name: cpu
+        nominalQuota: "36"
+      - name: memory
+        nominalQuota: 32256Mi
+  stopPolicy: None
+---
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: LocalQueue
+metadata:
+  name: batch-queue-tres
+  namespace: batch-ns-uno
+spec:
+  clusterQueue: cluster-queue-tres
+  stopPolicy: None

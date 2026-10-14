@@ -11,10 +11,15 @@ stopped.
 For comparison, the same workload with the gate off evicted whole applications 11–14 times per run, and
 low-priority applications restarted 13 times.
 
-The runs found four bugs. All are fixed on the branch, and each fix has a negative-controlled unit test:
+The runs found six bugs. All are fixed on the branch, and each fix has a negative-controlled unit test:
 
-- three in partial preemption
+- four in partial preemption, one of them (configurable preemption's candidates) in round r4
+- one in its events: the preemptor's event named only the first of several victims (r4)
 - one already present in Kueue's elastic slicing, which these runs exposed
+
+**Round r4 (2026-10-14)** reran everything on the final build (`adc8c5cbd`) and added three scenarios:
+many small victims (P10, P11) and preemption chosen only by a `PreemptionConfig` (P12). P12 found a fifth
+partial-preemption bug, now fixed, and P10 a reporting one. See §3.3.
 
 **Defaults at the time.** These runs used a 60s executor grace period and a 90s reclaim timeout. The
 defaults have since been lowered to 30s and 60s. The runs showed busy executors draining in about
@@ -22,7 +27,7 @@ defaults have since been lowered to 30s and 60s. The runs showed busy executors 
 
 | | |
 |---|---|
-| [`setup/`](./setup/) | Cohort, ClusterQueues, LocalQueue, WorkloadPriorityClasses (12-slot baseline) |
+| [`setup/`](./setup/) | Cohort, ClusterQueues, LocalQueue, WorkloadPriorityClasses (12-slot baseline); the 36-slot `cluster-queue-tres` and P12's `PreemptionConfig` (r4) |
 | [`scenarios/`](./scenarios/) | One manifest per scenario, both waves; the header records its setup and checks |
 | [`scripts/`](./scripts/) | Capture, analyzers, scenario generator, suite runners, results archiver |
 | [`results/`](./results/) | Per-run verdicts (`*.txt`), timelines (`*.timeline.csv`), suite logs |
@@ -106,6 +111,9 @@ ClusterQueue usage every 2–3s.
 | P8 | Four victims, to check the spread | 24 slots |
 | P9 | A 1s reclaim timeout, forcing the deadline path | 12 slots, CQ annotation |
 | REQ S1–S6 | The EQM requirements suite (R-1..R-13) with the gate on | 12 slots |
+| P10 | 12 small static elastic victims (driver + 2, floor 1) fill a standalone queue; the preemptor needs 12 slots, so each victim should give exactly 1 | 36 slots ([`queues-tres.yaml`](./setup/queues-tres.yaml)) |
+| P11 | 9 victims (driver + 3, floor 1); the preemptor needs 15: each gives 1, then 6 give a second (round-robin) | 36 slots |
+| P12 | Classical preemption off (`withinClusterQueue`, `reclaimWithinCohort`: `Never`); a [`PreemptionConfig`](./setup/preemption-config-p12.yaml) selects victims by label. 6 labeled default-priority victims (driver + 3, floor 1) and 4 unlabeled low-priority ones | 36 slots, `ConfigurablePreemptions` gate, `labelKeysToCopy` |
 
 ---
 
@@ -179,6 +187,50 @@ decommission, which takes up to the 60s grace period. PR-4 requires that hold. T
 gap between the charge and the live Pods without distinguishing a deliberate hold, so these runs are
 reported as is rather than relabelled.
 
+### 3.3 Round r4: many victims, configurable preemption, final build
+
+Every scenario was rerun on `adc8c5cbd`, which adds the reclaim grace-period change (`01a46e466`: the
+grace period is resolved per reclaim and the timeout derived from it, default 30s + 30s) and fixes 6 and
+7 of §4. Results in `results/r4-adc8c5cbd-*`.
+
+| Scenario | Whole evictions | Partial preemptions | Reclaim timeouts | Restarts | SC-1 | SC-1b | SC-2 |
+|---|---|---|---|---|---|---|---|
+| P1 | **0** | 3 | 0 | **0** | ✅ | ✅ | ✅ |
+| P2 | **0** | 4 | 0 | **0** | ✅ | ✅ | ✅ |
+| P3 | **0** | 5 | 0 | **0** | ✅ | ✅ | ✅ |
+| P3R | **0** | 5 | 0 | **0** | ✅ | ✅ | ✅ |
+| P4 | **0** | 11 | 0 | **0** | ✅ | ✅ | ✅ |
+| P5 | **0** | 2 | 0 | **0** | ✅ | ✅ | ✅ |
+| P5B | **0** | 8 | 0 | **0** | ✅ | ✅ | ✅ |
+| P6 | 3 (expected) | 0 | – | 3 | ✅ | ❌¹ | ✅ |
+| P7a | **0** | 0 | – | 0 | ✅ | ✅ | ✅ |
+| P7b | 1 (expected) | 0 | – | 1 | ✅ | ✅ | ✅ |
+| P8 | **0** | 13 | 0 | **0** | ✅ | ✅ | ✅ |
+| P9 | **0** | 17 | 15 (forced) | **0** | ✅ | ❌² | ❌² |
+| **P10** | **0** | 12, one per victim | 0 | **0** | ✅ | ✅ | ✅ |
+| **P11** | **0** | 9: 15 executors, 6 victims gave 2 and 3 gave 1 | 0 | **0** | ✅ | ✅ | ✅ |
+| **P12** before the fix (`01a46e466`) | **3** | 0 | – | 3 | ✅ | ✅ | ✅ |
+| **P12** | **0** | 6, each victim 3 → 1 | 0 | **0** | ✅ | ✅ | ✅ |
+| REQ S1–S3 | – | – | – | – | ✅ | ✅ | ✅ |
+| REQ S4 | **0** | 2 | 0 | **0** | ✅ | ✅ | ✅ |
+| REQ S5 | **0** | 2 | 0 | **0** | ✅ | ✅ | ✅ |
+
+PR-1..PR-8 hold in every scenario, as in r3. REQ S6 (plain Job, static SparkApplication, elastic Job)
+passes R-9 and R-10.
+
+- **Many victims (P10, P11).** The spread rule held at scale: with a shortfall of 12 across 12 victims,
+  each gave exactly one executor in a single decision; with 15 across 9, every victim gave one before any
+  gave a second.
+- **Configurable preemption (P12).** On `01a46e466` the preemptor was admitted by evicting 3 labeled
+  applications whole ("preemption config batch-pool rule urgent-takes-from-batch-pool"), although all 6
+  labeled applications had opted in and had 2 executors above their floor each. The unlabeled
+  low-priority applications were untouched in both runs: the `candidateSelectors`, not priority, chose
+  the victims. With the fix, the same 12 slots came from 2 executors of each labeled application. See
+  bug 6.
+- **REQ S3's R-12** reported 3s of idle capacity against a 2s threshold. The same value appears on
+  `096f6ff72`, before partial preemption existed, so it is the elastic scale-up's existing timing, not a
+  regression. REQ S4/S5's R-1/R-4 show the reclaim hold of §3.2 (36–38s).
+
 ---
 
 ## 4. Bugs found on the cluster
@@ -190,6 +242,8 @@ reported as is rather than relabelled.
 | 3 | r1 P3, r1 P2 | SC-2 broken (4 executors on a grant of 2, 13 live Pods in 12 slots). A reclaim/ungate loop that ended in a timeout | The ungater read the old grant in the gap between the reclaimed Pods stopping and the grant being lowered | `a1ac5c3af`: cap ungating at the reclaim target while one is outstanding |
 | 4 | r1 P5 | A completed application kept 7 slots for 6 minutes | **Already in Kueue.** A finished elastic job finished only the Workload it picked: the pending scale-up slice, not the admitted one. Reproduced with the gate off | `a901d16b3`: finish every slice of a finished elastic job |
 | 5 | scenario design (PR-7) | Fix 1 also stopped any elastic integration's scale-up from preempting victims that never opted in | The rule applied to every victim | `18abe488b`: the scale-up fallback (`WholeOnlyUndeclared`) spares only opted-in victims |
+| 6 | r4 P12 | With preemption chosen only by a `PreemptionConfig`, opted-in victims were evicted whole | The partial planner drew only on the classical candidates; the config's candidates reached only the whole-eviction fallback | `adc8c5cbd`: the planner also takes the config's `Always` candidates, and its `InsufficientQuota` candidates once the baseline is at its floor |
+| 7 | r4 P10 | The preemptor's `PartiallyPreemptedWorkload` event named only 1 of 12 victims | `events/v1` dedups on the regarding and related objects and the reason, not the message | `38480e1cb`: the victim is the event's related object |
 
 **Analyzer corrections made along the way.** None of these change the results above:
 
@@ -198,6 +252,12 @@ reported as is rather than relabelled.
 - Each application's terminal time is its first terminal state.
 - `edge-analyze.py`'s `suspends=` counts both SUSPENDING and SUSPENDED, so it reads about twice the
   number of restarts.
+- (r4) `pp-analyze.py`'s spread line now reads the victims' `PartiallyPreempted` events, which bug 7
+  had made the only complete record.
+- (r4) The capture records each event's watch type and object UID. An event expiring after its 1h TTL
+  arrives as a deletion, and was being counted as a new one; `pp-analyze.py` skips deletions and events
+  of applications outside the run, and reports restarts as extra driver Pods. The earlier "restarts
+  (PENDING_RERUN)" total also counted each application's first start.
 
 ---
 
@@ -229,11 +289,18 @@ reported as is rather than relabelled.
    - `./run-pp-suite.sh [P1..P5]` for the main scenarios
    - `./run-pp-tailored.sh [P3R P5B P6 P7a P7b P8 P9 REQ]` for the requirement scenarios and the EQM suite
    - `./run-req-suite.sh` for the EQM suite alone
+   - `./run-pp-many.sh [P10 P11]` and `./run-pp-configurable.sh` (P12), with
+     [`setup/queues-tres.yaml`](./setup/queues-tres.yaml) and
+     [`setup/preemption-config-p12.yaml`](./setup/preemption-config-p12.yaml) copied beside the scripts.
+     P12 also needs the `ConfigurablePreemptions` gate, the `PreemptionConfig` CRD
+     (`config/components/crd/alpha/bases/`) and `integrations.labelKeysToCopy: [preemption-pool,
+     preemption-role]` in Kueue's configuration. It sets and restores `cluster-queue-tres`'s preemption
+     policy itself.
 
    Each scenario's manifest is in [`scenarios/`](./scenarios/). The suites generate them with
    `gen-apps.py` and apply quotas and ClusterQueue annotations as recorded in each header.
 4. Regenerate the committed summaries from local captures with
-   `./archive-results.sh runs ../results`.
+   `./archive-results.sh runs ../results [NAME_REGEX]`, e.g. `'^r4-'` for one round.
 
    The raw captures are not committed. They contain full controller and driver logs, and cluster
    addresses.

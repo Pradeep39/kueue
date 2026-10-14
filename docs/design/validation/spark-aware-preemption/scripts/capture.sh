@@ -156,8 +156,9 @@ PIDS+=($!)
 PIDS+=($!)
 
 ( watch_loop "$OUT/watch/events.jsonl" "{
-    t: (now | todate),
+    t: (now | todate), type,
     kind: .object.involvedObject.kind, obj: .object.involvedObject.name,
+    uid: (.object.involvedObject.uid // null),
     reason: .object.reason, etype: .object.type, count: (.object.count // 1),
     msg: .object.message
   }" -n "$NS" get events ) &

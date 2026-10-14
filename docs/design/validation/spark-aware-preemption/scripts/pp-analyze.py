@@ -47,6 +47,10 @@ def analyze(d, args=None):
         if w.get("name") and w.get("owner"):
             owner[w["name"]] = w["owner"]
 
+    # This run's applications. Application-level events (the operator's) name the application,
+    # and events outlive a run (1h TTL), so only those naming one of these count.
+    run_apps = {s["name"] for s in jsonl(f"{d}/watch/sparkapps.jsonl") if s.get("name")}
+
     decisions = collections.defaultdict(list)  # (preemptor workload, time) -> [(victim app, pods)]
     ev = collections.Counter()
     per_app = collections.defaultdict(collections.Counter)
@@ -54,6 +58,13 @@ def analyze(d, args=None):
     for e in jsonl(f"{d}/watch/events.jsonl"):
         r = e.get("reason")
         if not r:
+            continue
+        # A DELETED notification is an old event expiring (1h TTL), not a new occurrence. Captures
+        # before the watch type was recorded show these with the expiry time; see run_apps below.
+        if e.get("type") == "DELETED":
+            continue
+        obj0 = e.get("obj") or ""
+        if e.get("kind") == "SparkApplication" and obj0 not in run_apps:
             continue
         key = (e.get("obj"), r, e.get("msg"), e.get("count"))
         if key in seen:  # the watch can replay an event on resync
@@ -70,10 +81,14 @@ def analyze(d, args=None):
         if start and e.get("t") and ts(e["t"]) < start - 5:
             continue
         app = owner.get(obj, obj)
-        if r == "PartiallyPreemptedWorkload" and e.get("msg"):
-            m = re.search(r"Partially preempted (\d+) Pod\(s\) of PodSet \S+ of workload \S+?/(\S+)", e["msg"])
+        # Decisions come from the victims' PartiallyPreempted events, one per victim. The preemptor's
+        # PartiallyPreemptedWorkload events are no use for this: events/v1 dedups on the regarding
+        # object and reason, not the message, so a preemptor taking from N victims in one cycle
+        # records one event (kept as a series) naming only the first.
+        if r == "PartiallyPreempted" and e.get("msg"):
+            m = re.search(r"Partially preempted (\d+) Pod\(s\) of PodSet \S+, from \d+ to \d+, for workload \S+?/(\S+?)\.", e["msg"])
             if m:
-                decisions[(e.get("obj"), e.get("t"))].append((owner.get(m.group(2), m.group(2)), int(m.group(1))))
+                decisions[(m.group(2), e.get("t"))].append((app, int(m.group(1))))
         if r in ("Preempted", "PartiallyPreempted", "PartialPreemptionComplete", "PartialPreemptionTimedOut",
                  "SparkApplicationPendingRerun", "PreemptedWorkload", "PartiallyPreemptedWorkload"):
             ev[r] += 1
@@ -128,7 +143,8 @@ def analyze(d, args=None):
     print(f"== {os.path.basename(d.rstrip('/'))}")
     print(f"   whole preemptions {ev['Preempted']}, partial preemptions {ev['PartiallyPreempted']}, "
           f"reclaims completed {ev['PartialPreemptionComplete']}, timed out {ev['PartialPreemptionTimedOut']}, "
-          f"restarts (PENDING_RERUN) {ev['SparkApplicationPendingRerun']}")
+          f"restarts (extra driver Pods) {sum(max(0, len(v) - 1) for v in drivers.values())}, "
+          f"PENDING_RERUN events {ev['SparkApplicationPendingRerun']} (one per app is its first start)")
     print(f"   {'app':10} {'state':12} {'end(s)':>6} {'drivers':>7} {'whole':>5} {'partial':>7} {'reruns':>6} "
           f"{'execDel':>7} {'decom':>5} {'graceful/unfinished/killed/unexpected':>38} {'failedEx':>8}")
     for a in apps:
