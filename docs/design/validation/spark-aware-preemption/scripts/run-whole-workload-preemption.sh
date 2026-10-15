@@ -93,10 +93,49 @@ table() {
   rm -rf "$tmp"
 }
 
-live() { # live UNTIL_CMD [stoppable] — with "stoppable", Enter ends the wait early
+# shuffle_view: each running executor of the two apps with the MiB of shuffle files on its disk
+# (kubectl exec + du, all executors in parallel), a total per app, and a log of the shuffle data each
+# eviction threw away: an app's last total before its executors disappeared.
+SHUFFLE_STATE=$(mktemp -d)
+shuffle_view() {
+  local tmp; tmp=$(mktemp -d)
+  kubectl -n $NS get pods -l spark-role=executor --field-selector=status.phase=Running \
+    -o jsonpath='{range .items[*]}{.metadata.name}{" "}{.metadata.labels.sparkoperator\.k8s\.io/app-name}{" "}{.spec.nodeName}{" "}{.metadata.deletionTimestamp}{"\n"}{end}' 2>/dev/null |
+    awk '$2 ~ /^workload-/' > "$tmp/pods"
+  while read -r pod app node del; do
+    ( kib=$(kubectl -n $NS exec "$pod" -c spark-kubernetes-executor -- sh -c \
+        'find /var/data -name "shuffle_*" -type f -exec du -k {} + 2>/dev/null | awk "{s+=\$1} END{printf \"%d\", s}"' 2>/dev/null)
+      echo "$pod $app $node ${kib:-0} ${del:+terminating}" > "$tmp/$pod.out" ) &
+  done < "$tmp/pods"
+  wait
+  printf '  %-26s %-12s %12s\n' "executor" "node" "shuffle MiB"
+  local app total line
+  for app in workload-a workload-b; do
+    total=0
+    for f in "$tmp"/*.out; do
+      [ -e "$f" ] || continue
+      read -r pod a node kib state < "$f"
+      [ "$a" = "$app" ] || continue
+      printf '  %-26s %-12s %12d %s\n' "$pod" "$node" $(( kib / 1024 )) "$state"
+      total=$(( total + kib / 1024 ))
+    done
+    printf '  %-26s %-12s %12d\n' "$app total" "" $total
+    # Running executors gone after holding shuffle data: the eviction threw that data away.
+    local prev; prev=$(cat "$SHUFFLE_STATE/$app" 2>/dev/null || echo 0)
+    if [ "$total" = 0 ] && [ "$prev" -gt 0 ] &&
+       [ "$(kubectl -n $NS get $SA $app -o jsonpath='{.status.applicationState.state}' 2>/dev/null)" != COMPLETED ]; then
+      echo "  $(date +%H:%M:%S)  $app lost ${prev} MiB of shuffle data" >> "$SHUFFLE_STATE/lost.log"
+    fi
+    echo $total > "$SHUFFLE_STATE/$app"
+  done
+  if [ -s "$SHUFFLE_STATE/lost.log" ]; then echo; cat "$SHUFFLE_STATE/lost.log"; fi
+  rm -rf "$tmp"
+}
+
+live() { # live UNTIL_CMD [stoppable [PROMPT]] — with "stoppable", Enter ends the wait early
   while true; do
-    clear; date +%H:%M:%S; table; echo; history
-    [ "${2:-}" = stoppable ] && echo && echo "  (press Enter to end the demo here)"
+    clear; date +%H:%M:%S; table; echo; shuffle_view; echo; history
+    [ "${2:-}" = stoppable ] && echo && printf '\033[1m  %s\033[0m\n' "${3:-(press Enter to end the demo here)}"
     eval "$1" && return 0
     if [ "${2:-}" = stoppable ] && [ -t 0 ]; then
       read -r -t 3 _ && return 0
@@ -120,6 +159,7 @@ print(sum(1 for e in json.load(sys.stdin)["items"]
 summary() {
   say "Summary"
   history | head -4
+  [ -s "$SHUFFLE_STATE/lost.log" ] && { echo; echo "  Shuffle data thrown away by the evictions:"; cat "$SHUFFLE_STATE/lost.log"; }
   echo
   echo "  Every eviction killed a driver and threw away that app's shuffle data; each readmission"
   echo "  started the job over from scratch."
@@ -145,7 +185,7 @@ kubectl get clusterqueue $CQ >/dev/null 2>&1 || kubectl apply -f "$HERE/queues-s
 mkdir -p "$HERE/runs"
 LOCK="$HERE/runs/.whole-workload-preemption.lock"
 mkdir "$LOCK" 2>/dev/null || { echo "  refusing to start: another run-whole-workload-preemption.sh is in progress (remove $LOCK if not)" >&2; exit 3; }
-trap 'set_quota 36; rmdir "$LOCK" 2>/dev/null' EXIT
+trap 'set_quota 36; rmdir "$LOCK" 2>/dev/null; rm -rf "$SHUFFLE_STATE"' EXIT
 others=$(kubectl -n $NS get $SA -o name 2>/dev/null | sed 's#.*/##' | grep -vxE 'workload-a|workload-b|urgent' || true)
 if [ -n "$others" ] && [ "${FORCE:-0}" != 1 ]; then
   echo "  refusing to start: $NS has other SparkApplications ($(echo $others | tr '\n' ' ')). Rerun with FORCE=1 to delete them." >&2
@@ -162,7 +202,19 @@ say "Submitting two low-priority SparkPageRank apps (driver + $EXECS executors e
 for v in $VICTIMS; do victim_yaml $v | kubectl apply -f - >/dev/null; done
 live victims_running
 
-if [ "${AUTO:-0}" = 1 ]; then sleep 20; else pause "Both apps are building shuffle data. Submit the high-priority app (Dynamic Allocation)"; fi
+# Keep refreshing (shuffle data growing) until Enter; the apps finish after ~2.5 minutes on their own.
+VICTIMS_UP=$(date +%s)
+building() {
+  local up=$(( $(date +%s) - VICTIMS_UP ))
+  echo "  apps running for ${up}s (they finish on their own after ~150s: submit before then)"
+  [ "${AUTO:-0}" = 1 ] && [ $up -ge 20 ]
+}
+[ -t 0 ] || AUTO=1   # no terminal to press Enter in: submit after 20s, as with AUTO=1
+if [ "${AUTO:-0}" = 1 ]; then
+  live building
+else
+  live building stoppable "⏸  Both apps are building shuffle data. Press Enter to submit the high-priority app (Dynamic Allocation)"
+fi
 python3 -I "$HERE/gen-apps.py" urgent:high --queue $LQ --partial --cap 2 --idle 5s --als-args "$URGENT_ARGS" | kubectl apply -f - >/dev/null
 DEADLINE=$(( $(date +%s) + ${DURATION:-240} ))
 # From here on, Ctrl-C ends the demo with the summary rather than leaving the apps running.
