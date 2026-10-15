@@ -10,6 +10,14 @@
 #   B  partial preemption: executors are trimmed, drivers survive, executors grow back
 #   C  the protected floor: victims stop at minExecutors; the urgent app waits instead
 #   D  spread: four batch apps, each reclaim takes one executor from a different app
+#
+# The short demo (DEMO-SPREAD-SHUFFLE.md, SPEAKER-NOTES.md), on Spark $SPARK_VERSION (default 3.4.3):
+#   ./demo.sh 1 | whole        whole-workload preemption today: apps evicted whole, again and again
+#   ./demo.sh 2 | shuffle      partial preemption: reclaimed executors move their shuffle data
+#   ./demo.sh shuffle-watch    shuffle MiB per executor for part 2 (run it in a second terminal)
+#   ./demo.sh 3 | spread       p10s: six apps each give exactly one executor, then grow back
+#   ./demo.sh 4 | roundrobin   p11s: five apps each give one before any gives a second
+#   ./demo.sh all              parts 1 to 4 in order, pausing between them
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 GEN="python3 -I $HERE/../scripts/gen-apps.py"
@@ -200,10 +208,53 @@ watch_view() {
   done
 }
 
+# ---- the short demo: parts 1-4 run the validation scripts in $SCRIPTS
+SCRIPTS="$HERE/.."
+[ -f "$HERE/../scripts/run-shuffle-migration.sh" ] && SCRIPTS="$HERE/../scripts"
+export SPARK_VERSION=${SPARK_VERSION:-3.4.3}
+
+# Apps the short demo creates. Anything else in the namespace belongs to someone else: the parts
+# never delete it (no FORCE), so the scripts refuse to start until it is gone.
+DEMO_APPS='^(workload-[ab]|pr-victim|urgent|als-(lo[0-9]+|hi))$'
+wait_clean() { # each part deletes its own apps in the background; wait for those to go
+  local mine others
+  for _ in $(seq 1 40); do
+    mine=$(kubectl -n $NS get $SA -o name 2>/dev/null | sed 's#.*/##' | grep -cE "$DEMO_APPS" || true)
+    [ "$mine" = 0 ] && break
+    sleep 3
+  done
+  others=$(kubectl -n $NS get $SA -o name 2>/dev/null | sed 's#.*/##' | grep -vE "$DEMO_APPS" || true)
+  if [ -n "$others" ]; then
+    echo "  ⚠️  $NS has SparkApplications this demo did not create: $(echo $others | tr '\n' ' ')"
+    echo "     The part will refuse to start. Delete them yourself (./demo.sh reset) if they are yours to remove."
+  fi
+}
+part_1() { say "Part 1: whole-workload preemption (Spark $SPARK_VERSION)"; wait_clean
+  EVICTIONS=${EVICTIONS:-3} "$SCRIPTS/run-whole-workload-preemption.sh"; }
+part_2() { say "Part 2: shuffle resiliency (Spark $SPARK_VERSION). In a second terminal: ./demo.sh shuffle-watch"; wait_clean
+  STOP_AFTER_VICTIM=1 "$SCRIPTS/run-shuffle-migration.sh" "${THRESH:-40}"
+  kubectl -n $NS delete $SA --all --wait=false >/dev/null 2>&1; }
+part_3() { say "Part 3: spread the loss, p10s (Spark $SPARK_VERSION)"; wait_clean
+  CAPTURE=0 "$SCRIPTS/run-partial-preemption-spread.sh" p10s; }
+part_4() { say "Part 4: round-robin, p11s (Spark $SPARK_VERSION)"; wait_clean
+  CAPTURE=0 "$SCRIPTS/run-partial-preemption-spread.sh" p11s; }
+run_all() {
+  part_1; pause "Next: part 2, shuffle resiliency (start ./demo.sh shuffle-watch in the second terminal)"
+  part_2; pause "Next: part 3, spread the loss"
+  part_3; pause "Next: part 4, round-robin"
+  part_4; say "Demo complete"
+}
+
 case "${1:-}" in
+  1|whole) part_1 ;;
+  2|shuffle) part_2 ;;
+  shuffle-watch) "$SCRIPTS/shuffle-per-executor.sh" pr-victim "$NS" --watch ;;
+  3|spread) part_3 ;;
+  4|roundrobin) part_4 ;;
+  all) run_all ;;
   preflight) preflight ;;
   reset) reset ;;
   watch) watch_view ;;
   A) scenario_A ;; B) scenario_B ;; C) scenario_C ;; D) scenario_D ;;
-  *) sed -n '2,15p' "$0" ;;
+  *) sed -n '2,/^set -uo pipefail/p' "$0" | sed '$d' | sed 's/^# \{0,1\}//' ;;
 esac
