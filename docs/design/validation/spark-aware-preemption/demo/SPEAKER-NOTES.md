@@ -1,6 +1,9 @@
 # Speaker notes: Spark-aware partial preemption (~20 min)
 
-Runbook: [`DEMO-SPREAD-SHUFFLE.md`](./DEMO-SPREAD-SHUFFLE.md). Every terminal: `export SPARK_VERSION=3.4.3`.
+Runbook: [`DEMO-SPREAD-SHUFFLE.md`](./DEMO-SPREAD-SHUFFLE.md). Everything runs from `~/kueue-gated-repro/demo`
+with `./demo-short.sh` (Spark 3.4.3 by default). Before you start:
+`./demo-short.sh reset`, `./demo-short.sh clear-events`, `./demo-short.sh preflight`.
+Or run all four parts in order, with a pause between them: `./demo-short.sh all`.
 
 ## 0. Opening (2 min)
 
@@ -13,7 +16,7 @@ Runbook: [`DEMO-SPREAD-SHUFFLE.md`](./DEMO-SPREAD-SHUFFLE.md). Every terminal: `
 
 ## 1. The problem, live: whole-workload preemption (~3 min)
 
-`EVICTIONS=3 ./run-whole-workload-preemption.sh` (stops after the third eviction; press Enter to end sooner)
+`./demo-short.sh 1` (stops after the third eviction; press Enter to end sooner)
 
 | On screen | Say |
 |---|---|
@@ -36,9 +39,9 @@ Runbook: [`DEMO-SPREAD-SHUFFLE.md`](./DEMO-SPREAD-SHUFFLE.md). Every terminal: `
 | "handed over" column fills in: `N shuffle blocks · M MiB → survivors` | "Each executor Kueue took handed over everything it held before it left." |
 | Summary: job finished normally, 0 fetch failures, 0 stages resubmitted | "Every block moved. Nothing was recomputed. The job finished as if nothing happened." |
 
-## 3a. Spread the loss: p10s (~2 min)
+## 3. Spread the loss (~2 min)
 
-`CAPTURE=0 ./run-partial-preemption-spread.sh p10s`
+`./demo-short.sh 3`
 
 | On screen | Say |
 |---|---|
@@ -47,9 +50,9 @@ Runbook: [`DEMO-SPREAD-SHUFFLE.md`](./DEMO-SPREAD-SHUFFLE.md). Every terminal: `
 | `deleting` → 0, urgent running | "Every job kept its driver. No restarts." |
 | `◌` dots turn `●`; status "back to full size" | "When the urgent job finishes, the executors Spark asked back for are admitted. The jobs grow back on their own." |
 
-## 3b. Round-robin: p11s (~2 min)
+## 4. Round-robin (~2 min)
 
-`CAPTURE=0 ./run-partial-preemption-spread.sh p11s`
+`./demo-short.sh 4`
 
 | On screen | Say |
 |---|---|
@@ -57,7 +60,7 @@ Runbook: [`DEMO-SPREAD-SHUFFLE.md`](./DEMO-SPREAD-SHUFFLE.md). Every terminal: `
 | `gave` 1 on two apps, 2 on three; summary line "round-robin: every app gave 1 before any app gave 2" | "Every app gives one before any app gives a second. The loss stays as even as possible." |
 | Grow-back | "And again, they come back without a restart." |
 
-## 4. Close (3 min)
+## 5. Close (3 min)
 
 - **Results.** Whole evictions per run 11–14 → **0**. Low-priority restarts 13 → **0**. Quota invariants
   held in every run (usage ≤ quota; every running executor had a grant).
