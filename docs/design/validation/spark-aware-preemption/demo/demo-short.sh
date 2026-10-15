@@ -10,8 +10,8 @@
 #   ./demo-short.sh all            parts 1 to 4 in order, pausing between them (~8.5 min of cluster time)
 #   ./demo-short.sh reset          delete this demo's apps and put cluster-queue-tres back to 36 slots
 #   ./demo-short.sh clear-events   delete the preemption and partial-preemption events from earlier runs
-#   ./demo-short.sh logs [RUN]     the reclaimed executors' decommission logs from part 2 (latest run,
-#                                  or runs/SHUF-<stamp>); each executor's full log is in RUN/exec-logs/
+#   ./demo-short.sh logs           the reclaimed executors' decommission logs from the latest part-2 run
+#                                  (add a runs/SHUF-<stamp> path only to look at an older run)
 #
 # Settings: SPARK_VERSION (default 3.4.3), REFRESH seconds between screen refreshes (default 6),
 # EVICTIONS for part 1 (default 3), THRESH for part 2 (MiB of
