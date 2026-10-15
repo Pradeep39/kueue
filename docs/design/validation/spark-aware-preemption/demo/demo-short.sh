@@ -4,7 +4,6 @@
 #   ./demo-short.sh preflight      check the cluster, Kueue, queues and namespace (read-only)
 #   ./demo-short.sh 1              whole-workload preemption today: apps evicted whole, again and again
 #   ./demo-short.sh 2              shuffle resiliency: reclaimed executors move their shuffle data
-#   ./demo-short.sh shuffle-watch  shuffle MiB per executor during part 2 (run it in a second terminal)
 #   ./demo-short.sh 3              spread: six apps each give exactly one executor, then grow back
 #   ./demo-short.sh 4              round-robin: five apps each give one before any gives a second
 #   ./demo-short.sh all            parts 1 to 4 in order, pausing between them (~8.5 min of cluster time)
@@ -63,7 +62,7 @@ preflight() {
     echo "  ⚠️  cluster-queue-tres is not at 36 slots: ./demo-short.sh reset puts it back"
   if [ -z "$(demo_apps)$(other_apps)" ]; then echo "  ✅ $NS has no SparkApplications"
   else echo "  ⚠️  $NS has SparkApplications: $(demo_apps; other_apps | tr '\n' ' ')"; fi
-  for s in run-whole-workload-preemption.sh run-shuffle-migration.sh run-partial-preemption-spread.sh shuffle-per-executor.sh gen-apps.py demo-table.py capture.sh; do
+  for s in run-whole-workload-preemption.sh run-shuffle-migration.sh run-partial-preemption-spread.sh gen-apps.py demo-table.py capture.sh; do
     [ -e "$SCRIPTS/$s" ] || { echo "  ❌ $SCRIPTS/$s missing"; ok=0; }
   done
   echo "  Spark image for the demo apps: docker.io/library/spark:$SPARK_VERSION"
@@ -72,7 +71,7 @@ preflight() {
 
 part_1() { say "Part 1 of 4: whole-workload preemption, today's behaviour (Spark $SPARK_VERSION)"; wait_clean
   EVICTIONS=${EVICTIONS:-3} "$SCRIPTS/run-whole-workload-preemption.sh"; }
-part_2() { say "Part 2 of 4: shuffle resiliency (Spark $SPARK_VERSION). Second terminal: ./demo-short.sh shuffle-watch"; wait_clean
+part_2() { say "Part 2 of 4: shuffle resiliency (Spark $SPARK_VERSION)"; wait_clean
   STOP_AFTER_VICTIM=1 "$SCRIPTS/run-shuffle-migration.sh" "${THRESH:-40}"
   for app in pr-victim urgent; do kubectl -n $NS delete $SA $app --ignore-not-found --wait=false >/dev/null 2>&1; done; }
 part_3() { say "Part 3 of 4: spread the loss (Spark $SPARK_VERSION)"; wait_clean
@@ -81,7 +80,7 @@ part_4() { say "Part 4 of 4: round-robin, then grow-back (Spark $SPARK_VERSION)"
   CAPTURE=0 "$SCRIPTS/run-partial-preemption-spread.sh" p11s; }
 
 run_all() {
-  part_1; pause "Next: part 2, shuffle resiliency (start ./demo-short.sh shuffle-watch in the second terminal)"
+  part_1; pause "Next: part 2, shuffle resiliency"
   part_2; pause "Next: part 3, spread the loss"
   part_3; pause "Next: part 4, round-robin"
   part_4; say "Demo complete"
@@ -167,7 +166,6 @@ case "${1:-}" in
   preflight) preflight ;;
   1) part_1 ;;
   2) part_2 ;;
-  shuffle-watch) "$SCRIPTS/shuffle-per-executor.sh" pr-victim "$NS" --watch ;;
   3) part_3 ;;
   4) part_4 ;;
   all) run_all ;;

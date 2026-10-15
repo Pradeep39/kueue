@@ -2,7 +2,7 @@
 
 Short live demos on stock Spark 3.4.3, about 8.5 minutes of cluster time in total.
 [`demo-short.sh`](./demo-short.sh) runs them: `./demo-short.sh preflight`, then `./demo-short.sh all`
-(or `1`–`4` one at a time, and `shuffle-watch` in a second terminal for part 2). Speaker notes: [`SPEAKER-NOTES.md`](./SPEAKER-NOTES.md).
+(or `1`–`4` one at a time), and `./demo-short.sh logs` after the shuffle part for each reclaimed executor's timeline. Speaker notes: [`SPEAKER-NOTES.md`](./SPEAKER-NOTES.md).
 
 | Part | Command | What the audience sees | Live time |
 |---|---|---|---|
@@ -23,7 +23,7 @@ part 2b: on that version the last victims are slower to get their executors back
 - The contents of [`scripts/`](../scripts/) and `setup/queues-setup.yaml` sit in one working
   directory with `runs/` beside them.
 - `export SPARK_VERSION=3.4.3` in every terminal.
-- Screens: terminal 1 for the scripts; terminal 2 for `shuffle-per-executor.sh` (part 1); Lens on
+- Screens: one terminal for the scripts; Lens on
   `batch-ns-uno` (Pods view); KueueViz on `cluster-queue-uno` (part 1) and `cluster-queue-tres`
   (part 2).
 - Dry-run each part once with `AUTO=1`, so the Spark image is cached on the nodes.
@@ -47,16 +47,16 @@ the summary and deletes its apps. Timings: `EVICTIONS=2` ~1:10 (the two first ev
 
 ```bash
 STOP_AFTER_VICTIM=1 ./run-shuffle-migration.sh 40     # terminal 1
-./shuffle-per-executor.sh pr-victim --watch           # terminal 2, right after terminal 1
 ```
 
 The victim is SparkPageRank, an official Spark example that writes shuffle data on every executor.
 The script submits the urgent app on its own once **every** executor holds at least 40 MiB of shuffle
 files (about a minute in), and prints the report as soon as the victim finishes.
 
-1. **Shuffle builds up.** Terminal 2 shows MiB of shuffle files per executor, climbing.
+1. **Shuffle builds up.** Every 5s the runner prints the MiB of shuffle files on each executor
+   (`executors=10 shuffle MiB per executor: 1:23 2:34 ...`), climbing.
 2. **Trigger.** Terminal 1 logs `TRIGGER: urgent applied`. Three to five `pr-victim-exec-*` Pods turn
-   `Terminating` in Lens; terminal 2 marks them `decommissioning`.
+   `Terminating` in Lens.
 3. **Migration.** Within about a second their shuffle data is copied to the survivors. They exit within
    the 30s grace period; the urgent app starts about 30s after the trigger.
 4. **Report** (printed automatically). `./demo-short.sh logs` prints each reclaimed executor's own decommission timeline (signal, blocks
@@ -100,7 +100,7 @@ kubectl -n batch-ns-uno delete sparkapplications.sparkoperator.k8s.io --all
 | `refusing to start: ... other SparkApplications` | Leftover apps: rerun with `FORCE=1`, or reset first |
 | `refusing to start: another ... is in progress` | A run was interrupted: remove the `runs/.partial-preemption-spread.lock`, `runs/.shuffle-migration.lock` or `runs/.whole-workload-preemption.lock` directory |
 | Part 0 shows only one eviction | The urgent app did not scale back down in time: rerun, or raise `DURATION` |
-| Part 1 triggers before terminal 2 is up | Raise the threshold: `./run-shuffle-migration.sh 60` |
+| Part 1 triggers too soon to point at the shuffle data | Raise the threshold: `THRESH=60 ./demo-short.sh 2` |
 | Part 1 victim finishes before the trigger | Lower the threshold, or `ITERS=150` |
 | Victim executors never all reach `running` | Not enough node capacity: check node readiness in Lens |
 | Grow-back takes longer than expected | It stops waiting after 7 minutes; `GROWBACK=0` skips it entirely |

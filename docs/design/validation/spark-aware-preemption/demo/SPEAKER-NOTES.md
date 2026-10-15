@@ -25,14 +25,15 @@ Runbook: [`DEMO-SPREAD-SHUFFLE.md`](./DEMO-SPREAD-SHUFFLE.md). Every terminal: `
 
 ## 2. Shuffle resiliency (~3 min)
 
-`STOP_AFTER_VICTIM=1 ./run-shuffle-migration.sh 40`, then `./shuffle-per-executor.sh pr-victim --watch`
+`./demo-short.sh 2`, then `./demo-short.sh logs`
 
 | On screen | Say |
 |---|---|
-| Shuffle MiB climbing per executor | "PageRank writes shuffle data on every executor. This is what makes an executor expensive to lose." |
+| Shuffle MiB per executor climbing (`executors=10 shuffle MiB per executor: ...`) | "PageRank writes shuffle data on every executor. This is what makes an executor expensive to lose." |
 | `TRIGGER`, Pods `Terminating` / `decommissioning` | "An urgent job arrived. Kueue took a few executors, not the job." |
 | — | "Kueue turned on Spark's own graceful decommissioning for this app at submission. Deleting an executor tells Spark to move its data first." |
 | Urgent app starts ~30s later | "Quota moves only after those executors stop, so the cluster is never over-committed." |
+| `./demo-short.sh logs`: each reclaimed executor migrated N shuffle blocks (MiB) and exited | "Each executor Kueue took handed over everything it held before it left." |
 | Report: blocks migrated, 0 fetch failures, 0 resubmits | "Every block moved. Nothing was recomputed. The job finished as if nothing happened." |
 
 ## 3a. Spread the loss: p10s (~2 min)
