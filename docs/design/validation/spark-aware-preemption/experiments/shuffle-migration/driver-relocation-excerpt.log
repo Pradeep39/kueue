@@ -1,0 +1,5 @@
+02:50:35 INFO ShuffleStatus: Updating map output for 1156 to BlockManagerId(1, <pod-ip>, 42575, None)
+02:50:35 INFO ShuffleStatus: Updating map output for 1231 to BlockManagerId(3, <pod-ip>, 46173, None)
+02:50:35 INFO ShuffleStatus: Updating map output for 1167 to BlockManagerId(7, <pod-ip>, 44543, None)
+02:50:35 INFO ShuffleStatus: Updating map output for 1197 to BlockManagerId(5, <pod-ip>, 38157, None)
+02:50:35 INFO ShuffleStatus: Updating map output for 1189 to BlockManagerId(8, <pod-ip>, 45143, None)

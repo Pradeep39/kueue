@@ -1,0 +1,52 @@
+== SHUF-1014-1706
+  17:06:22 victim pr-victim applied (10 executors, floor 2, PageRank 100 iterations, grace 30s)
+  17:06:56 TRIGGER: urgent applied; min per-executor shuffle 24 MiB
+  shuffle MiB per executor at trigger: 1:24 10:26 2:31 3:32 4:25 5:34 6:44 7:38 8:42 9:46
+
+  executors Spark was told to decommission: 10, 6, 7, 8, 9
+
+  per decommissioned executor (from its own log):
+  executor   decom-signal shuffle-migrated rdd-migrated  finished                 exit
+  10                    1               80            4       yes INFO ShutdownHookMan
+  6                     1              109            5       yes INFO ShutdownHookMan
+  7                     1               96            4       yes INFO ShutdownHookMan
+  8                     1              416            6       yes INFO ShutdownHookMan
+  9                     1              647            7       yes INFO ShutdownHookMan
+
+  driver:
+    map outputs relocated to another executor ('Updating map output'): 1348
+    'Shuffle files lost for executor' lines: 4  (logged on every executor loss; harmless when outputs were relocated first)
+    resubmitted stages / fetch failures / lost or killed tasks: 0
+    executor failures counted: 0
+    last job line: 22:08:30 INFO DAGScheduler: Job 0 finished: collect at SparkPageRank.scala:79, took 111.876272 s
+
+  timeline (UTC):
+    reclaim issued                             22:06:56
+    reclaimed executors gone, quota released   22:07:28
+    urgent admitted                            22:07:28
+    urgent running                             22:07:32
+    victim finished                            22:08:34
+    urgent admitted 66s before the victim finished (the victim kept running on the executors it kept)
+
+  sample executor lines (first decommissioned executor):
+    22:06:36 INFO CoarseGrainedExecutorBackend: Registering SIGPWR handler to trigger decommissioning.
+    22:06:57 INFO CoarseGrainedExecutorBackend: Decommission executor 10.
+    22:06:57 INFO CoarseGrainedExecutorBackend: Will exit when finished decommissioning
+    22:06:57 INFO BlockManager: Starting block manager decommissioning process...
+    22:06:57 INFO BlockManagerDecommissioner: Starting block migration
+    22:06:57 INFO BlockManagerDecommissioner: Attempting to migrate all RDD blocks
+    22:06:57 INFO BlockManagerDecommissioner: Attempting to migrate all shuffle blocks
+    22:06:57 INFO BlockManagerDecommissioner: Start refreshing migratable shuffle blocks
+    22:06:57 INFO BlockManagerDecommissioner: Attempting to migrate all cached RDD blocks
+    22:06:57 INFO BlockManagerDecommissioner: Need to replicate 4 RDD blocks for block manager decommissioning
+    22:06:57 INFO BlockManagerDecommissioner: 80 of 80 local shuffles are added. In total, 80 shuffles are remained.
+    22:06:57 INFO BlockManagerDecommissioner: Starting shuffle block migration thread for BlockManagerId(8, <pod-ip>, 34829, None)
+    22:06:57 INFO BlockManagerDecommissioner: Starting shuffle block migration thread for BlockManagerId(5, <pod-ip>, 41333, None)
+    22:06:57 INFO BlockManagerDecommissioner: Starting shuffle block migration thread for BlockManagerId(9, <pod-ip>, 33419, None)
+
+  sample driver relocation lines:
+    22:06:57 INFO ShuffleStatus: Updating map output for 764 to BlockManagerId(6, <pod-ip>, 35143, None)
+    22:06:57 INFO ShuffleStatus: Updating map output for 707 to BlockManagerId(4, <pod-ip>, 41517, None)
+    22:06:57 INFO ShuffleStatus: Updating map output for 796 to BlockManagerId(5, <pod-ip>, 41333, None)
+    22:06:57 INFO ShuffleStatus: Updating map output for 722 to BlockManagerId(2, <pod-ip>, 44309, None)
+    22:06:57 INFO ShuffleStatus: Updating map output for 789 to BlockManagerId(8, <pod-ip>, 34829, None)

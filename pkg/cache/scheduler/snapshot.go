@@ -467,6 +467,7 @@ func (c *Cache) snapshotClusterQueue(
 		cc.Labels = maps.Clone(cq.Labels)
 		cc.PreemptionConfigName = cq.PreemptionConfigName
 	}
+	cc.PartialPreemption = cq.PartialPreemption
 	for i, rg := range cq.ResourceGroups {
 		cc.ResourceGroups[i] = rg.Clone()
 	}

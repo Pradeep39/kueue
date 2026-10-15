@@ -39,6 +39,13 @@ const (
 	// Enables partial scale up for elastic jobs.
 	ElasticJobsViaWorkloadSlicesWithPartialReplicaScaleUp featuregate.Feature = "ElasticJobsViaWorkloadSlicesWithPartialReplicaScaleUp"
 
+	// owner: @pradeep-reddy
+	// design: docs/design/spark-aware-preemption.md
+	//
+	// Enables partial preemption of elastic Spark applications: reclaiming executors above a
+	// protected floor instead of evicting the whole application.
+	SparkPartialPreemption featuregate.Feature = "SparkPartialPreemption"
+
 	// owner: @KunWuLuan
 	// kep: https://github.com/kubernetes-sigs/kueue/tree/main/keps/582-preempt-based-on-flavor-order
 	//
@@ -936,6 +943,10 @@ var defaultVersionedFeatureGates = map[featuregate.Feature]featuregate.Versioned
 		{Version: version.MustParse("0.5"), Default: true, PreRelease: featuregate.Beta},
 	},
 	ElasticJobsViaWorkloadSlicesWithPartialReplicaScaleUp: {
+		{Version: version.MustParse("0.20"), Default: false, PreRelease: featuregate.Alpha},
+	},
+
+	SparkPartialPreemption: {
 		{Version: version.MustParse("0.20"), Default: false, PreRelease: featuregate.Alpha},
 	},
 	FlavorFungibility: {

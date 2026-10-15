@@ -1,0 +1,46 @@
+apiVersion: sparkoperator.k8s.io/v1beta2
+kind: SparkApplication
+metadata:
+  name: urgent
+  namespace: batch-ns-uno
+  annotations:
+    kueue.x-k8s.io/elastic-job: "true"
+    kueue.x-k8s.io/elastic-job-scale-up-strategy: "partial"
+  labels:
+    kueue.x-k8s.io/queue-name: batch-queue-uno
+    kueue.x-k8s.io/priority-class: high
+spec:
+  type: Scala
+  mode: cluster
+  image: docker.io/library/spark:4.0.1
+  imagePullPolicy: IfNotPresent
+  mainClass: org.apache.spark.examples.SparkALS
+  mainApplicationFile: local:///opt/spark/examples/jars/spark-examples.jar
+  arguments: ["1500", "1500", "12", "15", "200"]
+  sparkVersion: 4.0.1
+  sparkConf:
+    "spark.kubernetes.executor.podNamePrefix": "urgent"
+    "spark.dynamicAllocation.enabled": "true"
+    "spark.dynamicAllocation.shuffleTracking.enabled": "true"
+    "spark.dynamicAllocation.minExecutors": "3"
+    "spark.dynamicAllocation.maxExecutors": "30"
+    "spark.dynamicAllocation.schedulerBacklogTimeout": "2s"
+    "spark.dynamicAllocation.executorIdleTimeout": "5s"
+    "spark.kubernetes.allocation.maxPendingPods": "2"
+  driver:
+    cores: 1
+    memory: 512m
+    serviceAccount: spark-operator-spark
+    securityContext: &sc
+      capabilities:
+        drop: [ALL]
+      runAsGroup: 185
+      runAsUser: 185
+      runAsNonRoot: true
+      allowPrivilegeEscalation: false
+      seccompProfile:
+        type: RuntimeDefault
+  executor:
+    cores: 1
+    memory: 512m
+    securityContext: *sc

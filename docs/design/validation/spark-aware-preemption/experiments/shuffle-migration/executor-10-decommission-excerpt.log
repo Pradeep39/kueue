@@ -1,0 +1,27 @@
+02:50:34 INFO CoarseGrainedExecutorBackend: Decommission executor 10.
+02:50:34 INFO CoarseGrainedExecutorBackend: Will exit when finished decommissioning
+02:50:34 INFO BlockManagerDecommissioner: Starting block migration
+02:50:34 INFO BlockManagerDecommissioner: Need to replicate 4 RDD blocks for block manager decommissioning
+02:50:35 INFO BlockManagerDecommissioner: 123 of 123 local shuffles are added. In total, 123 shuffles are remained.
+02:50:35 INFO BlockManagerDecommissioner: Finished current round refreshing migratable shuffle blocks, waiting for 30000ms before the next round refreshing.
+02:50:35 INFO BlockManagerDecommissioner: Migrated migrate_shuffle_19_1231 (size: 588.0 KiB) to BlockManagerId(3, <pod-ip>, 46173, None) in 15 ms
+02:50:35 INFO BlockManagerDecommissioner: Migrated migrate_shuffle_20_1189 (size: 588.0 KiB) to BlockManagerId(8, <pod-ip>, 45143, None) in 15 ms
+02:50:35 INFO BlockManagerDecommissioner: Migrated migrate_shuffle_20_1197 (size: 597.9 KiB) to BlockManagerId(5, <pod-ip>, 38157, None) in 15 ms
+02:50:35 INFO BlockManagerDecommissioner: Migrated migrate_shuffle_21_1167 (size: 590.3 KiB) to BlockManagerId(7, <pod-ip>, 44543, None) in 15 ms
+02:50:35 INFO BlockManagerDecommissioner: Migrated migrate_shuffle_20_1218 (size: 588.4 KiB) to BlockManagerId(2, <pod-ip>, 43229, None) in 15 ms
+    … (118 more "Migrated migrate_shuffle_" lines)
+02:50:35 INFO BlockManagerDecommissioner: Block rdd_9_37 migrated successfully, Removing block now
+02:50:35 INFO BlockManagerDecommissioner: Block rdd_9_26 migrated successfully, Removing block now
+02:50:35 INFO BlockManagerDecommissioner: Block rdd_9_18 migrated successfully, Removing block now
+02:50:35 INFO BlockManagerDecommissioner: Block rdd_9_2 migrated successfully, Removing block now
+02:50:35 INFO BlockManagerDecommissioner: Finished current round RDD blocks migration, waiting for 30000ms before the next round migration.
+02:50:54 INFO BlockManagerDecommissioner: Stop shuffle block migration.
+02:50:54 INFO BlockManagerDecommissioner: Stop shuffle block migration.
+02:50:54 INFO BlockManagerDecommissioner: Stop shuffle block migration.
+02:50:54 INFO BlockManagerDecommissioner: Stop shuffle block migration.
+02:50:54 INFO BlockManagerDecommissioner: Stop shuffle block migration.
+02:50:54 INFO BlockManagerDecommissioner: Stop shuffle block migration.
+02:50:54 INFO BlockManagerDecommissioner: Stop shuffle block migration.
+02:50:54 INFO BlockManagerDecommissioner: Stop shuffle block migration.
+02:50:54 INFO BlockManager: BlockManager stopped
+02:50:54 INFO ShutdownHookManager: Shutdown hook called

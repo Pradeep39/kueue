@@ -23,6 +23,7 @@ import (
 	"github.com/google/go-cmp/cmp"
 	sparkappv1beta2 "github.com/kubeflow/spark-operator/v2/api/v1beta2"
 	sparkcommon "github.com/kubeflow/spark-operator/v2/pkg/common"
+	admissionv1 "k8s.io/api/admission/v1"
 	corev1 "k8s.io/api/core/v1"
 	apivalidation "k8s.io/apimachinery/pkg/api/validation"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -48,6 +49,7 @@ func TestValidateCreate(t *testing.T) {
 		sparkApp     *sparkappv1beta2.SparkApplication
 		featureGates map[featuregate.Feature]bool
 		wantErr      error
+		wantWarns    admission.Warnings
 	}{
 		"base": {
 			sparkApp: testSparkApp.Clone().Queue("local-queue").Obj(),
@@ -104,6 +106,36 @@ func TestValidateCreate(t *testing.T) {
 				"an elastic job must have the ElasticJobSchedulingGate on its executor pod template",
 			)}.ToAggregate(),
 		},
+		"valid spark.kueue.preemption.minExecutors": {
+			featureGates: map[featuregate.Feature]bool{features.SparkPartialPreemption: true},
+			sparkApp: withSparkConf(testSparkApp.Clone().Queue("local-queue").Obj(),
+				map[string]string{sparkConfPreemptionMinExecutors: "0"}),
+			wantErr:   nil,
+			wantWarns: admission.Warnings{floorIgnoredWarning()},
+		},
+		"non-integer spark.kueue.preemption.minExecutors": {
+			featureGates: map[featuregate.Feature]bool{features.SparkPartialPreemption: true},
+			sparkApp: withSparkConf(testSparkApp.Clone().Queue("local-queue").Obj(),
+				map[string]string{sparkConfPreemptionMinExecutors: "two"}),
+			wantErr: field.ErrorList{field.Invalid(
+				sparkConfPath.Key(sparkConfPreemptionMinExecutors), "two", "must be a non-negative integer",
+			)}.ToAggregate(),
+			wantWarns: admission.Warnings{floorIgnoredWarning()},
+		},
+		"negative spark.kueue.preemption.minExecutors": {
+			featureGates: map[featuregate.Feature]bool{features.SparkPartialPreemption: true},
+			sparkApp: withSparkConf(testSparkApp.Clone().Queue("local-queue").Obj(),
+				map[string]string{sparkConfPreemptionMinExecutors: "-1"}),
+			wantErr: field.ErrorList{field.Invalid(
+				sparkConfPath.Key(sparkConfPreemptionMinExecutors), "-1", "must be a non-negative integer",
+			)}.ToAggregate(),
+			wantWarns: admission.Warnings{floorIgnoredWarning()},
+		},
+		"malformed spark.kueue.preemption.minExecutors with SparkPartialPreemption off": {
+			sparkApp: withSparkConf(testSparkApp.Clone().Queue("local-queue").Obj(),
+				map[string]string{sparkConfPreemptionMinExecutors: "two"}),
+			wantErr: nil,
+		},
 		"base with TAS": {
 			featureGates: map[featuregate.Feature]bool{features.TopologyAwareScheduling: true},
 			sparkApp: testSparkApp.Clone().Queue("local-queue").ExecutorAnnotation(
@@ -139,7 +171,7 @@ func TestValidateCreate(t *testing.T) {
 			if diff := cmp.Diff(tc.wantErr, gotErr); diff != "" {
 				t.Errorf("validateCreate() errors mismatch (-want +got):\n%s", diff)
 			}
-			if diff := cmp.Diff(admission.Warnings(nil), warns); diff != "" {
+			if diff := cmp.Diff(tc.wantWarns, warns); diff != "" {
 				t.Errorf("validateCreate() warnings mismatch (-want +got):\n%s", diff)
 			}
 		})
@@ -154,6 +186,7 @@ func TestValidateUpdate(t *testing.T) {
 		defaultLqExist       bool
 		featureGates         map[featuregate.Feature]bool
 		wantErr              error
+		wantWarns            admission.Warnings
 		maxTimeoutOnWorkload *metav1.Duration
 	}{
 		"queue name unchanged while unsuspended": {
@@ -219,6 +252,21 @@ func TestValidateUpdate(t *testing.T) {
 			featureGates: map[featuregate.Feature]bool{features.ValidateRayAndSparkJobUpdates: true},
 			wantErr:      nil,
 		},
+		"unchanged malformed spark.kueue.preemption.minExecutors does not block an update": {
+			oldSparkApp:  withSparkConf(testSparkApp.Clone().Queue("local-queue").Obj(), map[string]string{sparkConfPreemptionMinExecutors: "two"}),
+			newSparkApp:  withSparkConf(testSparkApp.Clone().Queue("local-queue").Suspend(true).Obj(), map[string]string{sparkConfPreemptionMinExecutors: "two"}),
+			featureGates: map[featuregate.Feature]bool{features.SparkPartialPreemption: true},
+			wantErr:      nil,
+		},
+		"changed malformed spark.kueue.preemption.minExecutors is rejected on update": {
+			oldSparkApp:  withSparkConf(testSparkApp.Clone().Queue("local-queue").Obj(), map[string]string{sparkConfPreemptionMinExecutors: "1"}),
+			newSparkApp:  withSparkConf(testSparkApp.Clone().Queue("local-queue").Obj(), map[string]string{sparkConfPreemptionMinExecutors: "-3"}),
+			featureGates: map[featuregate.Feature]bool{features.SparkPartialPreemption: true},
+			wantErr: field.ErrorList{field.Invalid(
+				sparkConfPath.Key(sparkConfPreemptionMinExecutors), "-3", "must be a non-negative integer",
+			)}.ToAggregate(),
+			wantWarns: admission.Warnings{floorIgnoredWarning()},
+		},
 		"unchanged wait-for-pods-ready annotation exceeding maxTimeoutOnWorkload is not re-validated on update": {
 			oldSparkApp: testSparkApp.Clone().Queue("local-queue").
 				Annotation(controllerconstants.WaitForPodsReadyAnnotation, `{"timeoutSeconds":3600}`).Obj(),
@@ -267,7 +315,7 @@ func TestValidateUpdate(t *testing.T) {
 			if diff := cmp.Diff(tc.wantErr, gotErr); diff != "" {
 				t.Errorf("ValidateUpdate() error mismatch (-want +got):\n%s", diff)
 			}
-			if diff := cmp.Diff(admission.Warnings(nil), warnings); diff != "" {
+			if diff := cmp.Diff(tc.wantWarns, warnings); diff != "" {
 				t.Errorf("ValidateUpdate() warnings mismatch (-want +got):\n%s", diff)
 			}
 		})
@@ -288,6 +336,7 @@ func TestDefault(t *testing.T) {
 		manageJobsWithoutQueueName    bool
 		withDefaultLocalQueue         bool
 		featureGates                  map[featuregate.Feature]bool
+		admissionOperation            admissionv1.Operation
 		wantSparkApp                  *sparkappv1beta2.SparkApplication
 		wantErr                       error
 	}{
@@ -340,6 +389,166 @@ func TestDefault(t *testing.T) {
 			}).Obj(),
 			featureGates: map[featuregate.Feature]bool{features.ElasticJobsViaWorkloadSlices: true},
 		},
+		"should default decommissioning for a reclaimable elastic job, leaving the grace period unset": {
+			sparkApp: withSparkConf(testSparkApp.Clone().Queue(testLocalQueue.Name).Annotation(
+				workloadslicing.EnabledAnnotationKey, workloadslicing.EnabledAnnotationValue,
+			).ExecutorInstances(3).Obj(), map[string]string{sparkConfPreemptionMinExecutors: "1"}),
+			wantSparkApp: withSparkConf(testSparkApp.Clone().Queue(testLocalQueue.Name).Annotation(
+				workloadslicing.EnabledAnnotationKey, workloadslicing.EnabledAnnotationValue,
+			).ExecutorInstances(3).Suspend(true).ExecutorTemplate(&corev1.PodTemplateSpec{
+				Spec: corev1.PodSpec{
+					Containers:      []corev1.Container{{Name: sparkcommon.Spark3DefaultExecutorContainerName}},
+					SchedulingGates: []corev1.PodSchedulingGate{{Name: kueue.ElasticJobSchedulingGate}},
+				},
+			}).Obj(), map[string]string{
+				sparkConfPreemptionMinExecutors:                    "1",
+				"spark.decommission.enabled":                       "true",
+				"spark.storage.decommission.enabled":               "true",
+				"spark.storage.decommission.shuffleBlocks.enabled": "true",
+				"spark.storage.decommission.rddBlocks.enabled":     "true",
+			}),
+			featureGates: partialPreemptionGates,
+		},
+		"should default decommissioning for a Dynamic Allocation elastic job without maxExecutors": {
+			sparkApp: testSparkApp.Clone().Queue(testLocalQueue.Name).Annotation(
+				workloadslicing.EnabledAnnotationKey, workloadslicing.EnabledAnnotationValue,
+			).DynamicAllocation(&sparkappv1beta2.DynamicAllocation{Enabled: true}).Obj(),
+			wantSparkApp: withSparkConf(testSparkApp.Clone().Queue(testLocalQueue.Name).Annotation(
+				workloadslicing.EnabledAnnotationKey, workloadslicing.EnabledAnnotationValue,
+			).DynamicAllocation(&sparkappv1beta2.DynamicAllocation{Enabled: true}).Suspend(true).ExecutorTemplate(&corev1.PodTemplateSpec{
+				Spec: corev1.PodSpec{
+					Containers:      []corev1.Container{{Name: sparkcommon.Spark3DefaultExecutorContainerName}},
+					SchedulingGates: []corev1.PodSchedulingGate{{Name: kueue.ElasticJobSchedulingGate}},
+				},
+			}).Obj(), map[string]string{
+				"spark.decommission.enabled":                       "true",
+				"spark.storage.decommission.enabled":               "true",
+				"spark.storage.decommission.shuffleBlocks.enabled": "true",
+				"spark.storage.decommission.rddBlocks.enabled":     "true",
+			}),
+			featureGates: partialPreemptionGates,
+		},
+		"should keep explicit decommissioning values, including false": {
+			sparkApp: withSparkConf(testSparkApp.Clone().Queue(testLocalQueue.Name).Annotation(
+				workloadslicing.EnabledAnnotationKey, workloadslicing.EnabledAnnotationValue,
+			).ExecutorInstances(3).ExecutorTemplate(&corev1.PodTemplateSpec{
+				Spec: corev1.PodSpec{TerminationGracePeriodSeconds: new(int64(90))},
+			}).Obj(), map[string]string{
+				sparkConfPreemptionMinExecutors:      "1",
+				"spark.decommission.enabled":         "false",
+				"spark.storage.decommission.enabled": "FALSE",
+			}),
+			wantSparkApp: withSparkConf(testSparkApp.Clone().Queue(testLocalQueue.Name).Annotation(
+				workloadslicing.EnabledAnnotationKey, workloadslicing.EnabledAnnotationValue,
+			).ExecutorInstances(3).Suspend(true).ExecutorTemplate(&corev1.PodTemplateSpec{
+				Spec: corev1.PodSpec{
+					SchedulingGates:               []corev1.PodSchedulingGate{{Name: kueue.ElasticJobSchedulingGate}},
+					TerminationGracePeriodSeconds: new(int64(90)),
+				},
+			}).Obj(), map[string]string{
+				sparkConfPreemptionMinExecutors:                    "1",
+				"spark.decommission.enabled":                       "false",
+				"spark.storage.decommission.enabled":               "FALSE",
+				"spark.storage.decommission.shuffleBlocks.enabled": "true",
+				"spark.storage.decommission.rddBlocks.enabled":     "true",
+				sparkConfExecutorTerminationGracePeriod:            "90s",
+			}),
+			featureGates: partialPreemptionGates,
+		},
+		"should default the template grace period from the Spark 4.1+ property": {
+			sparkApp: withSparkConf(testSparkApp.Clone().Queue(testLocalQueue.Name).Annotation(
+				workloadslicing.EnabledAnnotationKey, workloadslicing.EnabledAnnotationValue,
+			).ExecutorInstances(3).Obj(), map[string]string{
+				sparkConfPreemptionMinExecutors:         "1",
+				sparkConfExecutorTerminationGracePeriod: "2m",
+			}),
+			wantSparkApp: withSparkConf(testSparkApp.Clone().Queue(testLocalQueue.Name).Annotation(
+				workloadslicing.EnabledAnnotationKey, workloadslicing.EnabledAnnotationValue,
+			).ExecutorInstances(3).Suspend(true).ExecutorTemplate(&corev1.PodTemplateSpec{
+				Spec: corev1.PodSpec{
+					Containers:                    []corev1.Container{{Name: sparkcommon.Spark3DefaultExecutorContainerName}},
+					SchedulingGates:               []corev1.PodSchedulingGate{{Name: kueue.ElasticJobSchedulingGate}},
+					TerminationGracePeriodSeconds: new(int64(120)),
+				},
+			}).Obj(), map[string]string{
+				sparkConfPreemptionMinExecutors:                    "1",
+				"spark.decommission.enabled":                       "true",
+				"spark.storage.decommission.enabled":               "true",
+				"spark.storage.decommission.shuffleBlocks.enabled": "true",
+				"spark.storage.decommission.rddBlocks.enabled":     "true",
+				sparkConfExecutorTerminationGracePeriod:            "2m",
+			}),
+			featureGates: partialPreemptionGates,
+		},
+		"should not default decommissioning when the floor equals the executor count": {
+			sparkApp: testSparkApp.Clone().Queue(testLocalQueue.Name).Annotation(
+				workloadslicing.EnabledAnnotationKey, workloadslicing.EnabledAnnotationValue,
+			).ExecutorInstances(3).Obj(),
+			wantSparkApp: testSparkApp.Clone().Queue(testLocalQueue.Name).Annotation(
+				workloadslicing.EnabledAnnotationKey, workloadslicing.EnabledAnnotationValue,
+			).ExecutorInstances(3).Suspend(true).ExecutorTemplate(&corev1.PodTemplateSpec{
+				Spec: corev1.PodSpec{
+					Containers:      []corev1.Container{{Name: sparkcommon.Spark3DefaultExecutorContainerName}},
+					SchedulingGates: []corev1.PodSchedulingGate{{Name: kueue.ElasticJobSchedulingGate}},
+				},
+			}).Obj(),
+			featureGates: partialPreemptionGates,
+		},
+		"should not default decommissioning when Dynamic Allocation cannot exceed its floor": {
+			sparkApp: testSparkApp.Clone().Queue(testLocalQueue.Name).Annotation(
+				workloadslicing.EnabledAnnotationKey, workloadslicing.EnabledAnnotationValue,
+			).DynamicAllocation(&sparkappv1beta2.DynamicAllocation{Enabled: true, MinExecutors: new(int32(2)), MaxExecutors: new(int32(2))}).Obj(),
+			wantSparkApp: testSparkApp.Clone().Queue(testLocalQueue.Name).Annotation(
+				workloadslicing.EnabledAnnotationKey, workloadslicing.EnabledAnnotationValue,
+			).DynamicAllocation(&sparkappv1beta2.DynamicAllocation{Enabled: true, MinExecutors: new(int32(2)), MaxExecutors: new(int32(2))}).Suspend(true).ExecutorTemplate(&corev1.PodTemplateSpec{
+				Spec: corev1.PodSpec{
+					Containers:      []corev1.Container{{Name: sparkcommon.Spark3DefaultExecutorContainerName}},
+					SchedulingGates: []corev1.PodSchedulingGate{{Name: kueue.ElasticJobSchedulingGate}},
+				},
+			}).Obj(),
+			featureGates: partialPreemptionGates,
+		},
+		"should not default decommissioning with SparkPartialPreemption off": {
+			sparkApp: withSparkConf(testSparkApp.Clone().Queue(testLocalQueue.Name).Annotation(
+				workloadslicing.EnabledAnnotationKey, workloadslicing.EnabledAnnotationValue,
+			).ExecutorInstances(3).Obj(), map[string]string{sparkConfPreemptionMinExecutors: "1"}),
+			wantSparkApp: withSparkConf(testSparkApp.Clone().Queue(testLocalQueue.Name).Annotation(
+				workloadslicing.EnabledAnnotationKey, workloadslicing.EnabledAnnotationValue,
+			).ExecutorInstances(3).Suspend(true).ExecutorTemplate(&corev1.PodTemplateSpec{
+				Spec: corev1.PodSpec{
+					Containers:      []corev1.Container{{Name: sparkcommon.Spark3DefaultExecutorContainerName}},
+					SchedulingGates: []corev1.PodSchedulingGate{{Name: kueue.ElasticJobSchedulingGate}},
+				},
+			}).Obj(), map[string]string{sparkConfPreemptionMinExecutors: "1"}),
+			featureGates: map[featuregate.Feature]bool{features.ElasticJobsViaWorkloadSlices: true},
+		},
+		"should not default decommissioning for a non-elastic job": {
+			sparkApp: withSparkConf(testSparkApp.Clone().Queue(testLocalQueue.Name).ExecutorInstances(3).Obj(),
+				map[string]string{sparkConfPreemptionMinExecutors: "1"}),
+			wantSparkApp: withSparkConf(testSparkApp.Clone().Queue(testLocalQueue.Name).ExecutorInstances(3).Suspend(true).Obj(),
+				map[string]string{sparkConfPreemptionMinExecutors: "1"}),
+			featureGates: partialPreemptionGates,
+		},
+		"should not default decommissioning on an update": {
+			admissionOperation: admissionv1.Update,
+			sparkApp: withSparkConf(testSparkApp.Clone().Queue(testLocalQueue.Name).Annotation(
+				workloadslicing.EnabledAnnotationKey, workloadslicing.EnabledAnnotationValue,
+			).ExecutorInstances(3).Suspend(true).ExecutorTemplate(&corev1.PodTemplateSpec{
+				Spec: corev1.PodSpec{
+					Containers:      []corev1.Container{{Name: sparkcommon.Spark3DefaultExecutorContainerName}},
+					SchedulingGates: []corev1.PodSchedulingGate{{Name: kueue.ElasticJobSchedulingGate}},
+				},
+			}).Obj(), map[string]string{sparkConfPreemptionMinExecutors: "1"}),
+			wantSparkApp: withSparkConf(testSparkApp.Clone().Queue(testLocalQueue.Name).Annotation(
+				workloadslicing.EnabledAnnotationKey, workloadslicing.EnabledAnnotationValue,
+			).ExecutorInstances(3).Suspend(true).ExecutorTemplate(&corev1.PodTemplateSpec{
+				Spec: corev1.PodSpec{
+					Containers:      []corev1.Container{{Name: sparkcommon.Spark3DefaultExecutorContainerName}},
+					SchedulingGates: []corev1.PodSchedulingGate{{Name: kueue.ElasticJobSchedulingGate}},
+				},
+			}).Obj(), map[string]string{sparkConfPreemptionMinExecutors: "1"}),
+			featureGates: partialPreemptionGates,
+		},
 		"should not gate the executor template for a non-elastic job": {
 			sparkApp: testSparkApp.Clone().Queue(testLocalQueue.Name).Obj(),
 			wantSparkApp: testSparkApp.Clone().Queue(testLocalQueue.Name).
@@ -381,6 +590,11 @@ func TestDefault(t *testing.T) {
 				cache:                        cqCache,
 			}
 
+			if tc.admissionOperation != "" {
+				ctx = admission.NewContextWithRequest(ctx, admission.Request{
+					AdmissionRequest: admissionv1.AdmissionRequest{Operation: tc.admissionOperation},
+				})
+			}
 			err := webhook.Default(ctx, tc.sparkApp)
 			if err != nil {
 				t.Errorf("Default() errored:%v", err)

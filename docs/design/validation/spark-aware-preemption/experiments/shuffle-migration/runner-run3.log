@@ -1,0 +1,10 @@
+23:01:59 cleaning namespace
+23:02:10 victim pr-victim applied (10 executors, floor 2, PageRank 50 iterations, grace 30s)
+23:02:10 waiting until every executor holds >= 15 MiB of shuffle files
+23:02:10 executors=0 shuffle MiB per executor: none
+23:02:16 executors=0 shuffle MiB per executor: none
+23:02:22 executors=0 shuffle MiB per executor: none
+23:02:33 executors=10 shuffle MiB per executor: 1:0 10:0 2:0 3:0 4:0 5:0 6:0 7:0 8:1 9:3
+23:02:43 executors=10 shuffle MiB per executor: 1:23 10:23 2:27 3:28 4:29 5:33 6:34 7:37 8:38 9:42
+23:02:43 TRIGGER: urgent applied; min per-executor shuffle 23 MiB
+23:12:05 capture done; analysing

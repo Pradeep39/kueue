@@ -92,6 +92,11 @@ type PreemptionStrategy struct {
 	// If nil, any target set that fits is valid. It returns whether the target set is valid
 	// and an optional failure reason.
 	verify func(targets []*Target) (bool, string)
+	// partial is set for the partial-preemption strategy, whose candidates yield the same
+	// victim's Target again each time they take another Pod from it.
+	partial bool
+	// fillBack, when set, replaces fillBackWorkloads.
+	fillBack func(ctx context.Context, targets []*Target) []*Target
 }
 
 type strategyOption func(*PreemptionStrategy)
@@ -129,6 +134,22 @@ type preemptionCtx struct {
 	tasRequests           schdcache.WorkloadTASRequests
 	frsNeedPreemption     sets.Set[resources.FlavorResource]
 	configurableEvaluator *configurable.PreemptionEvaluator
+	// excludePartialDeclared skips candidates that declare partial preemption (WholeOnlyUndeclared).
+	excludePartialDeclared bool
+}
+
+// skipPartialDeclared wraps a snapshot-removing yield so that, when the context excludes them,
+// candidates declaring partial preemption are passed over before they are removed.
+func skipPartialDeclared(pCtx *preemptionCtx, yield func(*Target) bool) func(*Target) bool {
+	if !pCtx.excludePartialDeclared {
+		return yield
+	}
+	return func(t *Target) bool {
+		if _, declared := workload.PartialPreemption(t.WorkloadInfo.Obj); declared {
+			return true
+		}
+		return yield(t)
+	}
 }
 
 func New(
@@ -176,6 +197,48 @@ func (p *Preemptor) getPreemptionStrategyIterator(ctx context.Context, preemptio
 		return fairPreemptionStrategy(ctx, p, preemptionCtx, p.fsStrategies)
 	}
 	return classicalPreemptionStrategy(ctx, p, preemptionCtx)
+}
+
+// Mode selects which kinds of preemption targets a set of strategies may produce
+// (docs/design/spark-aware-preemption.md §5.3).
+type Mode int
+
+const (
+	// WholeOnly produces only whole-workload targets: today's behaviour, and the default.
+	WholeOnly Mode = iota
+	// PartialOnly produces only partial targets (Target.Reclaim set), taken from workloads that
+	// declare partial preemption, above their floors. It never evicts a whole workload.
+	PartialOnly
+	// NoPreemption produces no targets at all: the workload may only be admitted into free
+	// quota. Used for grow-back slices (§5.5).
+	NoPreemption
+	// WholeOnlyUndeclared is WholeOnly restricted to victims that do not declare partial
+	// preemption. A scale-up slice uses it as its fallback: a workload that opted into partial
+	// preemption is never evicted whole so that another can grow (§5.3), while workloads that
+	// did not opt in are preempted exactly as before.
+	WholeOnlyUndeclared
+)
+
+// GetPreemptionStrategyIteratorWithMode is GetPreemptionStrategyIterator restricted to mode.
+func (p *Preemptor) GetPreemptionStrategyIteratorWithMode(
+	ctx context.Context,
+	wl workload.Info,
+	snapshot *schdcache.Snapshot,
+	assignment flavorassigner.Assignment,
+	mode Mode,
+) iter.Seq[PreemptionStrategy] {
+	switch mode {
+	case PartialOnly:
+		return p.partialPreemptionStrategyIterator(ctx, p.buildContext(ctx, wl, assignment, snapshot))
+	case NoPreemption:
+		return func(func(PreemptionStrategy) bool) {}
+	case WholeOnlyUndeclared:
+		pCtx := p.buildContext(ctx, wl, assignment, snapshot)
+		pCtx.excludePartialDeclared = true
+		return p.getPreemptionStrategyIterator(ctx, pCtx)
+	default:
+		return p.GetPreemptionStrategyIterator(ctx, wl, snapshot, assignment)
+	}
 }
 
 // GetTargetsWithStrategy returns the workloads to evict using the provided preemption strategies.
@@ -293,6 +356,13 @@ func (p *Preemptor) IssuePreemptions(
 			p.preemptionExpectations.ObservedUID(log, targetKey, target.WorkloadInfo.Obj.UID)
 			return
 		}
+		if target.Reclaim != nil && workload.PartialPreemptionPending(target.WorkloadInfo.Obj) {
+			// Like an evicted workload: the reclaim is already under way.
+			log.V(3).Info("Partial preemption ongoing", "targetWorkload", klog.KObj(target.WorkloadInfo.Obj), "preemptingWorkload", klog.KObj(preemptor.Obj))
+			successfullyPreempted.Add(1)
+			p.preemptionExpectations.ObservedUID(log, targetKey, target.WorkloadInfo.Obj.UID)
+			return
+		}
 		if !p.preemptionExpectations.Satisfied(log, targetKey) {
 			log.V(3).Info("Preemption already issued, waiting for observation",
 				"targetWorkload", klog.KObj(target.WorkloadInfo.Obj),
@@ -307,6 +377,17 @@ func (p *Preemptor) IssuePreemptions(
 		p.preemptionExpectations.ExpectUIDs(log, targetKey, []types.UID{target.WorkloadInfo.Obj.UID})
 
 		message, underlyingCause := messageAndUnderlyingCause(log, target, preemptor, preemptorPath, preempteePath)
+
+		if target.Reclaim != nil {
+			if err := p.issuePartialPreemption(ctx, preemptor, target, message); err != nil {
+				p.preemptionExpectations.ObservedUID(log, targetKey, target.WorkloadInfo.Obj.UID)
+				errCh.SendErrorWithCancel(err, cancel)
+				preemptionErrors.Add(1)
+				return
+			}
+			successfullyPreempted.Add(1)
+			return
+		}
 
 		wlCopy := target.WorkloadInfo.Obj.DeepCopy()
 		exposeLqMetrics := cache.ShouldExposeLocalQueueMetricsForWorkload(log, wlCopy)
@@ -384,9 +465,15 @@ func (p *Preemptor) getTargets(ctx context.Context, strategies iter.Seq[Preempti
 	for strategy := range strategies {
 		var targets []*Target
 		for candidate := range strategy.candidates {
-			targets = append(targets, candidate)
+			if !strategy.partial || !slices.Contains(targets, candidate) {
+				targets = append(targets, candidate)
+			}
 			if workloadFits(ctx, strategy.pCtx, strategy.allowBorrowing) {
-				targets = fillBackWorkloads(ctx, strategy.pCtx, targets, strategy.allowBorrowing)
+				if strategy.fillBack != nil {
+					targets = strategy.fillBack(ctx, targets)
+				} else {
+					targets = fillBackWorkloads(ctx, strategy.pCtx, targets, strategy.allowBorrowing)
+				}
 				if strategy.verify != nil {
 					if valid, reason := strategy.verify(targets); !valid {
 						if logV := log.V(6); logV.Enabled() {
@@ -417,20 +504,40 @@ func (p *Preemptor) getTargets(ctx context.Context, strategies iter.Seq[Preempti
 
 func restoreSnapshot(snapshot *schdcache.Snapshot, targets []*Target) {
 	for _, t := range targets {
-		snapshot.AddWorkload(t.WorkloadInfo)
+		addTargetBack(snapshot, t)
 	}
+}
+
+// addTargetBack undoes a target's removal from the snapshot: the whole workload, or only
+// the Pods a partial target takes.
+func addTargetBack(snapshot *schdcache.Snapshot, t *Target) {
+	if t.Reclaim != nil {
+		snapshot.AddPartialWorkloadUsage(t.WorkloadInfo, t.Reclaim.PodSet, t.Reclaim.Count)
+		return
+	}
+	snapshot.AddWorkload(t.WorkloadInfo)
+}
+
+// removeTarget removes a target from the snapshot: the whole workload, or only the Pods a
+// partial target takes.
+func removeTarget(snapshot *schdcache.Snapshot, t *Target) {
+	if t.Reclaim != nil {
+		snapshot.RemovePartialWorkloadUsage(t.WorkloadInfo, t.Reclaim.PodSet, t.Reclaim.Count)
+		return
+	}
+	snapshot.RemoveWorkload(t.WorkloadInfo)
 }
 
 // fillBackWorkloads checks in the reverse order if any of the workloads can be added back.
 func fillBackWorkloads(ctx context.Context, preemptionCtx *preemptionCtx, targets []*Target, allowBorrowing bool) []*Target {
 	for i := len(targets) - 2; i >= 0; i-- {
-		preemptionCtx.snapshot.AddWorkload(targets[i].WorkloadInfo)
+		addTargetBack(preemptionCtx.snapshot, targets[i])
 		if workloadFits(ctx, preemptionCtx, allowBorrowing) {
 			// O(1) deletion: copy the last element into index i and reduce size.
 			targets[i] = targets[len(targets)-1]
 			targets = targets[:len(targets)-1]
 		} else {
-			preemptionCtx.snapshot.RemoveWorkload(targets[i].WorkloadInfo)
+			removeTarget(preemptionCtx.snapshot, targets[i])
 		}
 	}
 	return targets

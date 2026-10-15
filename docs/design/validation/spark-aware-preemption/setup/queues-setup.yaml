@@ -1,0 +1,87 @@
+# cluster-queue-dos and cluster-queue-tres with their LocalQueues, for a clean deploy.
+# Exported from the live cluster on 2026-10-14. Apply after Kueue is up and after the
+# default-flavor ResourceFlavor exists. Namespaces batch-ns-uno and batch-ns-dos must exist.
+#
+# cluster-queue-dos: shares cohort-uno with cluster-queue-uno (12 slots in the cohort, one slot
+#   = 1 CPU + 896Mi). Quotas here are the validation suites' 12-slot setting; the suites patch
+#   them per scenario.
+# cluster-queue-tres: standalone 36-slot queue for the many-victims scenarios (P10, P11). P12 sets
+#   its preemption policy to Never and attaches a PreemptionConfig at run time, then restores this.
+---
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: Cohort
+metadata:
+  name: cohort-uno
+---
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: ClusterQueue
+metadata:
+  name: cluster-queue-dos
+spec:
+  cohortName: cohort-uno
+  flavorFungibility:
+    whenCanBorrow: MayStopSearch
+    whenCanPreempt: TryNextFlavor
+  namespaceSelector: {}
+  preemption:
+    borrowWithinCohort:
+      policy: Never
+    reclaimWithinCohort: Any
+    withinClusterQueue: LowerPriority
+  queueingStrategy: BestEffortFIFO
+  resourceGroups:
+  - coveredResources: [cpu, memory]
+    flavors:
+    - name: default-flavor
+      resources:
+      - name: cpu
+        nominalQuota: "6"
+        borrowingLimit: "6"
+      - name: memory
+        nominalQuota: 5376Mi
+        borrowingLimit: 5376Mi
+  stopPolicy: None
+---
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: LocalQueue
+metadata:
+  name: batch-queue-dos
+  namespace: batch-ns-dos
+spec:
+  clusterQueue: cluster-queue-dos
+  stopPolicy: None
+---
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: ClusterQueue
+metadata:
+  name: cluster-queue-tres
+spec:
+  flavorFungibility:
+    whenCanBorrow: MayStopSearch
+    whenCanPreempt: TryNextFlavor
+  namespaceSelector: {}
+  preemption:
+    borrowWithinCohort:
+      policy: Never
+    reclaimWithinCohort: Never
+    withinClusterQueue: LowerPriority
+  queueingStrategy: BestEffortFIFO
+  resourceGroups:
+  - coveredResources: [cpu, memory]
+    flavors:
+    - name: default-flavor
+      resources:
+      - name: cpu
+        nominalQuota: "36"
+      - name: memory
+        nominalQuota: 32256Mi
+  stopPolicy: None
+---
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: LocalQueue
+metadata:
+  name: batch-queue-tres
+  namespace: batch-ns-uno
+spec:
+  clusterQueue: cluster-queue-tres
+  stopPolicy: None
