@@ -30,7 +30,7 @@ once() {
 }
 
 if [ $WATCH = 1 ]; then
-  while true; do clear; date +%H:%M:%S; once; sleep 5; done
+  while true; do clear; date +%H:%M:%S; once; sleep "${REFRESH:-6}"; done
 else
   once
 fi

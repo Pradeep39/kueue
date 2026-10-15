@@ -11,7 +11,8 @@
 #   ./demo-short.sh reset          delete this demo's apps and put cluster-queue-tres back to 36 slots
 #   ./demo-short.sh clear-events   delete the preemption and partial-preemption events from earlier runs
 #
-# Settings: SPARK_VERSION (default 3.4.3), EVICTIONS for part 1 (default 3), THRESH for part 2 (MiB of
+# Settings: SPARK_VERSION (default 3.4.3), REFRESH seconds between screen refreshes (default 6),
+# EVICTIONS for part 1 (default 3), THRESH for part 2 (MiB of
 # shuffle per executor before the urgent app arrives, default 40). Each part pauses for Enter before the
 # urgent app arrives; in part 1, Enter during the evictions ends it early.
 #

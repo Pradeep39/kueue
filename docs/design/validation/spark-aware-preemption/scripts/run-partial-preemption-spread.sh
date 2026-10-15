@@ -16,6 +16,7 @@
 #     CAPTURE=0     skip the background capture (then no report at the end)
 #     GROWBACK=0    stop once the urgent app runs, instead of waiting for the victims to grow back
 #     VICTIM_ITERS / URGENT_ITERS   SparkALS iterations (default 10 / 4: ~4 min / ~1 min jobs)
+#     REFRESH=N     seconds between screen refreshes (default 6)
 #   The queue is sized to exactly what the victims fill, and put back to 36 slots on exit.
 #   run-partial-preemption-spread.sh watch      the live table only, e.g. on a second screen
 #
@@ -68,12 +69,12 @@ for e in sorted(json.load(sys.stdin)["items"], key=lambda e: e.get("lastTimestam
 ' "$1"
 }
 
-live() { # live UNTIL_CMD — redraw every 3s until UNTIL_CMD succeeds (or forever if empty)
+live() { # live UNTIL_CMD — redraw every REFRESH seconds (default 6) until UNTIL_CMD succeeds (or forever if empty)
   while true; do
     clear; date +%H:%M:%S; table
     [ -n "${TRIGGER:-}" ] && { echo; echo "  reclaims since the urgent app arrived:"; reclaims "$TRIGGER"; }
     [ -n "${1:-}" ] && eval "$1" && return 0
-    sleep 3
+    sleep "${REFRESH:-6}"
   done
 }
 
