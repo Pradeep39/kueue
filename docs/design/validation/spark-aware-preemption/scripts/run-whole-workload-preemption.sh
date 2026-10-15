@@ -10,6 +10,9 @@
 #     FORCE=1      delete other SparkApplications in batch-ns-uno before starting (otherwise refuse)
 #     DURATION=N   stop watching N seconds after the urgent app arrives (default 240), or earlier
 #                  when the urgent app finishes
+#     EVICTIONS=N  stop as soon as N whole evictions have happened (e.g. EVICTIONS=3)
+#   To end early by hand: press Enter while the evictions are showing, or Ctrl-C. Either way the
+#   summary is printed and the demo apps are deleted.
 #     ITERS=N / URGENT_ITERS=N   PageRank iterations per victim run (default 100) / urgent SparkALS
 #                  iterations (default 10)
 #   cluster-queue-tres is sized to 12 slots for the run and put back to 36 on exit.
@@ -90,12 +93,38 @@ table() {
   rm -rf "$tmp"
 }
 
-live() { # live UNTIL_CMD
+live() { # live UNTIL_CMD [stoppable] — with "stoppable", Enter ends the wait early
   while true; do
     clear; date +%H:%M:%S; table; echo; history
+    [ "${2:-}" = stoppable ] && echo && echo "  (press Enter to end the demo here)"
     eval "$1" && return 0
-    sleep 3
+    if [ "${2:-}" = stoppable ] && [ -t 0 ]; then
+      read -r -t 3 _ && return 0
+    else
+      sleep 3
+    fi
   done
+}
+
+# evictions: whole evictions of the demo's apps since it started
+evictions() {
+  kubectl -n $NS get events -o json 2>/dev/null | python3 -I -c '
+import json, sys
+since = sys.argv[1]
+print(sum(1 for e in json.load(sys.stdin)["items"]
+          if e["reason"] == "Preempted" and e["involvedObject"].get("kind") == "Workload"
+          and "-workload-" in e["involvedObject"]["name"]
+          and (e.get("lastTimestamp") or e.get("eventTime") or "") >= since))' "$START"
+}
+
+summary() {
+  say "Summary"
+  history | head -4
+  echo
+  echo "  Every eviction killed a driver and threw away that app's shuffle data; each readmission"
+  echo "  started the job over from scratch."
+  kubectl -n $NS delete $SA --all --wait=false >/dev/null 2>&1
+  echo "  Demo apps deleted (in the background)."
 }
 
 victims_running() {
@@ -103,6 +132,7 @@ victims_running() {
 }
 urgent_done_or_timeout() {
   [ "$(date +%s)" -ge "$DEADLINE" ] && return 0
+  [ -n "${EVICTIONS:-}" ] && [ "$(evictions)" -ge "$EVICTIONS" ] && return 0
   local st; st=$(kubectl -n $NS get $SA urgent -o jsonpath='{.status.applicationState.state}' 2>/dev/null)
   [ "$st" = COMPLETED ] || [ "$st" = FAILED ]
 }
@@ -135,12 +165,8 @@ live victims_running
 if [ "${AUTO:-0}" = 1 ]; then sleep 20; else pause "Both apps are building shuffle data. Submit the high-priority app (Dynamic Allocation)"; fi
 python3 -I "$HERE/gen-apps.py" urgent:high --queue $LQ --partial --cap 2 --idle 5s --als-args "$URGENT_ARGS" | kubectl apply -f - >/dev/null
 DEADLINE=$(( $(date +%s) + ${DURATION:-240} ))
-live urgent_done_or_timeout
-
-say "Summary"
-history | head -4
-echo
-echo "  Every eviction killed a driver and threw away that app's shuffle data; each readmission"
-echo "  started the job over from scratch."
-kubectl -n $NS delete $SA --all --wait=false >/dev/null 2>&1
-echo "  Demo apps deleted (in the background)."
+# From here on, Ctrl-C ends the demo with the summary rather than leaving the apps running.
+trap 'trap - INT; echo; summary; exit 0' INT
+live urgent_done_or_timeout stoppable
+trap - INT
+summary

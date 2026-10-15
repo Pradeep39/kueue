@@ -1,10 +1,10 @@
 # Demo: whole eviction today, then resilient partial preemption and spreading the reclaim
 
-Short live demos on stock Spark 3.4.3, about 11 minutes of cluster time in total. Speaker notes: [`SPEAKER-NOTES.md`](./SPEAKER-NOTES.md).
+Short live demos on stock Spark 3.4.3, about 8.5 minutes of cluster time in total. Speaker notes: [`SPEAKER-NOTES.md`](./SPEAKER-NOTES.md).
 
 | Part | Command | What the audience sees | Live time |
 |---|---|---|---|
-| 0. The problem | `./run-whole-workload-preemption.sh` | Two PageRank apps that did not opt in are evicted whole, re-admitted, and evicted again by a growing urgent app | ~4:40 |
+| 0. The problem | `EVICTIONS=3 ./run-whole-workload-preemption.sh` | Two PageRank apps that did not opt in are evicted whole, re-admitted, and evicted again by a growing urgent app | ~3:05 |
 | 1. Shuffle resiliency | `STOP_AFTER_VICTIM=1 ./run-shuffle-migration.sh 40` | Reclaimed executors hand their shuffle data to the survivors; the job finishes with nothing recomputed | ~2:15 |
 | 2a. Spread | `CAPTURE=0 ./run-partial-preemption-spread.sh p10s` | Six apps each give exactly one executor; afterwards they grow back | ~1:40 |
 | 2b. Round-robin | `CAPTURE=0 ./run-partial-preemption-spread.sh p11s` | Five apps each give one before any gives a second; they grow back | ~1:35 |
@@ -29,13 +29,16 @@ part 2b: on that version the last victims are slower to get their executors back
 ## Part 0: whole-workload preemption (today's behaviour)
 
 ```bash
-./run-whole-workload-preemption.sh        # sizes cluster-queue-tres to 12 slots, puts it back to 36 on exit
+EVICTIONS=3 ./run-whole-workload-preemption.sh   # sizes cluster-queue-tres to 12 slots, puts it back to 36 on exit
 ```
 
 Two low-priority SparkPageRank apps (driver + 4 executors each) without the partial-preemption
 opt-in share the queue with a high-priority SparkALS app using Dynamic Allocation. The script pauses
 before the urgent app (press Enter), then shows a live table and a log of whole evictions, and stops
-when the urgent app finishes or after 240s (`DURATION`). In the test run: 3 whole evictions in about
+after the third whole eviction (`EVICTIONS=3`), when the urgent app finishes, or after 240s
+(`DURATION`), whichever comes first. Press Enter (or Ctrl-C) to end it sooner; either way it prints
+the summary and deletes its apps. Timings: `EVICTIONS=2` ~1:10 (the two first evictions only),
+`EVICTIONS=3` ~3:05 (adds a victim re-admitted and evicted again), unbounded ~4:40. In the test run: 3 whole evictions in about
 3 minutes; one app was admitted 3 times and evicted twice. The exact count varies from run to run.
 
 ## Part 1: the reclaimed executors move their shuffle data

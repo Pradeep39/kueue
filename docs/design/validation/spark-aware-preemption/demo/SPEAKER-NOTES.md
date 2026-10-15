@@ -1,4 +1,4 @@
-# Speaker notes: Spark-aware partial preemption (~22 min)
+# Speaker notes: Spark-aware partial preemption (~20 min)
 
 Runbook: [`DEMO-SPREAD-SHUFFLE.md`](./DEMO-SPREAD-SHUFFLE.md). Every terminal: `export SPARK_VERSION=3.4.3`.
 
@@ -11,9 +11,9 @@ Runbook: [`DEMO-SPREAD-SHUFFLE.md`](./DEMO-SPREAD-SHUFFLE.md). Every terminal: `
 - **Constraint.** No change to Apache Spark or the Spark Operator. It works on the Spark versions
   people run today. This demo runs on stock **Spark 3.4.3**.
 
-## 1. The problem, live: whole-workload preemption (~5 min)
+## 1. The problem, live: whole-workload preemption (~3 min)
 
-`./run-whole-workload-preemption.sh`
+`EVICTIONS=3 ./run-whole-workload-preemption.sh` (stops after the third eviction; press Enter to end sooner)
 
 | On screen | Say |
 |---|---|
@@ -21,7 +21,7 @@ Runbook: [`DEMO-SPREAD-SHUFFLE.md`](./DEMO-SPREAD-SHUFFLE.md). Every terminal: `
 | Press Enter; `EVICTED WHOLE` | "An urgent job with Dynamic Allocation arrives. Kueue evicts a whole job: driver killed, shuffle data gone." |
 | Second eviction | "The urgent job grows, and Kueue evicts the other job too." |
 | Victim re-admitted, then `EVICTED WHOLE` again | "When the urgent job shrinks, the batch job comes back and starts over from scratch. The urgent job grows again, and it is evicted again, repeatedly." |
-| Summary: admitted / evicted counts | "Several evictions in a few minutes, and every one threw away all the work done so far. Now the same kind of job with partial preemption." |
+| Summary (after the 3rd eviction, or press Enter) | "Several evictions in a few minutes, and every one threw away all the work done so far. Now the same kind of job with partial preemption." |
 
 ## 2. Shuffle resiliency (~3 min)
 
