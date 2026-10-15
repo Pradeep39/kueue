@@ -10,6 +10,8 @@
 #   ./demo-short.sh all            parts 1 to 4 in order, pausing between them (~8.5 min of cluster time)
 #   ./demo-short.sh reset          delete this demo's apps and put cluster-queue-tres back to 36 slots
 #   ./demo-short.sh clear-events   delete the preemption and partial-preemption events from earlier runs
+#   ./demo-short.sh logs [RUN]     the reclaimed executors' decommission logs from part 2 (latest run,
+#                                  or runs/SHUF-<stamp>); each executor's full log is in RUN/exec-logs/
 #
 # Settings: SPARK_VERSION (default 3.4.3), REFRESH seconds between screen refreshes (default 6),
 # EVICTIONS for part 1 (default 3), THRESH for part 2 (MiB of
@@ -115,8 +117,53 @@ clear_events() {
   echo "  ${DRY_RUN:+(dry run) }$total event(s) deleted"
 }
 
+# logs [RUN]: for the latest part-2 run (or RUN), each executor Kueue reclaimed, from its own log,
+# which the runner streams from start to exit: the decommission signal, the shuffle and RDD blocks it
+# migrated, and when it exited.
+show_logs() {
+  local run=${1:-$(ls -td "$SCRIPTS"/runs/SHUF-* 2>/dev/null | head -1)}
+  [ -d "$run/exec-logs" ] || { echo "  no part-2 run found (looked for $SCRIPTS/runs/SHUF-*)"; return 1; }
+  run=$(cd "$run" && pwd)
+  say "Reclaimed executors in $(basename "$run") (full logs: $run/exec-logs/)"
+  python3 -I - "$run" <<'PY'
+import glob, os, re, sys
+run = sys.argv[1]
+driver = open(os.path.join(run, "driver.log"), errors="replace").read() if os.path.exists(os.path.join(run, "driver.log")) else ""
+ids = []
+for m in re.finditer(r"Decommission executors: ([\d, ]+)", driver):
+    ids += [x.strip() for x in m.group(1).split(",") if x.strip() and x.strip() not in ids]
+if not ids:
+    print("  the driver log names no decommissioned executors")
+def hms(line):
+    m = re.search(r"\d\d/\d\d/\d\d (\d\d:\d\d:\d\d)", line)
+    return m.group(1) if m else "--:--:--"
+for eid in ids:
+    path = next(iter(glob.glob(os.path.join(run, "exec-logs", f"*-exec-{eid}.log"))), None)
+    if not path:
+        print(f"\n  executor {eid}: no log captured"); continue
+    lines = open(path, errors="replace").read().splitlines()
+    first = lambda pat: next((l for l in lines if re.search(pat, l)), None)
+    shuffle = [l for l in lines if "Migrated migrate_shuffle_" in l]
+    rdd = [l for l in lines if re.search(r"Block rdd_\S+ migrated successfully", l)]
+    sizes = [float(m.group(1)) * (1 / 1024 if m.group(2) == "KiB" else 1)
+             for l in shuffle for m in [re.search(r"\(size: ([\d.]+) (KiB|MiB)\)", l)] if m]
+    sig, added, stop, exitl = (first(r"Decommission executor \d+"), first(r"local shuffles are added"),
+                               first(r"Stop shuffle block migration"), first(r"Shutdown hook called"))
+    print(f"\n  executor {eid}  ({os.path.basename(path)})")
+    if sig:   print(f"    {hms(sig)}  decommission signal received")
+    if added: print(f"    {hms(added)}  {re.sub(r'.*BlockManagerDecommissioner: ', '', added)}")
+    if shuffle:
+        print(f"    {hms(shuffle[0])}–{hms(shuffle[-1])}  migrated {len(shuffle)} shuffle blocks"
+              + (f" ({sum(sizes):.0f} MiB)" if sizes else "") + " to surviving executors")
+    if rdd:   print(f"    {hms(rdd[-1])}  migrated {len(rdd)} cached RDD blocks")
+    if exitl or stop:
+        print(f"    {hms(exitl or stop)}  executor exited (it waits for Spark's next migration round, 30s by default)")
+PY
+}
+
 case "${1:-}" in
   clear-events) clear_events ;;
+  logs) show_logs "${2:-}" ;;
   preflight) preflight ;;
   1) part_1 ;;
   2) part_2 ;;

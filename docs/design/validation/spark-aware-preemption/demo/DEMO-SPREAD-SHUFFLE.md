@@ -59,7 +59,8 @@ files (about a minute in), and prints the report as soon as the victim finishes.
    `Terminating` in Lens; terminal 2 marks them `decommissioning`.
 3. **Migration.** Within about a second their shuffle data is copied to the survivors. They exit within
    the 30s grace period; the urgent app starts about 30s after the trigger.
-4. **Report** (printed automatically). Point at: shuffle blocks migrated per reclaimed executor, map
+4. **Report** (printed automatically). `./demo-short.sh logs` prints each reclaimed executor's own decommission timeline (signal, blocks
+   migrated, exit); the full logs stay in `runs/SHUF-<stamp>/exec-logs/`. Point at: shuffle blocks migrated per reclaimed executor, map
    outputs relocated by the driver, `resubmitted stages / fetch failures / lost or killed tasks: 0`, and
    the timeline (urgent admitted while the victim was still running).
 
