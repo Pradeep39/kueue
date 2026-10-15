@@ -9,6 +9,7 @@
 #   ./demo-short.sh 4              round-robin: five apps each give one before any gives a second
 #   ./demo-short.sh all            parts 1 to 4 in order, pausing between them (~8.5 min of cluster time)
 #   ./demo-short.sh reset          delete this demo's apps and put cluster-queue-tres back to 36 slots
+#   ./demo-short.sh clear-events   delete the preemption and partial-preemption events from earlier runs
 #
 # Settings: SPARK_VERSION (default 3.4.3), EVICTIONS for part 1 (default 3), THRESH for part 2 (MiB of
 # shuffle per executor before the urgent app arrives, default 40). Each part pauses for Enter before the
@@ -96,7 +97,25 @@ reset() {
   echo "  Done."
 }
 
+# clear_events: delete the whole and partial preemption events in the namespace (what the watch view and
+# the eviction/reclaim lists show), and start the watch view's event list from now. Other events (Pods,
+# the Spark Operator, admissions) are left alone.
+PREEMPTION_REASONS="Preempted PreemptedWorkload EvictedDueToPreempted PartiallyPreempted PartiallyPreemptedWorkload PartialPreemptionComplete PartialPreemptionTimedOut PartialPreemptionAbandoned"
+clear_events() {
+  say "Clearing preemption and partial-preemption events in $NS"
+  local r n total=0
+  for r in $PREEMPTION_REASONS; do
+    n=$(kubectl -n $NS get events --field-selector reason=$r --no-headers 2>/dev/null | wc -l | tr -d ' ')
+    [ "$n" = 0 ] && continue
+    kubectl -n $NS delete events --field-selector reason=$r ${DRY_RUN:+--dry-run=server} >/dev/null 2>&1 && total=$((total + n))
+    printf '  %-28s %s\n' "$r" "$n"
+  done
+  [ -z "${DRY_RUN:-}" ] && date -u +%Y-%m-%dT%H:%M:%SZ > "$HERE/.demo-start"
+  echo "  ${DRY_RUN:+(dry run) }$total event(s) deleted"
+}
+
 case "${1:-}" in
+  clear-events) clear_events ;;
   preflight) preflight ;;
   1) part_1 ;;
   2) part_2 ;;

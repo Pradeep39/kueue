@@ -5,6 +5,7 @@
 #   ./demo.sh watch            live terminal view (put it on a second screen)
 #   ./demo.sh A|B|C|D          run a scenario (it pauses before the urgent app arrives)
 #   ./demo.sh reset            delete the demo apps and restore the baseline queues
+#   ./demo.sh clear-events     delete the preemption and partial-preemption events from earlier runs
 #
 #   A  today's behaviour: victims that did not opt in are evicted whole and restart
 #   B  partial preemption: executors are trimmed, drivers survive, executors grow back
@@ -245,7 +246,25 @@ run_all() {
   part_4; say "Demo complete"
 }
 
+# clear_events: delete the whole and partial preemption events in the namespace (what the watch view and
+# the eviction/reclaim lists show), and start the watch view's event list from now. Other events (Pods,
+# the Spark Operator, admissions) are left alone.
+PREEMPTION_REASONS="Preempted PreemptedWorkload EvictedDueToPreempted PartiallyPreempted PartiallyPreemptedWorkload PartialPreemptionComplete PartialPreemptionTimedOut PartialPreemptionAbandoned"
+clear_events() {
+  say "Clearing preemption and partial-preemption events in $NS"
+  local r n total=0
+  for r in $PREEMPTION_REASONS; do
+    n=$(kubectl -n $NS get events --field-selector reason=$r --no-headers 2>/dev/null | wc -l | tr -d ' ')
+    [ "$n" = 0 ] && continue
+    kubectl -n $NS delete events --field-selector reason=$r ${DRY_RUN:+--dry-run=server} >/dev/null 2>&1 && total=$((total + n))
+    printf '  %-28s %s\n' "$r" "$n"
+  done
+  [ -z "${DRY_RUN:-}" ] && date -u +%Y-%m-%dT%H:%M:%SZ > "$HERE/.demo-start"
+  echo "  ${DRY_RUN:+(dry run) }$total event(s) deleted"
+}
+
 case "${1:-}" in
+  clear-events) clear_events ;;
   1|whole) part_1 ;;
   2|shuffle) part_2 ;;
   shuffle-watch) "$SCRIPTS/shuffle-per-executor.sh" pr-victim "$NS" --watch ;;
