@@ -1,6 +1,8 @@
 # Demo: whole eviction today, then resilient partial preemption and spreading the reclaim
 
-Short live demos on stock Spark 3.4.3, about 8.5 minutes of cluster time in total. Speaker notes: [`SPEAKER-NOTES.md`](./SPEAKER-NOTES.md).
+Short live demos on stock Spark 3.4.3, about 8.5 minutes of cluster time in total.
+[`demo-short.sh`](./demo-short.sh) runs them: `./demo-short.sh preflight`, then `./demo-short.sh all`
+(or `1`–`4` one at a time, and `shuffle-watch` in a second terminal for part 2). Speaker notes: [`SPEAKER-NOTES.md`](./SPEAKER-NOTES.md).
 
 | Part | Command | What the audience sees | Live time |
 |---|---|---|---|
