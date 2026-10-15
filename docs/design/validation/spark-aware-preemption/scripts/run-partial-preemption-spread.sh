@@ -16,7 +16,7 @@
 #     CAPTURE=0     skip the background capture (then no report at the end)
 #     GROWBACK=0    stop once the urgent app runs, instead of waiting for the victims to grow back
 #     VICTIM_ITERS / URGENT_ITERS   SparkALS iterations (default 10 / 4: ~4 min / ~1 min jobs)
-#     REFRESH=N     seconds between screen refreshes (default 6)
+#     REFRESH=N     seconds between screen refreshes (default 10)
 #   The queue is sized to exactly what the victims fill, and put back to 36 slots on exit.
 #   run-partial-preemption-spread.sh watch      the live table only, e.g. on a second screen
 #
@@ -49,7 +49,9 @@ table() {
   local tmp; tmp=$(mktemp -d)
   kubectl -n $NS get pods -l spark-role -o json > "$tmp/pods.json" 2>/dev/null
   kubectl -n $NS get workloads -o json > "$tmp/wls.json" 2>/dev/null
-  python3 -I "$HERE/demo-table.py" "$tmp/pods.json" "$tmp/wls.json" "${QUOTA:-36}"
+  kubectl -n $NS get events -o json > "$tmp/events.json" 2>/dev/null
+  python3 -I "$HERE/spread-view.py" "$tmp/pods.json" "$tmp/wls.json" "$tmp/events.json" \
+    "${QUOTA:-36}" "${EXECS:-3}" "${URGENT_EXECS:-1}" "${TRIGGER:-}"
   rm -rf "$tmp"
 }
 
@@ -69,13 +71,45 @@ for e in sorted(json.load(sys.stdin)["items"], key=lambda e: e.get("lastTimestam
 ' "$1"
 }
 
-live() { # live UNTIL_CMD — redraw every REFRESH seconds (default 6) until UNTIL_CMD succeeds (or forever if empty)
+live() { # live UNTIL_CMD [PROMPT] — redraw every REFRESH seconds (default 10) until UNTIL_CMD succeeds
+  # (or forever if empty). With a PROMPT, it is shown under the table and Enter also ends the wait.
   while true; do
     clear; date +%H:%M:%S; table
-    [ -n "${TRIGGER:-}" ] && { echo; echo "  reclaims since the urgent app arrived:"; reclaims "$TRIGGER"; }
+    [ -n "${2:-}" ] && { echo; printf '\033[1m  %s\033[0m\n' "$2"; }
     [ -n "${1:-}" ] && eval "$1" && return 0
-    sleep "${REFRESH:-6}"
+    if [ -n "${2:-}" ] && [ -t 0 ] && [ "${AUTO:-0}" != 1 ]; then
+      read -r -t "${REFRESH:-10}" _ && return 0
+    else
+      sleep "${REFRESH:-10}"
+    fi
   done
+}
+
+# summary: what the demo showed, from the reclaim events since the urgent app arrived
+summary() {
+  say "Summary"
+  kubectl -n $NS get events -o json 2>/dev/null | python3 -I -c '
+import json, sys, re, collections
+since = sys.argv[1]
+gave, whole = collections.Counter(), 0
+for e in json.load(sys.stdin)["items"]:
+    t = e.get("lastTimestamp") or e.get("eventTime") or ""
+    if t < since or e["involvedObject"].get("kind") != "Workload":
+        continue
+    m = re.search(r"Partially preempted (\d+) Pod", e.get("message") or "")
+    if e["reason"] == "PartiallyPreempted" and m:
+        gave[re.sub(r"^sparkapplication-|-[0-9a-f]{5}$", "", e["involvedObject"]["name"])] += int(m.group(1))
+    elif e["reason"] == "Preempted":
+        whole += 1
+dist = collections.Counter(gave.values())
+parts = [str(n) + (" apps" if n > 1 else " app") + f" gave {k}" for k, n in sorted(dist.items())]
+print(f"  {sum(gave.values())} executors reclaimed from {len(gave)} apps: " + ", ".join(parts))
+if len(dist) > 1 and max(gave.values()) - min(gave.values()) == 1:
+    print(f"  round-robin: every app gave {min(gave.values())} before any app gave {max(gave.values())}")
+print(f"  apps evicted whole: {whole}; drivers lost: {whole}; restarts: {whole}")
+' "$TRIGGER"
+  [ -n "${URGENT_UP:-}" ] && echo "  urgent app running $(( URGENT_UP - TRIGGER_AT ))s after it was submitted (the reclaimed executors' 30s grace period, then teardown)"
+  [ -n "${GROWN_AT:-}" ] && echo "  every app back to $EXECS executors $(( GROWN_AT - TRIGGER_AT ))s after the urgent app arrived, without a restart"
 }
 
 all_victims_running() {
@@ -150,17 +184,21 @@ say "$SCENARIO: submitting $VICTIMS low-priority apps, driver + $EXECS executors
 set_quota $QUOTA; QUOTA_SET=1
 python3 -I "$HERE/gen-apps.py" "$victims" --queue $LQ --static-elastic $EXECS --floor $FLOOR --als-args "$VICTIM_ARGS" | kubectl apply -f - >/dev/null
 live all_victims_running
-
-if [ "${AUTO:-0}" = 1 ]; then sleep 5; else pause "Queue is full. Submit the high-priority app (driver + $URGENT_EXECS executors = $((URGENT_EXECS + 1)) slots)"; fi
-TRIGGER=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+[ -t 0 ] || AUTO=1
+if [ "${AUTO:-0}" = 1 ]; then sleep 5; else
+  live "" "⏸  Queue is full ($QUOTA of $QUOTA slots). Press Enter to submit the high-priority app (needs $((URGENT_EXECS + 1)) slots)"
+fi
+TRIGGER=$(date -u +%Y-%m-%dT%H:%M:%SZ); TRIGGER_AT=$(date +%s)
 python3 -I "$HERE/gen-apps.py" als-hi:high --queue $LQ --static $URGENT_EXECS --als-args "$URGENT_ARGS" | kubectl apply -f - >/dev/null
 live urgent_running
+URGENT_UP=$(date +%s)
 echo; echo "  ✅ als-hi is running all $URGENT_EXECS executors; every victim kept its driver."
 
 if [ "${GROWBACK:-1}" = 1 ]; then
   sleep 3
   DEADLINE=$(( $(date +%s) + ${GROWBACK_TIMEOUT:-420} ))
   live growback_done
+  GROWN_AT=$(date +%s)
   clear; date +%H:%M:%S; table   # end on the grown-back state
   echo; echo "  ✅ als-hi finished and the victims grew back to $EXECS executors each, with no restart."
   [ -n "$CAP" ] && touch "$OUT/.stop"   # end the capture now rather than at its 15-minute limit
@@ -178,7 +216,8 @@ if [ -n "$CAP" ]; then
   python3 -I "$HERE/req-check.py" "$OUT" --slots $QUOTA --preemption | grep -E 'SC-1|SC-2|capture'
   python3 -I "$HERE/pp-analyze.py" --floor $FLOOR --expect-whole 0 "$OUT"
 fi
+summary
 if [ "${KEEP:-0}" != 1 ]; then
-  kubectl -n $NS delete $SA --all --wait=false >/dev/null 2>&1
+  kubectl -n $NS get $SA -o name 2>/dev/null | grep -E '/als-(lo[0-9]+|hi)$' | xargs -r kubectl -n $NS delete --wait=false >/dev/null 2>&1
   echo; echo "  Demo apps deleted (in the background). KEEP=1 leaves them running."
 fi

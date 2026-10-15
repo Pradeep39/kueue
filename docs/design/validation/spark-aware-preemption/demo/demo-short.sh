@@ -12,7 +12,7 @@
 #   ./demo-short.sh logs           the reclaimed executors' decommission logs from the latest part-2 run
 #                                  (add a runs/SHUF-<stamp> path only to look at an older run)
 #
-# Settings: SPARK_VERSION (default 3.4.3), REFRESH seconds between screen refreshes (default 6),
+# Settings: SPARK_VERSION (default 3.4.3), REFRESH seconds between screen refreshes (default 10),
 # EVICTIONS for part 1 (default 3), THRESH for part 2 (MiB of
 # shuffle per executor before the urgent app arrives, default 40). Each part pauses for Enter before the
 # urgent app arrives; in part 1, Enter during the evictions ends it early.
@@ -62,7 +62,7 @@ preflight() {
     echo "  ⚠️  cluster-queue-tres is not at 36 slots: ./demo-short.sh reset puts it back"
   if [ -z "$(demo_apps)$(other_apps)" ]; then echo "  ✅ $NS has no SparkApplications"
   else echo "  ⚠️  $NS has SparkApplications: $(demo_apps; other_apps | tr '\n' ' ')"; fi
-  for s in run-whole-workload-preemption.sh run-shuffle-migration.sh run-partial-preemption-spread.sh gen-apps.py demo-table.py capture.sh; do
+  for s in run-whole-workload-preemption.sh run-shuffle-migration.sh run-partial-preemption-spread.sh run-shuffle-resiliency.sh shuffle-view.py gen-apps.py demo-table.py capture.sh; do
     [ -e "$SCRIPTS/$s" ] || { echo "  ❌ $SCRIPTS/$s missing"; ok=0; }
   done
   echo "  Spark image for the demo apps: docker.io/library/spark:$SPARK_VERSION"
@@ -72,8 +72,7 @@ preflight() {
 part_1() { say "Part 1 of 4: whole-workload preemption, today's behaviour (Spark $SPARK_VERSION)"; wait_clean
   EVICTIONS=${EVICTIONS:-3} "$SCRIPTS/run-whole-workload-preemption.sh"; }
 part_2() { say "Part 2 of 4: shuffle resiliency (Spark $SPARK_VERSION)"; wait_clean
-  STOP_AFTER_VICTIM=1 "$SCRIPTS/run-shuffle-migration.sh" "${THRESH:-40}"
-  for app in pr-victim urgent; do kubectl -n $NS delete $SA $app --ignore-not-found --wait=false >/dev/null 2>&1; done; }
+  THRESH=${THRESH:-40} "$SCRIPTS/run-shuffle-resiliency.sh"; }
 part_3() { say "Part 3 of 4: spread the loss (Spark $SPARK_VERSION)"; wait_clean
   CAPTURE=0 "$SCRIPTS/run-partial-preemption-spread.sh" p10s; }
 part_4() { say "Part 4 of 4: round-robin, then grow-back (Spark $SPARK_VERSION)"; wait_clean

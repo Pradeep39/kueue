@@ -7,7 +7,7 @@ Short live demos on stock Spark 3.4.3, about 8.5 minutes of cluster time in tota
 | Part | Command | What the audience sees | Live time |
 |---|---|---|---|
 | 0. The problem | `EVICTIONS=3 ./run-whole-workload-preemption.sh` | Two PageRank apps that did not opt in are evicted whole, re-admitted, and evicted again by a growing urgent app | ~3:05 |
-| 1. Shuffle resiliency | `STOP_AFTER_VICTIM=1 ./run-shuffle-migration.sh 40` | Reclaimed executors hand their shuffle data to the survivors; the job finishes with nothing recomputed | ~2:15 |
+| 1. Shuffle resiliency | `./demo-short.sh 2` (`run-shuffle-resiliency.sh`) | Reclaimed executors hand their shuffle data to the survivors; the job finishes with nothing recomputed | ~2:15 |
 | 2a. Spread | `CAPTURE=0 ./run-partial-preemption-spread.sh p10s` | Six apps each give exactly one executor; afterwards they grow back | ~1:40 |
 | 2b. Round-robin | `CAPTURE=0 ./run-partial-preemption-spread.sh p11s` | Five apps each give one before any gives a second; they grow back | ~1:35 |
 
@@ -53,8 +53,8 @@ The victim is SparkPageRank, an official Spark example that writes shuffle data 
 The script submits the urgent app on its own once **every** executor holds at least 40 MiB of shuffle
 files (about a minute in), and prints the report as soon as the victim finishes.
 
-1. **Shuffle builds up.** Every 5s the runner prints the MiB of shuffle files on each executor
-   (`executors=10 shuffle MiB per executor: 1:23 2:34 ...`), climbing.
+1. **Shuffle builds up.** A live table shows each executor's node, shuffle MiB and state. When every
+   executor holds 40 MiB (`THRESH`) a ✅ hint appears; press Enter to submit the urgent app.
 2. **Trigger.** Terminal 1 logs `TRIGGER: urgent applied`. Three to five `pr-victim-exec-*` Pods turn
    `Terminating` in Lens.
 3. **Migration.** Within about a second their shuffle data is copied to the survivors. They exit within

@@ -11,7 +11,7 @@
 #     DURATION=N   stop watching N seconds after the urgent app arrives (default 240), or earlier
 #                  when the urgent app finishes
 #     EVICTIONS=N  stop as soon as N whole evictions have happened (e.g. EVICTIONS=3)
-#     REFRESH=N    seconds between screen refreshes (default 6)
+#     REFRESH=N    seconds between screen refreshes (default 10)
 #   To end early by hand: press Enter while the evictions are showing, or Ctrl-C. Either way the
 #   summary is printed and the demo apps are deleted.
 #     ITERS=N / URGENT_ITERS=N   PageRank iterations per victim run (default 100) / urgent SparkALS
@@ -139,9 +139,9 @@ live() { # live UNTIL_CMD [stoppable [PROMPT]] — with "stoppable", Enter ends 
     [ "${2:-}" = stoppable ] && echo && printf '\033[1m  %s\033[0m\n' "${3:-(press Enter to end the demo here)}"
     eval "$1" && return 0
     if [ "${2:-}" = stoppable ] && [ -t 0 ]; then
-      read -r -t "${REFRESH:-6}" _ && return 0
+      read -r -t "${REFRESH:-10}" _ && return 0
     else
-      sleep "${REFRESH:-6}"
+      sleep "${REFRESH:-10}"
     fi
   done
 }

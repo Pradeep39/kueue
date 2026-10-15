@@ -29,12 +29,12 @@ Runbook: [`DEMO-SPREAD-SHUFFLE.md`](./DEMO-SPREAD-SHUFFLE.md). Every terminal: `
 
 | On screen | Say |
 |---|---|
-| Shuffle MiB per executor climbing (`executors=10 shuffle MiB per executor: ...`) | "PageRank writes shuffle data on every executor. This is what makes an executor expensive to lose." |
-| `TRIGGER`, Pods `Terminating` / `decommissioning` | "An urgent job arrived. Kueue took a few executors, not the job." |
+| Table: shuffle MiB per executor climbing, then ✅ "every executor holds at least 40 MiB" | "PageRank writes shuffle data on every executor. This is what makes an executor expensive to lose." |
+| Press Enter; a few rows turn `decommissioning` | "An urgent job arrived. Kueue took a few executors, not the job." |
 | — | "Kueue turned on Spark's own graceful decommissioning for this app at submission. Deleting an executor tells Spark to move its data first." |
 | Urgent app starts ~30s later | "Quota moves only after those executors stop, so the cluster is never over-committed." |
-| `./demo-short.sh logs`: each reclaimed executor migrated N shuffle blocks (MiB) and exited | "Each executor Kueue took handed over everything it held before it left." |
-| Report: blocks migrated, 0 fetch failures, 0 resubmits | "Every block moved. Nothing was recomputed. The job finished as if nothing happened." |
+| "handed over" column fills in: `N shuffle blocks · M MiB → survivors` | "Each executor Kueue took handed over everything it held before it left." |
+| Summary: job finished normally, 0 fetch failures, 0 stages resubmitted | "Every block moved. Nothing was recomputed. The job finished as if nothing happened." |
 
 ## 3a. Spread the loss: p10s (~2 min)
 
@@ -42,10 +42,10 @@ Runbook: [`DEMO-SPREAD-SHUFFLE.md`](./DEMO-SPREAD-SHUFFLE.md). Every terminal: `
 
 | On screen | Say |
 |---|---|
-| 6 apps running, `18 of 18` | "Six batch jobs fill this queue. Each opted in with a floor of one executor." |
-| Press Enter; `gave 1` on every app | "The urgent job needs six slots. Kueue took one executor from each of the six: the smallest loss per job." |
+| 6 apps, `queue: 18 of 18 slots granted`, ⏸ prompt | "Six batch jobs fill this queue. Each opted in with a floor of one executor." |
+| Press Enter; `gave 1` on every app, `✕` dots | "The urgent job needs six slots. Kueue took one executor from each of the six: the smallest loss per job." |
 | `deleting` → 0, urgent running | "Every job kept its driver. No restarts." |
-| `gated` admitted, apps back to 2 | "When the urgent job finishes, the executors Spark asked back for are admitted. The jobs grow back on their own." |
+| `◌` dots turn `●`; status "back to full size" | "When the urgent job finishes, the executors Spark asked back for are admitted. The jobs grow back on their own." |
 
 ## 3b. Round-robin: p11s (~2 min)
 
@@ -54,7 +54,7 @@ Runbook: [`DEMO-SPREAD-SHUFFLE.md`](./DEMO-SPREAD-SHUFFLE.md). Every terminal: `
 | On screen | Say |
 |---|---|
 | 5 apps × 3 executors | "Now the urgent job needs more than one executor per app." |
-| `3 -> 2` on two apps, `3 -> 1` on three | "Every app gives one before any app gives a second. The loss stays as even as possible." |
+| `gave` 1 on two apps, 2 on three; summary line "round-robin: every app gave 1 before any app gave 2" | "Every app gives one before any app gives a second. The loss stays as even as possible." |
 | Grow-back | "And again, they come back without a restart." |
 
 ## 4. Close (3 min)
