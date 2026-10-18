@@ -1,5 +1,5 @@
 # Part 5: configurable preemption (run-configurable-preemption.sh), Spark 3.4.3, Kubeflow operator.
-# Queue: cluster-queue-cfg (../queues-cfg.yaml, 24 slots), classic preemption Never, PreemptionConfig spark-batch-pool.
+# Queue: cluster-queue-quatro (../queues-quatro.yaml, 24 slots), classic preemption Never, PreemptionConfig spark-batch-pool.
 # Wave 1: als-lo1..4 (default, preemption-pool=batch) and als-lo5..6 (low, no pool label), driver + 3, floor 1.
 # Step 1: plain-hi (high, no preemption-role label) waits and preempts nothing; it is then deleted.
 # Step 2: als-hi (high, preemption-role=urgent), driver + 3: the pool apps give 1 executor each.
@@ -13,7 +13,7 @@ metadata:
     kueue.x-k8s.io/elastic-job: "true"
   labels:
     preemption-pool: "batch"
-    kueue.x-k8s.io/queue-name: batch-queue-cfg
+    kueue.x-k8s.io/queue-name: batch-queue-quatro
     kueue.x-k8s.io/priority-class: default
 spec:
   type: Scala
@@ -55,7 +55,7 @@ metadata:
     kueue.x-k8s.io/elastic-job: "true"
   labels:
     preemption-pool: "batch"
-    kueue.x-k8s.io/queue-name: batch-queue-cfg
+    kueue.x-k8s.io/queue-name: batch-queue-quatro
     kueue.x-k8s.io/priority-class: default
 spec:
   type: Scala
@@ -97,7 +97,7 @@ metadata:
     kueue.x-k8s.io/elastic-job: "true"
   labels:
     preemption-pool: "batch"
-    kueue.x-k8s.io/queue-name: batch-queue-cfg
+    kueue.x-k8s.io/queue-name: batch-queue-quatro
     kueue.x-k8s.io/priority-class: default
 spec:
   type: Scala
@@ -139,7 +139,7 @@ metadata:
     kueue.x-k8s.io/elastic-job: "true"
   labels:
     preemption-pool: "batch"
-    kueue.x-k8s.io/queue-name: batch-queue-cfg
+    kueue.x-k8s.io/queue-name: batch-queue-quatro
     kueue.x-k8s.io/priority-class: default
 spec:
   type: Scala
@@ -181,7 +181,7 @@ metadata:
   annotations:
     kueue.x-k8s.io/elastic-job: "true"
   labels:
-    kueue.x-k8s.io/queue-name: batch-queue-cfg
+    kueue.x-k8s.io/queue-name: batch-queue-quatro
     kueue.x-k8s.io/priority-class: low
 spec:
   type: Scala
@@ -222,7 +222,7 @@ metadata:
   annotations:
     kueue.x-k8s.io/elastic-job: "true"
   labels:
-    kueue.x-k8s.io/queue-name: batch-queue-cfg
+    kueue.x-k8s.io/queue-name: batch-queue-quatro
     kueue.x-k8s.io/priority-class: low
 spec:
   type: Scala
@@ -263,7 +263,7 @@ metadata:
   name: plain-hi
   namespace: batch-ns-uno
   labels:
-    kueue.x-k8s.io/queue-name: batch-queue-cfg
+    kueue.x-k8s.io/queue-name: batch-queue-quatro
     kueue.x-k8s.io/priority-class: high
 spec:
   type: Scala
@@ -304,7 +304,7 @@ metadata:
   namespace: batch-ns-uno
   labels:
     preemption-role: "urgent"
-    kueue.x-k8s.io/queue-name: batch-queue-cfg
+    kueue.x-k8s.io/queue-name: batch-queue-quatro
     kueue.x-k8s.io/priority-class: high
 spec:
   type: Scala

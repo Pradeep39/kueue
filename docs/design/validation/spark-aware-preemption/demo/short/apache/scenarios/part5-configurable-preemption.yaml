@@ -1,5 +1,5 @@
 # Part 5: configurable preemption (run-configurable-preemption.sh), Spark 3.4.3, Apache Spark Operator.
-# Queue: cluster-queue-cfg (../queues-cfg.yaml, 24 slots), classic preemption Never, PreemptionConfig spark-batch-pool.
+# Queue: cluster-queue-quatro (../queues-quatro.yaml, 24 slots), classic preemption Never, PreemptionConfig spark-batch-pool.
 # Wave 1: als-lo1..4 (default, preemption-pool=batch) and als-lo5..6 (low, no pool label), driver + 3, floor 1.
 # Step 1: plain-hi (high, no preemption-role label) waits and preempts nothing; it is then deleted.
 # Step 2: als-hi (high, preemption-role=urgent), driver + 3: the pool apps give 1 executor each.
@@ -12,7 +12,7 @@
     "namespace": "batch-ns-dos",
     "labels": {
       "preemption-pool": "batch",
-      "kueue.x-k8s.io/queue-name": "batch-queue-cfg",
+      "kueue.x-k8s.io/queue-name": "batch-queue-quatro",
       "kueue.x-k8s.io/priority-class": "default"
     },
     "annotations": {
@@ -117,7 +117,7 @@
     "namespace": "batch-ns-dos",
     "labels": {
       "preemption-pool": "batch",
-      "kueue.x-k8s.io/queue-name": "batch-queue-cfg",
+      "kueue.x-k8s.io/queue-name": "batch-queue-quatro",
       "kueue.x-k8s.io/priority-class": "default"
     },
     "annotations": {
@@ -222,7 +222,7 @@
     "namespace": "batch-ns-dos",
     "labels": {
       "preemption-pool": "batch",
-      "kueue.x-k8s.io/queue-name": "batch-queue-cfg",
+      "kueue.x-k8s.io/queue-name": "batch-queue-quatro",
       "kueue.x-k8s.io/priority-class": "default"
     },
     "annotations": {
@@ -327,7 +327,7 @@
     "namespace": "batch-ns-dos",
     "labels": {
       "preemption-pool": "batch",
-      "kueue.x-k8s.io/queue-name": "batch-queue-cfg",
+      "kueue.x-k8s.io/queue-name": "batch-queue-quatro",
       "kueue.x-k8s.io/priority-class": "default"
     },
     "annotations": {
@@ -431,7 +431,7 @@
     "name": "als-lo5",
     "namespace": "batch-ns-dos",
     "labels": {
-      "kueue.x-k8s.io/queue-name": "batch-queue-cfg",
+      "kueue.x-k8s.io/queue-name": "batch-queue-quatro",
       "kueue.x-k8s.io/priority-class": "low"
     },
     "annotations": {
@@ -535,7 +535,7 @@
     "name": "als-lo6",
     "namespace": "batch-ns-dos",
     "labels": {
-      "kueue.x-k8s.io/queue-name": "batch-queue-cfg",
+      "kueue.x-k8s.io/queue-name": "batch-queue-quatro",
       "kueue.x-k8s.io/priority-class": "low"
     },
     "annotations": {
@@ -639,7 +639,7 @@
     "name": "plain-hi",
     "namespace": "batch-ns-dos",
     "labels": {
-      "kueue.x-k8s.io/queue-name": "batch-queue-cfg",
+      "kueue.x-k8s.io/queue-name": "batch-queue-quatro",
       "kueue.x-k8s.io/priority-class": "high"
     }
   },
@@ -740,7 +740,7 @@
     "namespace": "batch-ns-dos",
     "labels": {
       "preemption-role": "urgent",
-      "kueue.x-k8s.io/queue-name": "batch-queue-cfg",
+      "kueue.x-k8s.io/queue-name": "batch-queue-quatro",
       "kueue.x-k8s.io/priority-class": "high"
     }
   },

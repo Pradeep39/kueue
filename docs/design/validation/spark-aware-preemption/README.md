@@ -29,13 +29,12 @@ defaults have since been lowered to 30s and 60s. The runs showed busy executors 
 
 | | |
 |---|---|
-| [`setup/`](./setup/) | Cohort, ClusterQueues, LocalQueue, WorkloadPriorityClasses (12-slot baseline); the 36-slot `cluster-queue-tres` and P12's `PreemptionConfig` (r4); [`queues-setup.yaml`](./setup/queues-setup.yaml) recreates `cluster-queue-dos` and `cluster-queue-tres` with their LocalQueues after a clean deploy |
+| [`setup/`](./setup/) | Cohort, ClusterQueues, LocalQueue, WorkloadPriorityClasses (12-slot baseline); the 36-slot `cluster-queue-tres` and P12's `PreemptionConfig` (r4); [`queues-setup.yaml`](./setup/queues-setup.yaml) recreates the demo's baseline (flavor, priority classes, `cluster-queue-uno`/`-dos`/`-tres` and their LocalQueues) after a clean deploy; [`queues-quatro.yaml`](./setup/queues-quatro.yaml) and [`queues-apache.yaml`](./setup/queues-apache.yaml) add the short demo's part-5 queue and the Apache LocalQueues; [`ensure-demo-env.sh`](./setup/ensure-demo-env.sh) checks all of it and sets up what is missing (the short demo's `preflight`) |
 | [`scenarios/`](./scenarios/) | One manifest per scenario, both waves; the header records its setup and checks |
 | [`scripts/`](./scripts/) | Capture, analyzers, scenario generator, suite runners, results archiver |
 | [`results/`](./results/) | Per-run verdicts (`*.txt`), timelines (`*.timeline.csv`), suite logs |
 | [`experiments/shuffle-migration/`](./experiments/shuffle-migration/) | Does a reclaimed executor move its shuffle data? SparkPageRank under partial preemption: 252 MiB of shuffle blocks and the cached RDD blocks migrated, 0 recomputation |
-| [`demo/`](./demo/) | A live demo for Lens and KueueViz: `demo.sh` (scenarios A–D and a live terminal view) and the presenter guide [`DEMO.md`](./demo/DEMO.md); a second demo, [`DEMO-SPREAD-SHUFFLE.md`](./demo/DEMO-SPREAD-SHUFFLE.md), runs P10/P11 (`scripts/run-partial-preemption-spread.sh`) and the shuffle experiment; `demo-short.sh` packages five short parts (§3.5), with their manifests in `demo/scenarios/` |
-| [`apache/`](./apache/) | The same five-part `demo-short.sh` for the Apache Spark Operator (`spark.apache.org/v1`, namespace `batch-ns-dos`): its own runners, views and generator, and the manifests in `apache/scenarios/` |
+| [`demo/`](./demo/) | Two separate demos ([`demo/README.md`](./demo/README.md)): [`full/`](./demo/full/), the Lens + KueueViz walkthrough (`demo.sh`, scenarios A–D and a live terminal view, guide [`DEMO.md`](./demo/full/DEMO.md)); and [`short/`](./demo/short/), the five-part short demo, with [`kubeflow/demo-short.sh`](./demo/short/kubeflow/demo-short.sh) and [`apache/demo-short.sh`](./demo/short/apache/demo-short.sh) for the two Spark operators, their manifests in `scenarios/`, and the guide [`DEMO-SPREAD-SHUFFLE.md`](./demo/short/DEMO-SPREAD-SHUFFLE.md) |
 
 ---
 
@@ -258,13 +257,15 @@ init container still used the 4.0.1 image; it only runs `awk`.
 
 ### 3.5 Short demo on both operators (`b6e35d8b4`, Spark 3.4.3)
 
-`demo/demo-short.sh` (Kubeflow Spark Operator) and `apache/demo-short.sh` (Apache Spark Operator) run
+`demo/short/kubeflow/demo-short.sh` (Kubeflow Spark Operator) and `demo/short/apache/demo-short.sh` (Apache Spark Operator) run
 the same five parts. Part 5 runs on its own ClusterQueue,
-[`setup/queues-cfg.yaml`](./setup/queues-cfg.yaml). That queue has classic preemption off
+`cluster-queue-quatro`, from [`setup/queues-quatro.yaml`](./setup/queues-quatro.yaml). That queue has classic preemption off
 (`withinClusterQueue`, `reclaimWithinCohort` and `borrowWithinCohort` all `Never`). A `PreemptionConfig`
 lets apps labeled `preemption-role=urgent` take capacity from apps labeled `preemption-pool=batch`.
 Part 5 needs the `ConfigurablePreemptions` gate and `integrations.labelKeysToCopy` set to
-`[preemption-pool, preemption-role]`.
+`[preemption-pool, preemption-role]`. `./demo-short.sh preflight` sets those up, along with any
+missing queues, the `PreemptionConfig` CRD and the Apache operator's watched namespace. It restarts
+Kueue or the operator after asking. `preflight --check` only reports.
 
 | Part | Kubeflow | Apache |
 |---|---|---|

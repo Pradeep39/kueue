@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Demo part 5: partial preemption when a PreemptionConfig, not priority, picks the victims.
-# cluster-queue-cfg has classic preemption off (withinClusterQueue and reclaimWithinCohort Never), the
-# recommended setup with configurable preemption. Its PreemptionConfig rule (queues-cfg.yaml) lets
+# cluster-queue-quatro has classic preemption off (withinClusterQueue and reclaimWithinCohort Never), the
+# recommended setup with configurable preemption. Its PreemptionConfig rule (queues-quatro.yaml) lets
 # apps labeled preemption-role=urgent take capacity from apps labeled preemption-pool=batch.
 #
 #   als-lo1..4  default priority, preemption-pool=batch, driver + 3 executors, floor 1  (16 slots)
@@ -23,14 +23,14 @@
 #   run-configurable-preemption.sh watch      the live table only, e.g. on a second screen
 #
 # Needs: Kueue with SparkPartialPreemption=true and ConfigurablePreemptions=true, the PreemptionConfig
-# CRD, integrations.labelKeysToCopy [preemption-pool, preemption-role], and queues-cfg.yaml applied
-# (applied here if cluster-queue-cfg is missing).
+# CRD, integrations.labelKeysToCopy [preemption-pool, preemption-role], and queues-quatro.yaml applied
+# (applied here if cluster-queue-quatro is missing).
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
-# setup_file NAME: a setup YAML beside this script, one level up (~/kueue-gated-repro layout), or in
-# ../setup (repo layout).
-setup_file() { local d; for d in "$HERE" "$HERE/.." "$HERE/../setup"; do [ -f "$d/$1" ] && { echo "$d/$1"; return; }; done; echo "$HERE/../setup/$1"; }
-NS=batch-ns-uno; SA=sparkapplications.sparkoperator.k8s.io; CQ=cluster-queue-cfg; LQ=batch-queue-cfg
+# setup_file NAME: the setup YAML NAME, in this script's directory or the nearest parent that has it
+# (directly, or in its setup/ directory), so it is found in the ~/kueue-gated-repro and the repo layouts.
+setup_file() { local d=$HERE n c; for n in 0 1 2 3 4; do for c in "$d/$1" "$d/setup/$1"; do [ -f "$c" ] && { echo "$c"; return; }; done; d=$(dirname "$d"); done; echo "$HERE/$1"; }
+NS=batch-ns-uno; SA=sparkapplications.sparkoperator.k8s.io; CQ=cluster-queue-quatro; LQ=batch-queue-quatro
 APP_LABEL=sparkoperator.k8s.io/app-name
 POOL="als-lo1 als-lo2 als-lo3 als-lo4"; OUTSIDE="als-lo5 als-lo6"
 VICTIMS=6; EXECS=3; URGENT_EXECS=3; FLOOR=1; QUOTA=24
@@ -165,10 +165,10 @@ for k in preemption-pool preemption-role; do
   grep -q -- "- $k\$" <<<"$cfg" || { echo "  ❌ integrations.labelKeysToCopy does not list $k: the labels would not reach the Workloads" >&2; ok=0; }
 done
 kubectl get crd preemptionconfigs.kueue.x-k8s.io >/dev/null 2>&1 || { echo "  ❌ PreemptionConfig CRD is not installed" >&2; ok=0; }
-[ $ok = 1 ] || exit 1
+[ $ok = 1 ] || { echo "  ./demo-short.sh preflight sets these up (it restarts Kueue after asking)" >&2; exit 1; }
 if ! kubectl get clusterqueue $CQ >/dev/null 2>&1 || ! kubectl -n $NS get localqueue $LQ >/dev/null 2>&1; then
-  echo "  $CQ / $LQ missing: applying $(setup_file queues-cfg.yaml)"
-  kubectl apply -f "$(setup_file queues-cfg.yaml)" >/dev/null || exit 1
+  echo "  $CQ / $LQ missing: applying $(setup_file queues-quatro.yaml)"
+  kubectl apply -f "$(setup_file queues-quatro.yaml)" >/dev/null || exit 1
 fi
 echo "  $CQ: $(kubectl get clusterqueue $CQ -o jsonpath='{.spec.resourceGroups[0].flavors[0].resources[0].nominalQuota}') CPU, classic preemption withinClusterQueue=$(kubectl get clusterqueue $CQ -o jsonpath='{.spec.preemption.withinClusterQueue}') reclaimWithinCohort=$(kubectl get clusterqueue $CQ -o jsonpath='{.spec.preemption.reclaimWithinCohort}'), PreemptionConfig $(kubectl get clusterqueue $CQ -o jsonpath='{.metadata.annotations.kueue\.x-k8s\.io/preemption-config-name}')"
 mkdir -p "$HERE/runs"

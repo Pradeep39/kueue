@@ -25,9 +25,9 @@
 # not supported for Apache apps: the analyzers read the Kubeflow resources.
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
-# setup_file NAME: a setup YAML beside this script, one level up (~/kueue-gated-repro layout), or in
-# ../setup (repo layout).
-setup_file() { local d; for d in "$HERE" "$HERE/.." "$HERE/../setup"; do [ -f "$d/$1" ] && { echo "$d/$1"; return; }; done; echo "$HERE/../setup/$1"; }
+# setup_file NAME: the setup YAML NAME, in this script's directory or the nearest parent that has it
+# (directly, or in its setup/ directory), so it is found in the ~/kueue-gated-repro and the repo layouts.
+setup_file() { local d=$HERE n c; for n in 0 1 2 3 4; do for c in "$d/$1" "$d/setup/$1"; do [ -f "$c" ] && { echo "$c"; return; }; done; d=$(dirname "$d"); done; echo "$HERE/$1"; }
 NS=batch-ns-dos; SA=sparkapplications.spark.apache.org; CQ=cluster-queue-tres; LQ=batch-queue-tres
 FLOOR=1
 case "${1:-p11}" in

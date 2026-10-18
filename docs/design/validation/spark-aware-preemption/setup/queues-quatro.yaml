@@ -29,7 +29,7 @@ spec:
 apiVersion: kueue.x-k8s.io/v1beta2
 kind: ClusterQueue
 metadata:
-  name: cluster-queue-cfg
+  name: cluster-queue-quatro
   annotations:
     kueue.x-k8s.io/preemption-config-name: spark-batch-pool
 spec:
@@ -55,17 +55,17 @@ spec:
 apiVersion: kueue.x-k8s.io/v1beta2
 kind: LocalQueue
 metadata:
-  name: batch-queue-cfg
+  name: batch-queue-quatro
   namespace: batch-ns-uno
 spec:
-  clusterQueue: cluster-queue-cfg
+  clusterQueue: cluster-queue-quatro
   stopPolicy: None
 ---
 apiVersion: kueue.x-k8s.io/v1beta2
 kind: LocalQueue
 metadata:
-  name: batch-queue-cfg
+  name: batch-queue-quatro
   namespace: batch-ns-dos
 spec:
-  clusterQueue: cluster-queue-cfg
+  clusterQueue: cluster-queue-quatro
   stopPolicy: None

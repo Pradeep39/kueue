@@ -1,9 +1,10 @@
-# Speaker notes: Spark-aware partial preemption (~20 min)
+# Speaker notes: Spark-aware partial preemption (~23 min)
 
-Runbook: [`DEMO-SPREAD-SHUFFLE.md`](./DEMO-SPREAD-SHUFFLE.md). Everything runs from `~/kueue-gated-repro/demo`
-with `./demo-short.sh` (Spark 3.4.3 by default). Before you start:
+Runbook: [`DEMO-SPREAD-SHUFFLE.md`](./DEMO-SPREAD-SHUFFLE.md). Everything runs with `./demo-short.sh`
+(Spark 3.4.3 by default), from `kubeflow/` for the Kubeflow Spark Operator or `apache/` for the
+Apache Spark Operator. Before you start:
 `./demo-short.sh reset`, `./demo-short.sh clear-events`, `./demo-short.sh preflight`.
-Or run all four parts in order, with a pause between them: `./demo-short.sh all`.
+Or run all five parts in order, with a pause between them: `./demo-short.sh all`.
 
 ## 0. Opening (2 min)
 
@@ -60,7 +61,18 @@ Or run all four parts in order, with a pause between them: `./demo-short.sh all`
 | `gave` 1 on two apps, 2 on three; summary line "round-robin: every app gave 1 before any app gave 2" | "Every app gives one before any app gives a second. The loss stays as even as possible." |
 | Grow-back | "And again, they come back without a restart." |
 
-## 5. Close (3 min)
+## 5. Configurable preemption (~3 min)
+
+`./demo-short.sh 5`
+
+| On screen | Say |
+|---|---|
+| Six apps; `candidate` column: four `pool · default`, two `no · low` | "This queue has classic preemption turned off. A PreemptionConfig rule decides instead: urgent apps may take from the batch pool, whatever the priorities." |
+| `plain-hi` arrives and waits; nothing changes | "A high-priority app without the urgent label. No rule matches it, so it waits. Priority alone preempts nothing here." |
+| `als-hi` arrives; `gave 1` on the four pool apps, `0` on `als-lo5`/`als-lo6` | "The urgent app matches the rule. Kueue takes one executor from each pool app. The two apps outside the pool keep everything, even though they are lower priority." |
+| Summary: "the PreemptionConfig chose the victims, not priority"; 0 evicted whole | "Partial preemption follows whatever selects the victims, the classic policy or a PreemptionConfig. No job was evicted whole." |
+
+## 6. Close (3 min)
 
 - **Results.** Whole evictions per run 11–14 → **0**. Low-priority restarts 13 → **0**. Quota invariants
   held in every run (usage ≤ quota; every running executor had a grant).

@@ -182,7 +182,7 @@ Then run `./demo.sh reset`, which restores the 12-slot baseline.
 | What if executors never stop? | After a timeout (60s by default, set per ClusterQueue) Kueue lowers the grant anyway, so the urgent job's wait is bounded. |
 | Can I keep whole eviction off entirely? | Yes. Set the ClusterQueue annotation `kueue.x-k8s.io/partial-preemption-fallback: Wait` and a first admission waits instead of evicting. |
 | Is it on by default? | No. It sits behind the alpha feature gate `SparkPartialPreemption`. |
-| Where's the evidence? | The [validation report](../README.md): every scenario, results and requirement verdicts. |
+| Where's the evidence? | The [validation report](../../README.md): every scenario, results and requirement verdicts. |
 
 ---
 
