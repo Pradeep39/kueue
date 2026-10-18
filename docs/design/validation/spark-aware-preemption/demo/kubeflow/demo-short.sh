@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# The short partial-preemption demo for the Apache Spark Operator (spark.apache.org/v1 SparkApplications):
-# the same five parts as ../kubeflow/demo-short.sh (see ../DEMO-SPREAD-SHUFFLE.md), in namespace batch-ns-dos.
+# The short partial-preemption demo, Kubeflow Spark Operator: the five parts in ../DEMO-SPREAD-SHUFFLE.md
+# and ../SPEAKER-NOTES.md, in namespace batch-ns-uno. ../apache/demo-short.sh is the Apache copy, and
+# ../demo-short.sh runs either one (--operator kubeflow|apache).
 #
 #   ./demo-short.sh preflight      check the cluster, Kueue, queues and the Spark operator, and set up
 #                                  whatever is missing (gates, labelKeysToCopy, queues, CRD, watched
@@ -30,9 +31,12 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 # setup_file NAME: the setup YAML NAME, in this script's directory or the nearest parent that has it
 # (directly, or in its setup/ directory), so it is found in the ~/kueue-gated-repro and the repo layouts.
 setup_file() { local d=$HERE n c; for n in 0 1 2 3 4; do for c in "$d/$1" "$d/setup/$1"; do [ -f "$c" ] && { echo "$c"; return; }; done; d=$(dirname "$d"); done; echo "$HERE/$1"; }
-SCRIPTS="$HERE"   # the Apache runners live beside this script
-NS=batch-ns-dos
-SA=sparkapplications.spark.apache.org
+# SCRIPTS: the shared runners, in the nearest parent directory that has them (directly in
+# ~/kueue-gated-repro, in scripts/ in the repo).
+SCRIPTS=$(d=$HERE; for _ in 1 2 3 4; do d=$(dirname "$d"); for c in "$d" "$d/scripts"; do [ -f "$c/run-shuffle-resiliency.sh" ] && { echo "$c"; exit; }; done; done)
+[ -n "$SCRIPTS" ] || { echo "demo-short.sh: cannot find the shared runners (run-shuffle-resiliency.sh)" >&2; exit 1; }
+NS=batch-ns-uno
+SA=sparkapplications.sparkoperator.k8s.io
 export SPARK_VERSION=${SPARK_VERSION:-3.4.3}
 DEMO_APPS='^(workload-[ab]|pr-victim|urgent|als-(lo[0-9]+|hi)|plain-hi)$'
 
@@ -59,13 +63,13 @@ preflight() {
   kubectl get nodes --no-headers 2>/dev/null | awk '$2!="Ready"{print "  ⚠️  node "$1" is "$2}'
   if [ -z "$(demo_apps)$(other_apps)" ]; then echo "  ✅ $NS has no SparkApplications"
   else echo "  ⚠️  $NS has SparkApplications: $(demo_apps; other_apps | tr '\n' ' ')"; fi
-  for s in run-whole-workload-preemption.sh run-partial-preemption-spread.sh run-shuffle-resiliency.sh shuffle-view.py spread-view.py run-configurable-preemption.sh gen-apache-apps.py demo-table.py; do
+  for s in run-whole-workload-preemption.sh run-shuffle-migration.sh run-partial-preemption-spread.sh run-shuffle-resiliency.sh run-configurable-preemption.sh shuffle-view.py gen-apps.py gen-apps-label.py demo-table.py capture.sh; do
     [ -e "$SCRIPTS/$s" ] || { echo "  ❌ $SCRIPTS/$s missing"; ok=0; }
   done
   echo "  Spark image for the demo apps: docker.io/library/spark:$SPARK_VERSION"
   # Kueue, queues and the Spark operator: ensure-demo-env.sh checks them and, without --check, sets up
   # what is missing (it asks before restarting Kueue or the operator; YES=1 skips the question).
-  "$(setup_file ensure-demo-env.sh)" apache $mode || ok=0
+  "$(setup_file ensure-demo-env.sh)" kubeflow $mode || ok=0
   [ $ok = 1 ]
 }
 

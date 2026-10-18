@@ -1,12 +1,17 @@
 # Demo: whole eviction today, then resilient partial preemption and spreading the reclaim
 
-Five short live parts on stock Spark 3.4.3, about 12 minutes of cluster time in total. The same parts
-run on either Spark operator:
+Five short live parts on stock Spark 3.4.3, about 12 minutes of cluster time in total.
+[`demo-short.sh`](./demo-short.sh) runs them on either Spark operator, through that operator's kit:
 
-| Operator | Script | Namespace |
-|---|---|---|
-| Kubeflow Spark Operator (`sparkoperator.k8s.io`) | [`kubeflow/demo-short.sh`](./kubeflow/demo-short.sh) | `batch-ns-uno` |
-| Apache Spark Operator (`spark.apache.org/v1`) | [`apache/demo-short.sh`](./apache/demo-short.sh) | `batch-ns-dos` |
+| `--operator` | Spark operator | Kit | Namespace |
+|---|---|---|---|
+| `kubeflow` (the default) | Kubeflow Spark Operator (`sparkoperator.k8s.io`) | [`kubeflow/demo-short.sh`](./kubeflow/demo-short.sh) | `batch-ns-uno` |
+| `apache` | Apache Spark Operator (`spark.apache.org/v1`) | [`apache/demo-short.sh`](./apache/demo-short.sh) | `batch-ns-dos` |
+
+Pick the operator in one of three ways; the first one set wins:
+1. the flag: `./demo-short.sh --operator apache all`
+2. the environment: `OPERATOR=apache`
+3. the config file: `OPERATOR=apache` in [`demo-short.conf`](./demo-short.conf)
 
 Run `./demo-short.sh preflight`, then `./demo-short.sh all` (or `1`–`5` one at a time). After part 2,
 `./demo-short.sh logs` prints each reclaimed executor's timeline. The manifests each part submits are in
@@ -29,9 +34,9 @@ part 4: on that version the last victims are slower to get their executors back.
   - the Kueue feature gates (`SparkPartialPreemption`, `ConfigurablePreemptions`, the Spark integration)
   - `integrations.labelKeysToCopy`
   - the `PreemptionConfig` CRD
-  - the queues in [`setup/`](../../setup/): [`queues-setup.yaml`](../../setup/queues-setup.yaml) for
-    parts 1–4, [`queues-quatro.yaml`](../../setup/queues-quatro.yaml) for part 5, and, for the Apache
-    kit, [`queues-apache.yaml`](../../setup/queues-apache.yaml)
+  - the queues in [`setup/`](../setup/): [`queues-setup.yaml`](../setup/queues-setup.yaml) for
+    parts 1–4, [`queues-quatro.yaml`](../setup/queues-quatro.yaml) for part 5, and, for the Apache
+    kit, [`queues-apache.yaml`](../setup/queues-apache.yaml)
   - the Apache operator's watched namespace
 
   It asks before restarting Kueue or the operator. `preflight --check` reports without changing
@@ -118,7 +123,7 @@ its apps when it ends. `run-partial-preemption-spread.sh watch` shows the same t
 ## Part 5: configurable preemption picks the victims
 
 `./demo-short.sh 5` runs on `cluster-queue-quatro` (24 slots, from
-[`setup/queues-quatro.yaml`](../../setup/queues-quatro.yaml)). Classic preemption is off there:
+[`setup/queues-quatro.yaml`](../setup/queues-quatro.yaml)). Classic preemption is off there:
 `withinClusterQueue`, `reclaimWithinCohort` and `borrowWithinCohort` are all `Never`, the recommended
 setup with configurable preemption. Its `PreemptionConfig` `spark-batch-pool` has one rule: apps
 labeled `preemption-role=urgent` may take capacity from apps labeled `preemption-pool=batch`, whatever

@@ -1,8 +1,8 @@
 # Speaker notes: Spark-aware partial preemption (~23 min)
 
 Runbook: [`DEMO-SPREAD-SHUFFLE.md`](./DEMO-SPREAD-SHUFFLE.md). Everything runs with `./demo-short.sh`
-(Spark 3.4.3 by default), from `kubeflow/` for the Kubeflow Spark Operator or `apache/` for the
-Apache Spark Operator. Before you start:
+(Spark 3.4.3 by default). It runs on the Kubeflow Spark Operator unless `--operator apache` (or
+`OPERATOR=apache` in `demo-short.conf`) picks the Apache Spark Operator. Before you start:
 `./demo-short.sh reset`, `./demo-short.sh clear-events`, `./demo-short.sh preflight`.
 Or run all five parts in order, with a pause between them: `./demo-short.sh all`.
 

@@ -12,8 +12,7 @@
 #   C  the protected floor: victims stop at minExecutors; the urgent app waits instead
 #   D  spread: four batch apps, each reclaim takes one executor from a different app
 #
-# The short demo is ../short/kubeflow/demo-short.sh (and ../short/apache/demo-short.sh); see
-# ../short/DEMO-SPREAD-SHUFFLE.md.
+# The short demo is ../demo-short.sh [--operator kubeflow|apache]; see ../DEMO-SPREAD-SHUFFLE.md.
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 # GEN: the shared app generator, in the nearest parent directory that has it (directly in

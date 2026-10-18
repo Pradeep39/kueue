@@ -201,7 +201,7 @@ PY
 done
 
 # Drift the runners leave behind if they are interrupted.
-locks=$(ls -d "$HERE"/runs/.*.lock "$HERE"/../scripts/runs/.*.lock "$HERE"/demo/short/*/runs/.*.lock "$HERE"/../demo/short/*/runs/.*.lock 2>/dev/null | head -1)
+locks=$(ls -d "$HERE"/runs/.*.lock "$HERE"/../scripts/runs/.*.lock "$HERE"/demo/apache/runs/.*.lock "$HERE"/../demo/apache/runs/.*.lock 2>/dev/null | head -1)
 q=$(kubectl get clusterqueue cluster-queue-tres -o jsonpath='{.spec.resourceGroups[0].flavors[0].resources[0].nominalQuota}' 2>/dev/null)
 if [ -n "$q" ] && [ "$q" != 36 ]; then
   if [ $MODE = check ] || [ -n "$locks" ]; then warn "cluster-queue-tres is at $q slots, not 36${locks:+ (a run holds $locks)}"

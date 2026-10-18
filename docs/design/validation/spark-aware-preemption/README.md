@@ -34,7 +34,7 @@ defaults have since been lowered to 30s and 60s. The runs showed busy executors 
 | [`scripts/`](./scripts/) | Capture, analyzers, scenario generator, suite runners, results archiver |
 | [`results/`](./results/) | Per-run verdicts (`*.txt`), timelines (`*.timeline.csv`), suite logs |
 | [`experiments/shuffle-migration/`](./experiments/shuffle-migration/) | Does a reclaimed executor move its shuffle data? SparkPageRank under partial preemption: 252 MiB of shuffle blocks and the cached RDD blocks migrated, 0 recomputation |
-| [`demo/`](./demo/) | Two separate demos ([`demo/README.md`](./demo/README.md)): [`full/`](./demo/full/), the Lens + KueueViz walkthrough (`demo.sh`, scenarios A–D and a live terminal view, guide [`DEMO.md`](./demo/full/DEMO.md)); and [`short/`](./demo/short/), the five-part short demo, with [`kubeflow/demo-short.sh`](./demo/short/kubeflow/demo-short.sh) and [`apache/demo-short.sh`](./demo/short/apache/demo-short.sh) for the two Spark operators, their manifests in `scenarios/`, and the guide [`DEMO-SPREAD-SHUFFLE.md`](./demo/short/DEMO-SPREAD-SHUFFLE.md) |
+| [`demo/`](./demo/) | Two separate demos ([`demo/README.md`](./demo/README.md)). The five-part short demo is [`demo-short.sh`](./demo/demo-short.sh) `[--operator kubeflow|apache]`, which runs the [`kubeflow/`](./demo/kubeflow/) or [`apache/`](./demo/apache/) kit (each with its manifests in `scenarios/`); guide [`DEMO-SPREAD-SHUFFLE.md`](./demo/DEMO-SPREAD-SHUFFLE.md). [`full/`](./demo/full/) is the Lens + KueueViz walkthrough (`demo.sh`, scenarios A–D and a live terminal view, guide [`DEMO.md`](./demo/full/DEMO.md)) |
 
 ---
 
@@ -257,8 +257,8 @@ init container still used the 4.0.1 image; it only runs `awk`.
 
 ### 3.5 Short demo on both operators (`b6e35d8b4`, Spark 3.4.3)
 
-`demo/short/kubeflow/demo-short.sh` (Kubeflow Spark Operator) and `demo/short/apache/demo-short.sh` (Apache Spark Operator) run
-the same five parts. Part 5 runs on its own ClusterQueue,
+`demo/demo-short.sh` runs the same five parts on the Kubeflow Spark Operator (`--operator kubeflow`,
+the default) and the Apache Spark Operator (`--operator apache`). Part 5 runs on its own ClusterQueue,
 `cluster-queue-quatro`, from [`setup/queues-quatro.yaml`](./setup/queues-quatro.yaml). That queue has classic preemption off
 (`withinClusterQueue`, `reclaimWithinCohort` and `borrowWithinCohort` all `Never`). A `PreemptionConfig`
 lets apps labeled `preemption-role=urgent` take capacity from apps labeled `preemption-pool=batch`.
