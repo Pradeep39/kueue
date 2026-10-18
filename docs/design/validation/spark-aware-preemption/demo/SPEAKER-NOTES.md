@@ -1,10 +1,10 @@
-# Speaker notes: Spark-aware partial preemption (~23 min)
+# Speaker notes: Spark-aware partial preemption (~30 min)
 
 Runbook: [`DEMO-SPREAD-SHUFFLE.md`](./DEMO-SPREAD-SHUFFLE.md). Everything runs with `./demo-short.sh`
 (Spark 3.4.3 by default). It runs on the Kubeflow Spark Operator unless `--operator apache` (or
 `OPERATOR=apache` in `demo-short.conf`) picks the Apache Spark Operator. Before you start:
 `./demo-short.sh reset`, `./demo-short.sh clear-events`, `./demo-short.sh preflight`.
-Or run all five parts in order, with a pause between them: `./demo-short.sh all`.
+Or run all six parts in order, with a pause between them: `./demo-short.sh all`.
 
 ## 0. Opening (2 min)
 
@@ -72,7 +72,19 @@ Or run all five parts in order, with a pause between them: `./demo-short.sh all`
 | `als-hi` arrives; `gave 1` on the four pool apps, `0` on `als-lo5`/`als-lo6` | "The urgent app matches the rule. Kueue takes one executor from each pool app. The two apps outside the pool keep everything, even though they are lower priority." |
 | Summary: "the PreemptionConfig chose the victims, not priority"; 0 evicted whole | "Partial preemption follows whatever selects the victims, the classic policy or a PreemptionConfig. No job was evicted whole." |
 
-## 6. Close (3 min)
+## 6. Default preemption, then a floor (~7 min)
+
+`./demo-short.sh 6`, then `./demo-short.sh 6 --floor 1`
+
+| On screen | Say |
+|---|---|
+| Five apps, `admitted` 1st–5th, executors 6 1 3 1 2 | "Five batch jobs of different sizes, same priority, no floor. This is Kueue's default preemption." |
+| Press Enter; `als-lo5` and `als-lo3` "EVICTED WHOLE" | "The urgent job needs six slots. Kueue takes the newest jobs first, whatever their size. It took lo5, then lo4, then lo3, and put lo4 back because it no longer needed it. Two drivers gone, five executors gone, and it freed seven slots for a six-slot job." |
+| Evicted apps "restarted from scratch" | "Those two jobs start over from zero." |
+| Rerun with `--floor 1`; `gave` 3, 2, 1 on lo1, lo3, lo5 | "Same jobs, one setting: a floor of one executor. Now Kueue takes exactly six executors, spread over the jobs that can spare them. Every driver keeps running." |
+| Summary: 0 evicted, 0 restarts | "Same urgent job, same cluster. Nobody restarts." |
+
+## 7. Close (3 min)
 
 - **Results.** Whole evictions per run 11–14 → **0**. Low-priority restarts 13 → **0**. Quota invariants
   held in every run (usage ≤ quota; every running executor had a grant).

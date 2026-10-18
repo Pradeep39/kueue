@@ -8,17 +8,22 @@ to the urgent app, and what it is doing now.
 TRIGGER is the UTC time the urgent app was submitted ("" before that); only reclaims after it count.
 TAGS (optional, part 5) is "app=text,app=text...": an extra column after the app name, e.g. its
 priority and whether a PreemptionConfig rule makes it a candidate.
+Optional environment (part 6): VIEW_SIZES="app=n,..." gives each app's own executor count (EXECS is
+the default), and VIEW_TAG_HEADER names the TAGS column (default "candidate").
 """
 import collections
 import json
+import os
 import re
 import sys
 
 pods_json, wls_json, events_json, quota, execs, urgent_execs, trigger = sys.argv[1:8]
 tags = dict(t.split("=", 1) for t in (sys.argv[8] if len(sys.argv) > 8 else "").split(",") if "=" in t)
-T = max([len(v) for v in tags.values()] + [len("candidate")]) if tags else 0
+TAG_HEADER = os.environ.get("VIEW_TAG_HEADER") or "candidate"
+T = max([len(v) for v in tags.values()] + [len(TAG_HEADER)]) if tags else 0
 quota, execs, urgent_execs = int(quota), int(execs), int(urgent_execs)
-W = max(len("executors"), 2 * execs + 4)   # width of the executor-dots column
+sizes = {k: int(v) for k, v in (t.split("=", 1) for t in os.environ.get("VIEW_SIZES", "").split(",") if "=" in t)}
+W = max(len("executors"), 2 * max([execs] + list(sizes.values())) + 4)   # width of the executor-dots column
 
 
 def items(path):
@@ -89,15 +94,22 @@ else:
     urgent = f"running, {u['running']} of {urgent_execs} executors"
 print(f"  urgent app (high priority, needs {urgent_execs + 1} slots): {urgent:30} queue: {granted} of {quota} slots granted")
 print()
-print(f"  {'app':9} " + (f"{'candidate':{T}}  " if tags else "") + f"{'driver':6}  {'executors':{W}} {'gave':>4}  status")
+print(f"  {'app':9} " + (f"{TAG_HEADER:{T}}  " if tags else "") + f"{'driver':6}  {'executors':{W}} {'gave':>4}  status")
 victims = sorted((a for a in c if a.startswith("als-lo")), key=lambda a: int(a[6:]))
 for a in victims:
     k = c[a]
     dots = " ".join(["●"] * k["running"] + ["○"] * k["starting"] + ["◌"] * k["waiting"] + ["✕"] * k["stopping"])
     drv = "✓" if k["driver"] else ("done" if k["driver_done"] else "✗")
     g = gave[a]
-    if evicted[a]:
-        status = "EVICTED WHOLE"
+    full = sizes.get(a, execs)
+    if evicted[a] and k["driver"] and k["running"] >= full:
+        status = f"evicted whole{f' {evicted[a]}x' if evicted[a] > 1 else ''}, restarted from scratch"
+    elif evicted[a] and k["driver"]:
+        status = "evicted whole, restarting from scratch"
+    elif evicted[a] and (k["driver_done"] or (a in finished and a not in active)):
+        status = "evicted whole, restarted from scratch, finished"
+    elif evicted[a]:
+        status = "EVICTED WHOLE: driver killed, waiting to restart"
     elif k["driver_done"] or (a in finished and a not in active):
         status = "finished"
     elif k["stopping"]:
@@ -106,7 +118,7 @@ for a in victims:
         status = f"waiting to get {k['waiting']} executor{'s' * (k['waiting'] > 1)} back (grow-back)"
     elif k["waiting"]:
         status = "waiting for quota"
-    elif g and k["running"] >= execs:
+    elif g and k["running"] >= full:
         # The reclaim event lands a moment before Kueue deletes the Pods: until the urgent app is
         # done, a full app that gave executors is about to give them back, not grown back.
         status = "back to full size" if urgent == "finished" else f"giving {g} back (reclaim decided)"

@@ -257,7 +257,7 @@ init container still used the 4.0.1 image; it only runs `awk`.
 
 ### 3.5 Short demo on both operators (`b6e35d8b4`, Spark 3.4.3)
 
-`demo/demo-short.sh` runs the same five parts on the Kubeflow Spark Operator (`--operator kubeflow`,
+`demo/demo-short.sh` runs the same six parts on the Kubeflow Spark Operator (`--operator kubeflow`,
 the default) and the Apache Spark Operator (`--operator apache`). Part 5 runs on its own ClusterQueue,
 `cluster-queue-quatro`, from [`setup/queues-quatro.yaml`](./setup/queues-quatro.yaml). That queue has classic preemption off
 (`withinClusterQueue`, `reclaimWithinCohort` and `borrowWithinCohort` all `Never`). A `PreemptionConfig`
@@ -274,6 +274,8 @@ Kueue or the operator after asking. `preflight --check` only reports.
 | 3. Spread (6 victims) | each gave 1; 0 evictions; grew back | each gave 1; 0 evictions; grew back 97s after the trigger |
 | 4. Round-robin (5 victims, 8 needed) | 2 gave 1, 3 gave 2; 0 evictions | 2 gave 1, 3 gave 2; 0 evictions |
 | 5. Configurable preemption | see below | see below |
+| 6. Default preemption, no floor | `als-lo5` and `als-lo3` evicted whole: 5 executors and 2 drivers lost, 7 slots freed for 6; `als-lo4` put back | identical |
+| 6. Same apps, `--floor 1` | `als-lo1` gave 3, `als-lo3` 2, `als-lo5` 1; 0 evictions, 0 restarts | identical |
 
 Part 5 has two steps.
 
@@ -282,6 +284,13 @@ Part 5 has two steps.
 2. The labeled urgent app arrives. The four pool apps (default priority) gave 1 executor each. The two
    low-priority apps outside the pool gave 0. No app was evicted whole, and the pool apps grew back
    109s (Kubeflow) and 119s (Apache) after the trigger.
+
+Part 6 admits five low-priority static apps one at a time. They have 6, 1, 3, 1 and 2 executors and
+fill 18 slots, and the urgent app needs 6. Without a floor, a static app's floor is its whole executor
+count, so classic preemption runs. Its candidate order (lowest priority, then newest admitted first)
+ignores size, and its remove-then-put-back pass evicts two whole apps and frees one slot more than
+needed. With a floor of 1, the same 6 slots come out as executors from the three apps above their
+floor.
 
 On the Apache operator, Part 1's urgent app runs 20 SparkALS iterations instead of 10. With 10, it
 finished before a second eviction.

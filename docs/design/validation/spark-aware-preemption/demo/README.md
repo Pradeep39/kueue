@@ -5,7 +5,7 @@ queue setup in `setup/`, but nothing else.
 
 | Where | Demo | Entry point | Guide |
 |---|---|---|---|
-| this folder | The five-part short demo: whole eviction, shuffle resiliency, spread, round-robin, configurable preemption | [`demo-short.sh`](./demo-short.sh) `[--operator kubeflow\|apache]` | [`DEMO-SPREAD-SHUFFLE.md`](./DEMO-SPREAD-SHUFFLE.md), [`SPEAKER-NOTES.md`](./SPEAKER-NOTES.md) |
+| this folder | The six-part short demo: whole eviction, shuffle resiliency, spread, round-robin, configurable preemption, default preemption vs. a floor | [`demo-short.sh`](./demo-short.sh) `[--operator kubeflow\|apache]` | [`DEMO-SPREAD-SHUFFLE.md`](./DEMO-SPREAD-SHUFFLE.md), [`SPEAKER-NOTES.md`](./SPEAKER-NOTES.md) |
 | [`full/`](./full/) | The Lens + KueueViz walkthrough: scenarios A–D (whole eviction, partial preemption, the protected floor, spread) and a live terminal view for a second screen | [`full/demo.sh`](./full/demo.sh) | [`full/DEMO.md`](./full/DEMO.md) |
 
 `demo-short.sh` runs one of two operator kits:

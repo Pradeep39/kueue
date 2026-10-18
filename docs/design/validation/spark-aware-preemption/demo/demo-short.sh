@@ -14,7 +14,9 @@
 #   preflight [--check]   check the cluster and set up what is missing (--check: report only)
 #   1 2 3 4 5             one part: whole eviction, shuffle resiliency, spread, round-robin,
 #                         configurable preemption
-#   all                   parts 1 to 5, pausing between them
+#   6 [--floor N]         default preemption and its greedy candidate selection; with --floor N the
+#                         same apps get partial preemption and the loss is spread
+#   all                   parts 1 to 6 (6 without, then with --floor 1), pausing between them
 #   reset | clear-events | logs
 #   help                  this text and the chosen kit's full help
 set -uo pipefail

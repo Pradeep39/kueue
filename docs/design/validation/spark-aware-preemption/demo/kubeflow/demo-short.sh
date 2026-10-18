@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The short partial-preemption demo, Kubeflow Spark Operator: the five parts in ../DEMO-SPREAD-SHUFFLE.md
+# The short partial-preemption demo, Kubeflow Spark Operator: the six parts in ../DEMO-SPREAD-SHUFFLE.md
 # and ../SPEAKER-NOTES.md, in namespace batch-ns-uno. ../apache/demo-short.sh is the Apache copy, and
 # ../demo-short.sh runs either one (--operator kubeflow|apache).
 #
@@ -13,7 +13,11 @@
 #   ./demo-short.sh 4              round-robin: five apps each give one before any gives a second
 #   ./demo-short.sh 5              configurable preemption: classic preemption off, a PreemptionConfig
 #                                  rule picks the victims by label, not priority
-#   ./demo-short.sh all            parts 1 to 5 in order, pausing between them (~12 min of cluster time)
+#   ./demo-short.sh 6 [--floor N]  default preemption: static apps of mixed size, no floor, so Kueue's
+#                                  greedy selection evicts whole apps; --floor N turns on partial
+#                                  preemption for the same apps and spreads the loss
+#   ./demo-short.sh all            parts 1 to 6 in order (6 without, then with --floor 1), pausing
+#                                  between them (~20 min of cluster time)
 #   ./demo-short.sh reset          delete this demo's apps and put cluster-queue-tres back to 36 slots
 #   ./demo-short.sh clear-events   delete the preemption and partial-preemption events from earlier runs
 #   ./demo-short.sh logs           the reclaimed executors' decommission logs from the latest part-2 run
@@ -63,7 +67,7 @@ preflight() {
   kubectl get nodes --no-headers 2>/dev/null | awk '$2!="Ready"{print "  ⚠️  node "$1" is "$2}'
   if [ -z "$(demo_apps)$(other_apps)" ]; then echo "  ✅ $NS has no SparkApplications"
   else echo "  ⚠️  $NS has SparkApplications: $(demo_apps; other_apps | tr '\n' ' ')"; fi
-  for s in run-whole-workload-preemption.sh run-shuffle-migration.sh run-partial-preemption-spread.sh run-shuffle-resiliency.sh run-configurable-preemption.sh shuffle-view.py gen-apps.py gen-apps-label.py demo-table.py capture.sh; do
+  for s in run-whole-workload-preemption.sh run-shuffle-migration.sh run-partial-preemption-spread.sh run-shuffle-resiliency.sh run-configurable-preemption.sh run-default-preemption.sh shuffle-view.py gen-apps.py gen-apps-label.py demo-table.py capture.sh; do
     [ -e "$SCRIPTS/$s" ] || { echo "  ❌ $SCRIPTS/$s missing"; ok=0; }
   done
   echo "  Spark image for the demo apps: docker.io/library/spark:$SPARK_VERSION"
@@ -73,23 +77,27 @@ preflight() {
   [ $ok = 1 ]
 }
 
-part_1() { say "Part 1 of 5: whole-workload preemption, today's behaviour (Spark $SPARK_VERSION)"; wait_clean
+part_1() { say "Part 1 of 6: whole-workload preemption, today's behaviour (Spark $SPARK_VERSION)"; wait_clean
   EVICTIONS=${EVICTIONS:-3} "$SCRIPTS/run-whole-workload-preemption.sh"; }
-part_2() { say "Part 2 of 5: shuffle resiliency (Spark $SPARK_VERSION)"; wait_clean
+part_2() { say "Part 2 of 6: shuffle resiliency (Spark $SPARK_VERSION)"; wait_clean
   THRESH=${THRESH:-40} "$SCRIPTS/run-shuffle-resiliency.sh"; }
-part_3() { say "Part 3 of 5: spread the loss (Spark $SPARK_VERSION)"; wait_clean
+part_3() { say "Part 3 of 6: spread the loss (Spark $SPARK_VERSION)"; wait_clean
   CAPTURE=0 "$SCRIPTS/run-partial-preemption-spread.sh" p10s; }
-part_4() { say "Part 4 of 5: round-robin, then grow-back (Spark $SPARK_VERSION)"; wait_clean
+part_4() { say "Part 4 of 6: round-robin, then grow-back (Spark $SPARK_VERSION)"; wait_clean
   CAPTURE=0 "$SCRIPTS/run-partial-preemption-spread.sh" p11s; }
-part_5() { say "Part 5 of 5: configurable preemption picks the victims (Spark $SPARK_VERSION)"; wait_clean
+part_5() { say "Part 5 of 6: configurable preemption picks the victims (Spark $SPARK_VERSION)"; wait_clean
   "$SCRIPTS/run-configurable-preemption.sh"; }
+part_6() { say "Part 6 of 6: $([ "${1:-}" = --floor ] && echo "the same apps with a floor of ${2:-}: partial preemption" || echo "default preemption, greedy candidate selection") (Spark $SPARK_VERSION)"; wait_clean
+  "$SCRIPTS/run-default-preemption.sh" "$@"; }
 
 run_all() {
   part_1; pause "Next: part 2, shuffle resiliency"
   part_2; pause "Next: part 3, spread the loss"
   part_3; pause "Next: part 4, round-robin"
   part_4; pause "Next: part 5, configurable preemption"
-  part_5; say "Demo complete"
+  part_5; pause "Next: part 6, default preemption (no floor)"
+  part_6; pause "Next: part 6 again, with a floor of 1"
+  part_6 --floor 1; say "Demo complete"
 }
 
 reset() {
@@ -99,7 +107,7 @@ reset() {
   kubectl patch clusterqueue cluster-queue-tres --type=json -p '[
     {"op":"replace","path":"/spec/resourceGroups/0/flavors/0/resources/0/nominalQuota","value":"36"},
     {"op":"replace","path":"/spec/resourceGroups/0/flavors/0/resources/1/nominalQuota","value":"32256Mi"}]' >/dev/null 2>&1
-  rmdir "$SCRIPTS"/runs/.whole-workload-preemption.lock "$SCRIPTS"/runs/.shuffle-migration.lock "$SCRIPTS"/runs/.partial-preemption-spread.lock "$SCRIPTS"/runs/.configurable-preemption.lock 2>/dev/null
+  rmdir "$SCRIPTS"/runs/.whole-workload-preemption.lock "$SCRIPTS"/runs/.shuffle-migration.lock "$SCRIPTS"/runs/.partial-preemption-spread.lock "$SCRIPTS"/runs/.configurable-preemption.lock "$SCRIPTS"/runs/.default-preemption.lock 2>/dev/null
   local others; others=$(other_apps)
   [ -n "$others" ] && echo "  Left alone (not this demo's): $(echo $others | tr '\n' ' ')"
   echo "  Done."
@@ -173,6 +181,7 @@ case "${1:-}" in
   3) part_3 ;;
   4) part_4 ;;
   5) part_5 ;;
+  6) shift; part_6 "$@" ;;
   all) run_all ;;
   reset) reset ;;
   *) sed -n '2,/^set -uo pipefail/p' "$0" | sed '$d' | sed 's/^# \{0,1\}//' ;;

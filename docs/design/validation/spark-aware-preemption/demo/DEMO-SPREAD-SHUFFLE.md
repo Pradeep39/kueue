@@ -1,6 +1,6 @@
 # Demo: whole eviction today, then resilient partial preemption and spreading the reclaim
 
-Five short live parts on stock Spark 3.4.3, about 12 minutes of cluster time in total.
+Six short live parts on stock Spark 3.4.3, about 20 minutes of cluster time in total.
 [`demo-short.sh`](./demo-short.sh) runs them on either Spark operator, through that operator's kit:
 
 | `--operator` | Spark operator | Kit | Namespace |
@@ -13,7 +13,7 @@ Pick the operator in one of three ways; the first one set wins:
 2. the environment: `OPERATOR=apache`
 3. the config file: `OPERATOR=apache` in [`demo-short.conf`](./demo-short.conf)
 
-Run `./demo-short.sh preflight`, then `./demo-short.sh all` (or `1`–`5` one at a time). After part 2,
+Run `./demo-short.sh preflight`, then `./demo-short.sh all` (or `1`–`6` one at a time). After part 2,
 `./demo-short.sh logs` prints each reclaimed executor's timeline. The manifests each part submits are in
 `kubeflow/scenarios/` and `apache/scenarios/`. Speaker notes: [`SPEAKER-NOTES.md`](./SPEAKER-NOTES.md).
 
@@ -24,6 +24,8 @@ Run `./demo-short.sh preflight`, then `./demo-short.sh all` (or `1`–`5` one at
 | 3. Spread | `./demo-short.sh 3` | Six apps each give exactly one executor; afterwards they grow back | ~1:40 |
 | 4. Round-robin | `./demo-short.sh 4` | Five apps each give one before any gives a second; they grow back | ~1:35 |
 | 5. Configurable preemption | `./demo-short.sh 5` | With classic preemption off, a `PreemptionConfig` rule, not priority, picks the victims | ~3:00 |
+| 6. Default preemption | `./demo-short.sh 6` | Static apps of mixed size, no floor: Kueue's greedy selection evicts the newest apps whole and frees more than it needs | ~4:00 |
+| 6. … with a floor | `./demo-short.sh 6 --floor 1` | The same apps with a floor of 1: the slots come out as executors, spread across the apps above their floor | ~3:00 |
 
 Measured on the cluster with `AUTO=1`. Spark 4.0.1 works the same but took ~2 minutes longer in
 part 4: on that version the last victims are slower to get their executors back.
@@ -144,6 +146,49 @@ their priority. The `candidate` column shows each app's pool membership and prio
 4. **Grow-back.** The pool apps return to full size when the urgent app finishes. The summary checks
    that the victims followed the rule.
 
+## Part 6: default preemption, then the same apps with a floor
+
+`./demo-short.sh 6` sizes `cluster-queue-tres` to 18 slots and puts it back to 36 on exit. It admits
+five low-priority static apps (no Dynamic Allocation) one at a time, so their admission order is fixed:
+
+| App | Admitted | Executors | Slots |
+|---|---|---|---|
+| `als-lo1` | 1st (oldest) | 6 | 7 |
+| `als-lo2` | 2nd | 1 | 2 |
+| `als-lo3` | 3rd | 3 | 4 |
+| `als-lo4` | 4th | 1 | 2 |
+| `als-lo5` | 5th (newest) | 2 | 3 |
+
+Then a high-priority static app needing 6 slots arrives. The `admitted` column shows the order.
+
+**Without a floor** (`./demo-short.sh 6`), a static app's floor is its whole executor count, so
+nothing is reclaimable and Kueue preempts the classic way. It orders the candidates by priority, then
+newest admitted first, ignoring size. It removes them one at a time until the urgent app fits, then
+tries putting each back, newest-but-one first, keeping it only if the urgent app still fits. The result
+on both operators:
+
+1. Kueue removes `als-lo5`, `als-lo4` and `als-lo3`: 9 slots, enough.
+2. It puts `als-lo4` back: 7 slots are still enough.
+3. `als-lo5` cannot go back.
+4. Two apps are evicted whole. 5 executors and 2 drivers are lost, and 7 slots are freed for a 6-slot
+   app.
+5. The evicted apps wait for quota, then restart from scratch.
+
+**With `--floor 1`** (`./demo-short.sh 6 --floor 1`), every app carries
+`spark.kueue.preemption.minExecutors: 1`, and partial preemption takes exactly the 6 slots as
+executors from the apps above their floor:
+
+| App | Gave |
+|---|---|
+| `als-lo1` | 3 of 6 |
+| `als-lo3` | 2 of 3 |
+| `als-lo5` | 1 of 2 |
+| `als-lo2`, `als-lo4` | 0 (already at the floor) |
+
+No app is evicted or restarted, and the apps grow back when the urgent app finishes. Both runs end
+when the urgent app has finished and every app is back at full size (or has finished), then print
+the summary.
+
 ## Reset
 
 The scripts delete their own apps. If a run was interrupted, `./demo-short.sh reset` deletes this
@@ -163,4 +208,5 @@ restores `cluster-queue-tres` and `cluster-queue-quatro` if a run left them chan
 | Part 5's `plain-hi` gets admitted | Classic preemption is not off on `cluster-queue-quatro`: preflight restores it |
 | Apache apps are admitted but never start | The Apache operator does not watch `batch-ns-dos`: preflight adds it |
 | Victim executors never all reach `running` | Not enough node capacity: check node readiness in Lens |
+| Part 6 summary differs from the order above | Two apps were admitted in the same second, so "newest first" was a tie: rerun |
 | Grow-back takes longer than expected | It stops waiting after 7 minutes; `GROWBACK=0` skips it entirely |
