@@ -3,9 +3,11 @@
 with its driver, a dot per executor (running, waiting for quota, stopping), how many executors it gave
 to the urgent app, and what it is doing now.
 
-  spread-view.py PODS_JSON WORKLOADS_JSON EVENTS_JSON QUOTA EXECS URGENT_EXECS TRIGGER
+  spread-view.py PODS_JSON WORKLOADS_JSON EVENTS_JSON QUOTA EXECS URGENT_EXECS TRIGGER [TAGS]
 
 TRIGGER is the UTC time the urgent app was submitted ("" before that); only reclaims after it count.
+TAGS (optional, part 5) is "app=text,app=text...": an extra column after the app name, e.g. its
+priority and whether a PreemptionConfig rule makes it a candidate.
 """
 import collections
 import json
@@ -13,6 +15,8 @@ import re
 import sys
 
 pods_json, wls_json, events_json, quota, execs, urgent_execs, trigger = sys.argv[1:8]
+tags = dict(t.split("=", 1) for t in (sys.argv[8] if len(sys.argv) > 8 else "").split(",") if "=" in t)
+T = max([len(v) for v in tags.values()] + [len("candidate")]) if tags else 0
 quota, execs, urgent_execs = int(quota), int(execs), int(urgent_execs)
 W = max(len("executors"), 2 * execs + 4)   # width of the executor-dots column
 
@@ -60,7 +64,7 @@ for w in wls:
 gave, evicted = collections.Counter(), collections.Counter()
 for e in events:
     t = e.get("lastTimestamp") or e.get("eventTime") or ""
-    if not trigger or t < trigger or e["involvedObject"].get("kind") != "Workload":
+    if not trigger or t[:19] < trigger[:19] or e["involvedObject"].get("kind") != "Workload":
         continue
     app = re.sub(r"^sparkapplication-|-[0-9a-f]{5}$", "", e["involvedObject"]["name"])
     m = re.search(r"Partially preempted (\d+) Pod", e.get("message") or "")
@@ -80,7 +84,7 @@ else:
     urgent = f"running, {u['running']} of {urgent_execs} executors"
 print(f"  urgent app (high priority, needs {urgent_execs + 1} slots): {urgent:30} queue: {granted} of {quota} slots granted")
 print()
-print(f"  {'app':9} {'driver':6}  {'executors':{W}} {'gave':>4}  status")
+print(f"  {'app':9} " + (f"{'candidate':{T}}  " if tags else "") + f"{'driver':6}  {'executors':{W}} {'gave':>4}  status")
 victims = sorted((a for a in c if a.startswith("als-lo")), key=lambda a: int(a[6:]))
 for a in victims:
     k = c[a]
@@ -98,11 +102,13 @@ for a in victims:
     elif k["waiting"]:
         status = "waiting for quota"
     elif g and k["running"] >= execs:
-        status = "back to full size"
+        # The reclaim event lands a moment before Kueue deletes the Pods: until the urgent app is
+        # done, a full app that gave executors is about to give them back, not grown back.
+        status = "back to full size" if urgent == "finished" else f"giving {g} back (reclaim decided)"
     elif g:
         status = f"running on {k['running']} (gave {g})"
     else:
         status = "running"
-    print(f"  {a:9} {drv:6}  {dots:{W}} {(g if trigger else '-'):>4}  {status}")
+    print(f"  {a:9} " + (f"{tags.get(a, ''):{T}}  " if tags else "") + f"{drv:6}  {dots:{W}} {(g if trigger else '-'):>4}  {status}")
 print()
 print("  ● running   ○ starting   ◌ waiting for quota   ✕ stopping (reclaimed)")

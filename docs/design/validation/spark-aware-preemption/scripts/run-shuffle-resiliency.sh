@@ -29,7 +29,8 @@ mkdir "$LOCK" 2>/dev/null || { echo "refusing to start: another run-shuffle-resi
 OUT="$HERE/runs/SHUF-DEMO-$(date +%m%d-%H%M)"; mkdir -p "$OUT/exec-logs"
 cleanup() {
   touch "$OUT/.stop"
-  local j; for j in $(jobs -p); do kill "$j" 2>/dev/null; done
+  # Reap the streamers quietly: bash otherwise reports each one as "Terminated".
+  { local j; for j in $(jobs -p); do kill "$j"; done; wait; } 2>/dev/null
   pkill -f "logs -f $VICTIM-" 2>/dev/null
   rmdir "$LOCK" 2>/dev/null
 }

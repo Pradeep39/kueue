@@ -21,6 +21,9 @@
 # Run it before run-shuffle-migration.sh to show the same kind of work being thrown away, then kept.
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
+# setup_file NAME: a setup YAML beside this script, one level up (~/kueue-gated-repro layout), or in
+# ../setup (repo layout).
+setup_file() { local d; for d in "$HERE" "$HERE/.." "$HERE/../setup"; do [ -f "$d/$1" ] && { echo "$d/$1"; return; }; done; echo "$HERE/../setup/$1"; }
 NS=batch-ns-uno; SA=sparkapplications.sparkoperator.k8s.io; CQ=cluster-queue-tres; LQ=batch-queue-tres
 VICTIMS="workload-a workload-b"; EXECS=4; QUOTA=12
 ITERS=${ITERS:-100}
@@ -65,18 +68,21 @@ set_quota() {
 history() {
   kubectl -n $NS get events -o json 2>/dev/null | python3 -I -c '
 import json, sys, re, collections
+from datetime import datetime
+def hms(t):  # event times are UTC; show them in local time like the rest of the screen
+    return datetime.fromisoformat(t[:19] + "+00:00").astimezone().strftime("%H:%M:%S")
 since = sys.argv[1]
 adm, ev, lines = collections.Counter(), collections.Counter(), []
 for e in sorted(json.load(sys.stdin)["items"], key=lambda e: e.get("lastTimestamp") or e.get("eventTime") or ""):
     t = e.get("lastTimestamp") or e.get("eventTime") or ""
-    if t < since or e["involvedObject"].get("kind") != "Workload":
+    if t[:19] < since[:19] or e["involvedObject"].get("kind") != "Workload":
         continue
     app = re.sub(r"^sparkapplication-|-[0-9a-f]{5}$", "", e["involvedObject"]["name"])
     if e["reason"] == "Admitted":
         adm[app] += 1
     elif e["reason"] == "Preempted":
         ev[app] += 1
-        lines.append(f"  {t[11:19]}  {app:9} EVICTED WHOLE: driver killed, shuffle data lost")
+        lines.append(f"  {hms(t)}  {app:9} EVICTED WHOLE: driver killed, shuffle data lost")
 print("  app        admitted  evicted whole")
 for a in sorted(set(adm) | set(ev)):
     if a.startswith("workload-"):
@@ -154,7 +160,7 @@ since = sys.argv[1]
 print(sum(1 for e in json.load(sys.stdin)["items"]
           if e["reason"] == "Preempted" and e["involvedObject"].get("kind") == "Workload"
           and "-workload-" in e["involvedObject"]["name"]
-          and (e.get("lastTimestamp") or e.get("eventTime") or "") >= since))' "$START"
+          and (e.get("lastTimestamp") or e.get("eventTime") or "")[:19] >= since[:19]))' "$START"
 }
 
 summary() {
@@ -182,7 +188,7 @@ case "${1:-}" in -h|--help) sed -n 2,17p "$0" | sed 's/^# \{0,1\}//'; exit 0 ;; 
 
 say "Preflight"
 echo "  Kueue: $(kubectl -n kueue-system get deploy kueue-controller-manager -o jsonpath='{.spec.template.spec.containers[0].image}')"
-kubectl get clusterqueue $CQ >/dev/null 2>&1 || kubectl apply -f "$HERE/queues-setup.yaml" >/dev/null || exit 1
+kubectl get clusterqueue $CQ >/dev/null 2>&1 || kubectl apply -f "$(setup_file queues-setup.yaml)" >/dev/null || exit 1
 mkdir -p "$HERE/runs"
 LOCK="$HERE/runs/.whole-workload-preemption.lock"
 mkdir "$LOCK" 2>/dev/null || { echo "  refusing to start: another run-whole-workload-preemption.sh is in progress (remove $LOCK if not)" >&2; exit 3; }

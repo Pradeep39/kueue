@@ -24,6 +24,9 @@
 # (queues-setup.yaml), and gen-apps.py / capture.sh / req-check.py / pp-analyze.py beside it.
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
+# setup_file NAME: a setup YAML beside this script, one level up (~/kueue-gated-repro layout), or in
+# ../setup (repo layout).
+setup_file() { local d; for d in "$HERE" "$HERE/.." "$HERE/../setup"; do [ -f "$d/$1" ] && { echo "$d/$1"; return; }; done; echo "$HERE/../setup/$1"; }
 NS=batch-ns-uno; SA=sparkapplications.sparkoperator.k8s.io; CQ=cluster-queue-tres; LQ=batch-queue-tres
 FLOOR=1
 case "${1:-p11}" in
@@ -62,7 +65,7 @@ import json, sys, re
 since = sys.argv[1]
 for e in sorted(json.load(sys.stdin)["items"], key=lambda e: e.get("lastTimestamp") or e.get("eventTime") or ""):
     t = e.get("lastTimestamp") or e.get("eventTime") or ""
-    if t < since or e["reason"] not in ("PartiallyPreempted", "Preempted"):
+    if t[:19] < since[:19] or e["reason"] not in ("PartiallyPreempted", "Preempted"):
         continue
     m = re.search(r"Partially preempted (\d+) Pod\(s\) of PodSet \S+, from (\d+) to (\d+)", e.get("message") or "")
     app = re.sub(r"^sparkapplication-|-[0-9a-f]{5}$", "", e["involvedObject"]["name"])
@@ -94,7 +97,7 @@ since = sys.argv[1]
 gave, whole = collections.Counter(), 0
 for e in json.load(sys.stdin)["items"]:
     t = e.get("lastTimestamp") or e.get("eventTime") or ""
-    if t < since or e["involvedObject"].get("kind") != "Workload":
+    if t[:19] < since[:19] or e["involvedObject"].get("kind") != "Workload":
         continue
     m = re.search(r"Partially preempted (\d+) Pod", e.get("message") or "")
     if e["reason"] == "PartiallyPreempted" and m:
@@ -141,8 +144,8 @@ args=$(kubectl -n kueue-system get deploy kueue-controller-manager -o jsonpath='
 echo "  Kueue: $(kubectl -n kueue-system get deploy kueue-controller-manager -o jsonpath='{.spec.template.spec.containers[0].image}')"
 [[ "$args" == *SparkPartialPreemption=true* ]] || { echo "  ❌ SparkPartialPreemption gate is off" >&2; exit 1; }
 if ! kubectl get clusterqueue $CQ >/dev/null 2>&1 || ! kubectl -n $NS get localqueue $LQ >/dev/null 2>&1; then
-  echo "  $CQ / $LQ missing: applying queues-setup.yaml"
-  kubectl apply -f "$HERE/queues-setup.yaml" >/dev/null || exit 1
+  echo "  $CQ / $LQ missing: applying $(setup_file queues-setup.yaml)"
+  kubectl apply -f "$(setup_file queues-setup.yaml)" >/dev/null || exit 1
 fi
 echo "  $CQ: $(kubectl get clusterqueue $CQ -o jsonpath='{.spec.resourceGroups[0].flavors[0].resources[0].nominalQuota}') CPU, preemption $(kubectl get clusterqueue $CQ -o jsonpath='{.spec.preemption.withinClusterQueue}')"
 mkdir -p "$HERE/runs"

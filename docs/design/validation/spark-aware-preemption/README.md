@@ -34,7 +34,8 @@ defaults have since been lowered to 30s and 60s. The runs showed busy executors 
 | [`scripts/`](./scripts/) | Capture, analyzers, scenario generator, suite runners, results archiver |
 | [`results/`](./results/) | Per-run verdicts (`*.txt`), timelines (`*.timeline.csv`), suite logs |
 | [`experiments/shuffle-migration/`](./experiments/shuffle-migration/) | Does a reclaimed executor move its shuffle data? SparkPageRank under partial preemption: 252 MiB of shuffle blocks and the cached RDD blocks migrated, 0 recomputation |
-| [`demo/`](./demo/) | A live demo for Lens and KueueViz: `demo.sh` (scenarios A–D and a live terminal view) and the presenter guide [`DEMO.md`](./demo/DEMO.md); a second demo, [`DEMO-SPREAD-SHUFFLE.md`](./demo/DEMO-SPREAD-SHUFFLE.md), runs P10/P11 (`scripts/run-partial-preemption-spread.sh`) and the shuffle experiment |
+| [`demo/`](./demo/) | A live demo for Lens and KueueViz: `demo.sh` (scenarios A–D and a live terminal view) and the presenter guide [`DEMO.md`](./demo/DEMO.md); a second demo, [`DEMO-SPREAD-SHUFFLE.md`](./demo/DEMO-SPREAD-SHUFFLE.md), runs P10/P11 (`scripts/run-partial-preemption-spread.sh`) and the shuffle experiment; `demo-short.sh` packages five short parts (§3.5), with their manifests in `demo/scenarios/` |
+| [`apache/`](./apache/) | The same five-part `demo-short.sh` for the Apache Spark Operator (`spark.apache.org/v1`, namespace `batch-ns-dos`): its own runners, views and generator, and the manifests in `apache/scenarios/` |
 
 ---
 
@@ -254,6 +255,35 @@ shuffle blocks each, plus their cached RDD blocks, and the driver relocated 1348
 fetch failures, 0 resubmitted stages and 0 executor failures. Quota was released 32s after the
 reclaim was issued, and the urgent application ran 66s before the victim finished. The input graph's
 init container still used the 4.0.1 image; it only runs `awk`.
+
+### 3.5 Short demo on both operators (`b6e35d8b4`, Spark 3.4.3)
+
+`demo/demo-short.sh` (Kubeflow Spark Operator) and `apache/demo-short.sh` (Apache Spark Operator) run
+the same five parts. Part 5 runs on its own ClusterQueue,
+[`setup/queues-cfg.yaml`](./setup/queues-cfg.yaml). That queue has classic preemption off
+(`withinClusterQueue`, `reclaimWithinCohort` and `borrowWithinCohort` all `Never`). A `PreemptionConfig`
+lets apps labeled `preemption-role=urgent` take capacity from apps labeled `preemption-pool=batch`.
+Part 5 needs the `ConfigurablePreemptions` gate and `integrations.labelKeysToCopy` set to
+`[preemption-pool, preemption-role]`.
+
+| Part | Kubeflow | Apache |
+|---|---|---|
+| 1. Whole-workload preemption (not opted in) | 3 whole evictions, 381–1,928 MiB of shuffle lost each | 3 whole evictions, 458–1,070 MiB lost each |
+| 2. Shuffle resiliency | 4 executors reclaimed, 65–81 MiB of shuffle each migrated; 0 fetch failures; urgent app running in 37s | 3 executors reclaimed, 61–99 MiB each migrated; 0 fetch failures, 0 resubmitted stages; urgent app running in 50s |
+| 3. Spread (6 victims) | each gave 1; 0 evictions; grew back | each gave 1; 0 evictions; grew back 97s after the trigger |
+| 4. Round-robin (5 victims, 8 needed) | 2 gave 1, 3 gave 2; 0 evictions | 2 gave 1, 3 gave 2; 0 evictions |
+| 5. Configurable preemption | see below | see below |
+
+Part 5 has two steps.
+
+1. A high-priority app without the urgent label arrives at the full queue. On both operators it waited
+   40s and preempted nothing: priority alone does not preempt when classic preemption is off.
+2. The labeled urgent app arrives. The four pool apps (default priority) gave 1 executor each. The two
+   low-priority apps outside the pool gave 0. No app was evicted whole, and the pool apps grew back
+   109s (Kubeflow) and 119s (Apache) after the trigger.
+
+On the Apache operator, Part 1's urgent app runs 20 SparkALS iterations instead of 10. With 10, it
+finished before a second eviction.
 
 ---
 

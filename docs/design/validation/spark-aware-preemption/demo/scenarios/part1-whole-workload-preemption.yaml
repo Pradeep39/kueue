@@ -1,0 +1,165 @@
+
+# Part 1: whole-workload preemption (run-whole-workload-preemption.sh), Spark 3.4.3, Kubeflow operator.
+# Queue: cluster-queue-tres sized to 12 slots. Two low-priority SparkPageRank apps NOT opted in,
+# driver + 4 executors each; then the urgent app (third document), SparkALS with Dynamic Allocation.
+---
+apiVersion: sparkoperator.k8s.io/v1beta2
+kind: SparkApplication
+metadata:
+  name: workload-a
+  namespace: batch-ns-uno
+  labels:
+    kueue.x-k8s.io/queue-name: batch-queue-tres
+    kueue.x-k8s.io/priority-class: low
+spec:
+  type: Scala
+  mode: cluster
+  image: docker.io/library/spark:3.4.3
+  imagePullPolicy: IfNotPresent
+  mainClass: org.apache.spark.examples.SparkPageRank
+  mainApplicationFile: local:///opt/spark/examples/jars/spark-examples_2.12-3.4.3.jar
+  arguments: ["file:///data/edges.txt", "100"]
+  sparkVersion: 3.4.3
+  sparkConf:
+    "spark.executor.instances": "4"
+    "spark.sql.files.maxPartitionBytes": "2m"
+    "spark.default.parallelism": "40"
+    "spark.driver.extraJavaOptions": "-Xss64m"
+    "spark.executor.extraJavaOptions": "-Xss64m"
+    "spark.kubernetes.executor.podNamePrefix": "workload-a"
+  volumes: [{name: data, emptyDir: {}}]
+  driver:
+    initContainers:
+    - name: gen-edges
+      image: docker.io/library/spark:4.0.1
+      command: ["sh", "-c", 'awk "BEGIN{srand(42); for(i=0;i<2000000;i++) print int(rand()*200000), int(rand()*200000)}" > /data/edges.txt']
+      volumeMounts: [{name: data, mountPath: /data}]
+      securityContext: {runAsUser: 185, runAsNonRoot: true, allowPrivilegeEscalation: false, capabilities: {drop: [ALL]}, seccompProfile: {type: RuntimeDefault}}
+    volumeMounts: [{name: data, mountPath: /data}]
+    cores: 1
+    memory: 512m
+    serviceAccount: spark-operator-spark
+    securityContext: &sc
+      capabilities:
+        drop: [ALL]
+      runAsGroup: 185
+      runAsUser: 185
+      runAsNonRoot: true
+      allowPrivilegeEscalation: false
+      seccompProfile:
+        type: RuntimeDefault
+  executor:
+    initContainers:
+    - name: gen-edges
+      image: docker.io/library/spark:4.0.1
+      command: ["sh", "-c", 'awk "BEGIN{srand(42); for(i=0;i<2000000;i++) print int(rand()*200000), int(rand()*200000)}" > /data/edges.txt']
+      volumeMounts: [{name: data, mountPath: /data}]
+      securityContext: {runAsUser: 185, runAsNonRoot: true, allowPrivilegeEscalation: false, capabilities: {drop: [ALL]}, seccompProfile: {type: RuntimeDefault}}
+    volumeMounts: [{name: data, mountPath: /data}]
+    cores: 1
+    memory: 512m
+    securityContext: *sc
+---
+apiVersion: sparkoperator.k8s.io/v1beta2
+kind: SparkApplication
+metadata:
+  name: workload-b
+  namespace: batch-ns-uno
+  labels:
+    kueue.x-k8s.io/queue-name: batch-queue-tres
+    kueue.x-k8s.io/priority-class: low
+spec:
+  type: Scala
+  mode: cluster
+  image: docker.io/library/spark:3.4.3
+  imagePullPolicy: IfNotPresent
+  mainClass: org.apache.spark.examples.SparkPageRank
+  mainApplicationFile: local:///opt/spark/examples/jars/spark-examples_2.12-3.4.3.jar
+  arguments: ["file:///data/edges.txt", "100"]
+  sparkVersion: 3.4.3
+  sparkConf:
+    "spark.executor.instances": "4"
+    "spark.sql.files.maxPartitionBytes": "2m"
+    "spark.default.parallelism": "40"
+    "spark.driver.extraJavaOptions": "-Xss64m"
+    "spark.executor.extraJavaOptions": "-Xss64m"
+    "spark.kubernetes.executor.podNamePrefix": "workload-b"
+  volumes: [{name: data, emptyDir: {}}]
+  driver:
+    initContainers:
+    - name: gen-edges
+      image: docker.io/library/spark:4.0.1
+      command: ["sh", "-c", 'awk "BEGIN{srand(42); for(i=0;i<2000000;i++) print int(rand()*200000), int(rand()*200000)}" > /data/edges.txt']
+      volumeMounts: [{name: data, mountPath: /data}]
+      securityContext: {runAsUser: 185, runAsNonRoot: true, allowPrivilegeEscalation: false, capabilities: {drop: [ALL]}, seccompProfile: {type: RuntimeDefault}}
+    volumeMounts: [{name: data, mountPath: /data}]
+    cores: 1
+    memory: 512m
+    serviceAccount: spark-operator-spark
+    securityContext: &sc
+      capabilities:
+        drop: [ALL]
+      runAsGroup: 185
+      runAsUser: 185
+      runAsNonRoot: true
+      allowPrivilegeEscalation: false
+      seccompProfile:
+        type: RuntimeDefault
+  executor:
+    initContainers:
+    - name: gen-edges
+      image: docker.io/library/spark:4.0.1
+      command: ["sh", "-c", 'awk "BEGIN{srand(42); for(i=0;i<2000000;i++) print int(rand()*200000), int(rand()*200000)}" > /data/edges.txt']
+      volumeMounts: [{name: data, mountPath: /data}]
+      securityContext: {runAsUser: 185, runAsNonRoot: true, allowPrivilegeEscalation: false, capabilities: {drop: [ALL]}, seccompProfile: {type: RuntimeDefault}}
+    volumeMounts: [{name: data, mountPath: /data}]
+    cores: 1
+    memory: 512m
+    securityContext: *sc
+---
+apiVersion: sparkoperator.k8s.io/v1beta2
+kind: SparkApplication
+metadata:
+  name: urgent
+  namespace: batch-ns-uno
+  annotations:
+    kueue.x-k8s.io/elastic-job: "true"
+    kueue.x-k8s.io/elastic-job-scale-up-strategy: "partial"
+  labels:
+    kueue.x-k8s.io/queue-name: batch-queue-tres
+    kueue.x-k8s.io/priority-class: high
+spec:
+  type: Scala
+  mode: cluster
+  image: docker.io/library/spark:3.4.3
+  imagePullPolicy: IfNotPresent
+  mainClass: org.apache.spark.examples.SparkALS
+  mainApplicationFile: local:///opt/spark/examples/jars/spark-examples_2.12-3.4.3.jar
+  arguments: ["1500", "1500", "12", "10", "200"]
+  sparkVersion: 3.4.3
+  sparkConf:
+    "spark.kubernetes.executor.podNamePrefix": "urgent"
+    "spark.dynamicAllocation.enabled": "true"
+    "spark.dynamicAllocation.shuffleTracking.enabled": "true"
+    "spark.dynamicAllocation.minExecutors": "3"
+    "spark.dynamicAllocation.maxExecutors": "30"
+    "spark.dynamicAllocation.schedulerBacklogTimeout": "2s"
+    "spark.dynamicAllocation.executorIdleTimeout": "5s"
+    "spark.kubernetes.allocation.maxPendingPods": "2"
+  driver:
+    cores: 1
+    memory: 512m
+    serviceAccount: spark-operator-spark
+    securityContext: &sc
+      capabilities:
+        drop: [ALL]
+      runAsGroup: 185
+      runAsUser: 185
+      runAsNonRoot: true
+      allowPrivilegeEscalation: false
+      seccompProfile:
+        type: RuntimeDefault
+  executor:
+    cores: 1
+    memory: 512m
+    securityContext: *sc
