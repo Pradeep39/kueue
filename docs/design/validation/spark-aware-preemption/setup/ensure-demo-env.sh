@@ -10,8 +10,8 @@
 #   Kueue configuration      🔧 adds the Spark framework and labelKeysToCopy [preemption-pool,
 #                               preemption-role] to kueue-manager-config, then restarts Kueue
 #   PreemptionConfig CRD     🔧 applies it from the Kueue checkout (KUEUE_REPO, default ~/kueue-preempt)
-#   Queues and priorities    🔧 creates the missing objects from queues-setup.yaml and
-#                               queues-quatro.yaml (and queues-apache.yaml for the Apache kit);
+#   Queues and priorities    🔧 creates the missing objects from queues-setup.yaml, queues-quatro.yaml
+#                               and queues-cinco.yaml (and queues-apache.yaml for the Apache kit);
 #                               puts cluster-queue-tres back to 36 slots; restores cluster-queue-quatro's
 #                               preemption settings
 #   Apache operator          🔧 adds batch-ns-dos to spark.kubernetes.operator.watchedNamespaces and
@@ -36,10 +36,10 @@ GATES="ElasticJobsViaWorkloadSlicesWithPartialReplicaScaleUp SparkPartialPreempt
 LABEL_KEYS="preemption-pool preemption-role"
 if [ "$KIT" = kubeflow ]; then
   GATES="SparkApplicationIntegration $GATES"; FRAMEWORK=sparkoperator.k8s.io/sparkapplication
-  NS=batch-ns-uno; SETUP="queues-setup.yaml queues-quatro.yaml"
+  NS=batch-ns-uno; SETUP="queues-setup.yaml queues-quatro.yaml queues-cinco.yaml"
 else
   GATES="ApacheSparkApplicationIntegration $GATES"; FRAMEWORK=spark.apache.org/sparkapplication
-  NS=batch-ns-dos; SETUP="queues-setup.yaml queues-quatro.yaml queues-apache.yaml"
+  NS=batch-ns-dos; SETUP="queues-setup.yaml queues-quatro.yaml queues-cinco.yaml queues-apache.yaml"
 fi
 
 ok=1; fixed=0

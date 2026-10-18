@@ -24,8 +24,8 @@ Run `./demo-short.sh preflight`, then `./demo-short.sh all` (or `1`–`6` one at
 | 3. Spread | `./demo-short.sh 3` | Six apps each give exactly one executor; afterwards they grow back | ~1:40 |
 | 4. Round-robin | `./demo-short.sh 4` | Five apps each give one before any gives a second; they grow back | ~1:35 |
 | 5. Configurable preemption | `./demo-short.sh 5` | With classic preemption off, a `PreemptionConfig` rule, not priority, picks the victims | ~3:00 |
-| 6. Default preemption | `./demo-short.sh 6` | Static apps of mixed size, no floor: Kueue's greedy selection evicts the newest apps whole and frees more than it needs | ~4:00 |
-| 6. … with a floor | `./demo-short.sh 6 --floor 1` | The same apps with a floor of 1: the slots come out as executors, spread across the apps above their floor | ~3:00 |
+| 6. Default preemption | `./demo-short.sh 6` | Ten static apps of mixed size, no floor: Kueue's greedy selection evicts the newest apps whole (3 here) and frees more than it needs | ~3:00 |
+| 6. … with a floor | `./demo-short.sh 6 --floor 1` | The same apps with a floor of 1: the 12 slots come out as executors, one or two from each of the ten apps | ~3:30 |
 
 Measured on the cluster with `AUTO=1`. Spark 4.0.1 works the same but took ~2 minutes longer in
 part 4: on that version the last victims are slower to get their executors back.
@@ -37,7 +37,8 @@ part 4: on that version the last victims are slower to get their executors back.
   - `integrations.labelKeysToCopy`
   - the `PreemptionConfig` CRD
   - the queues in [`setup/`](../setup/): [`queues-setup.yaml`](../setup/queues-setup.yaml) for
-    parts 1–4, [`queues-quatro.yaml`](../setup/queues-quatro.yaml) for part 5, and, for the Apache
+    parts 1–4, [`queues-quatro.yaml`](../setup/queues-quatro.yaml) for part 5,
+    [`queues-cinco.yaml`](../setup/queues-cinco.yaml) for part 6, and, for the Apache
     kit, [`queues-apache.yaml`](../setup/queues-apache.yaml)
   - the Apache operator's watched namespace
 
@@ -56,6 +57,7 @@ part 4: on that version the last victims are slower to get their executors back.
     | 1, 3 and 4 | `cluster-queue-tres` |
     | 2 | `cluster-queue-uno` (Kubeflow) or `cluster-queue-dos` (Apache) |
     | 5 | `cluster-queue-quatro` |
+    | 6 | `cluster-queue-cinco` |
 - Dry-run each part once with `AUTO=1`, so the Spark image is cached on the nodes.
 - `./demo-short.sh clear-events` removes the preemption events from earlier runs.
 
@@ -148,18 +150,18 @@ their priority. The `candidate` column shows each app's pool membership and prio
 
 ## Part 6: default preemption, then the same apps with a floor
 
-`./demo-short.sh 6` sizes `cluster-queue-tres` to 18 slots and puts it back to 36 on exit. It admits
-five low-priority static apps (no Dynamic Allocation) one at a time, so their admission order is fixed:
+`./demo-short.sh 6` runs on `cluster-queue-cinco`, a standalone 40-slot queue
+([`setup/queues-cinco.yaml`](../setup/queues-cinco.yaml)) with classic preemption on. It admits ten
+low-priority static apps (no Dynamic Allocation) one at a time, so their admission order is fixed.
+Together they fill the queue:
 
-| App | Admitted | Executors | Slots |
-|---|---|---|---|
-| `als-lo1` | 1st (oldest) | 6 | 7 |
-| `als-lo2` | 2nd | 1 | 2 |
-| `als-lo3` | 3rd | 3 | 4 |
-| `als-lo4` | 4th | 1 | 2 |
-| `als-lo5` | 5th (newest) | 2 | 3 |
+| App | lo1 | lo2 | lo3 | lo4 | lo5 | lo6 | lo7 | lo8 | lo9 | lo10 |
+|---|---|---|---|---|---|---|---|---|---|---|
+| Admitted | 1st (oldest) | 2nd | 3rd | 4th | 5th | 6th | 7th | 8th | 9th | 10th (newest) |
+| Executors | 4 | 2 | 3 | 2 | 3 | 2 | 6 | 2 | 3 | 3 |
 
-Then a high-priority static app needing 6 slots arrives. The `admitted` column shows the order.
+Then a high-priority static app needing 12 slots (driver + 11) arrives. The `admitted` column shows
+the order.
 
 **Without a floor** (`./demo-short.sh 6`), a static app's floor is its whole executor count, so
 nothing is reclaimable and Kueue preempts the classic way. It orders the candidates by priority, then
@@ -167,27 +169,20 @@ newest admitted first, ignoring size. It removes them one at a time until the ur
 tries putting each back, newest-but-one first, keeping it only if the urgent app still fits. The result
 on both operators:
 
-1. Kueue removes `als-lo5`, `als-lo4` and `als-lo3`: 9 slots, enough.
-2. It puts `als-lo4` back: 7 slots are still enough.
-3. `als-lo5` cannot go back.
-4. Two apps are evicted whole. 5 executors and 2 drivers are lost, and 7 slots are freed for a 6-slot
-   app.
-5. The evicted apps wait for quota, then restart from scratch.
+1. Kueue removes `als-lo10`, `als-lo9`, `als-lo8` and `als-lo7`: 18 slots, enough.
+2. It puts `als-lo8` back: 15 slots are still enough. `als-lo9` and `als-lo10` cannot go back.
+3. Three apps are evicted whole, including the large `als-lo7`, only because it was admitted recently.
+   12 executors and 3 drivers are lost, and 15 slots are freed for a 12-slot app.
+4. The evicted apps wait for quota, then restart from scratch.
 
 **With `--floor 1`** (`./demo-short.sh 6 --floor 1`), every app carries
-`spark.kueue.preemption.minExecutors: 1`, and partial preemption takes exactly the 6 slots as
-executors from the apps above their floor:
+`spark.kueue.preemption.minExecutors: 1`, and partial preemption takes exactly the 12 slots as
+executors. All ten apps give one. The two largest, `als-lo1` and `als-lo7`, give a second, so
+`als-lo1` drops from 4 to 2 and `als-lo7` from 6 to 4. No app is evicted or restarted, and the apps
+grow back when the urgent app finishes.
 
-| App | Gave |
-|---|---|
-| `als-lo1` | 3 of 6 |
-| `als-lo3` | 2 of 3 |
-| `als-lo5` | 1 of 2 |
-| `als-lo2`, `als-lo4` | 0 (already at the floor) |
-
-No app is evicted or restarted, and the apps grow back when the urgent app finishes. Both runs end
-when the urgent app has finished and every app is back at full size (or has finished), then print
-the summary.
+Both runs end when the urgent app has finished and every app is back at full size (or has finished),
+then print the summary.
 
 ## Reset
 

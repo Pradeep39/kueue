@@ -78,10 +78,10 @@ Or run all six parts in order, with a pause between them: `./demo-short.sh all`.
 
 | On screen | Say |
 |---|---|
-| Five apps, `admitted` 1st–5th, executors 6 1 3 1 2 | "Five batch jobs of different sizes, same priority, no floor. This is Kueue's default preemption." |
-| Press Enter; `als-lo5` and `als-lo3` "EVICTED WHOLE" | "The urgent job needs six slots. Kueue takes the newest jobs first, whatever their size. It took lo5, then lo4, then lo3, and put lo4 back because it no longer needed it. Two drivers gone, five executors gone, and it freed seven slots for a six-slot job." |
-| Evicted apps "restarted from scratch" | "Those two jobs start over from zero." |
-| Rerun with `--floor 1`; `gave` 3, 2, 1 on lo1, lo3, lo5 | "Same jobs, one setting: a floor of one executor. Now Kueue takes exactly six executors, spread over the jobs that can spare them. Every driver keeps running." |
+| Ten apps, `admitted` 1st–10th, 2 to 6 executors each | "Ten batch jobs of different sizes, same priority, no floor. This is Kueue's default preemption." |
+| Press Enter; `als-lo10`, `als-lo9` and `als-lo7` "EVICTED WHOLE" | "The urgent job needs twelve slots. Kueue goes through the jobs newest first, whatever their size: lo10, lo9, lo8, lo7. Then it puts lo8 back because it no longer needs it. Three drivers and twelve executors are gone, and it freed fifteen slots for a twelve-slot job. lo7 is the biggest job here; it lost everything only because it arrived late." |
+| Evicted apps "restarted from scratch" | "Those three jobs start over from zero." |
+| Rerun with `--floor 1`; `gave` 1 on every app, 2 on `als-lo1` and `als-lo7` | "Same jobs, one setting: a floor of one executor. Kueue takes exactly twelve executors: one from every job, and a second from the two biggest. Every driver keeps running." |
 | Summary: 0 evicted, 0 restarts | "Same urgent job, same cluster. Nobody restarts." |
 
 ## 7. Close (3 min)

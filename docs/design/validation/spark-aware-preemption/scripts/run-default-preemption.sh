@@ -2,10 +2,10 @@
 # Demo part 6: Kueue's default preemption and its greedy candidate selection, then the same apps with
 # a partial-preemption floor.
 #
-# Five low-priority static apps (no Dynamic Allocation) of mixed size fill cluster-queue-tres, admitted
-# one at a time so their admission order is fixed:
-#   als-lo1 6 executors (admitted 1st)   als-lo2 1   als-lo3 3   als-lo4 1   als-lo5 2 (admitted 5th, newest)
-# Then a high-priority static app needing 6 slots arrives.
+# Ten low-priority static apps (no Dynamic Allocation) of mixed size fill cluster-queue-cinco (40 slots,
+# queues-cinco.yaml), admitted one at a time so their admission order is fixed:
+#   als-lo1..als-lo10: 4 2 3 2 3 2 6 2 3 3 executors (als-lo1 admitted first, als-lo10 last)
+# Then a high-priority static app needing 12 slots (driver + 11) arrives.
 #
 #   (default)   no floor. A static app's floor is then its whole executor count, so nothing is
 #               reclaimable and Kueue preempts the classic way: candidates ordered by priority, then
@@ -13,7 +13,7 @@
 #               (newest-but-one first) where it still fits. Size plays no part, so it evicts whole apps
 #               and frees more than it needs.
 #   --floor N   spark.kueue.preemption.minExecutors N on every app: partial preemption takes the
-#               6 slots as executors, spread across the apps above their floor. Nobody is evicted.
+#               12 slots as executors, spread across the apps above their floor. Nobody is evicted.
 #
 #   [AUTO=1] [FORCE=1] [GROWBACK=0] run-default-preemption.sh [--floor N]
 #     AUTO=1        no Enter prompt
@@ -22,13 +22,13 @@
 #     VICTIM_ITERS / URGENT_ITERS   SparkALS iterations (default 100 / 4: the victims outlive the urgent app;
 #                   the demo deletes them when it ends)
 #     REFRESH=N     seconds between screen refreshes (default 10)
-#   The queue is sized to exactly what the apps fill (18 slots) and put back to 36 on exit.
+#   cluster-queue-cinco is sized to exactly what the apps fill; it is created if missing.
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 # setup_file NAME: the setup YAML NAME, in this script's directory or the nearest parent that has it
 # (directly, or in its setup/ directory), so it is found in the ~/kueue-gated-repro and the repo layouts.
 setup_file() { local d=$HERE n c; for n in 0 1 2 3 4; do for c in "$d/$1" "$d/setup/$1"; do [ -f "$c" ] && { echo "$c"; return; }; done; d=$(dirname "$d"); done; echo "$HERE/$1"; }
-NS=batch-ns-uno; SA=sparkapplications.sparkoperator.k8s.io; CQ=cluster-queue-tres; LQ=batch-queue-tres
+NS=batch-ns-uno; SA=sparkapplications.sparkoperator.k8s.io; CQ=cluster-queue-cinco; LQ=batch-queue-cinco
 APP_LABEL=sparkoperator.k8s.io/app-name
 gen() { python3 -I "$HERE/gen-apps.py" "$@"; }
 ARGS_FLAG=--als-args
@@ -41,12 +41,12 @@ case "${1:-}" in
   "") ;;
   *) echo "unknown argument '$1' (try --help)" >&2; exit 2 ;;
 esac
-SIZES=(6 1 3 1 2)
-VICTIMS=${#SIZES[@]}; URGENT_EXECS=5
+SIZES=(4 2 3 2 3 2 6 2 3 3)
+VICTIMS=${#SIZES[@]}; URGENT_EXECS=11
 QUOTA=0; for n in "${SIZES[@]}"; do QUOTA=$((QUOTA + n + 1)); done
 VICTIM_ARGS="1500 1500 12 ${VICTIM_ITERS:-100} 200"
 URGENT_ARGS="1500 1500 12 ${URGENT_ITERS:-4} 200"
-ORD=(1st 2nd 3rd 4th 5th)
+ORD=(1st 2nd 3rd 4th 5th 6th 7th 8th 9th 10th)
 TAGS=$(for i in $(seq 1 $VICTIMS); do t=${ORD[$((i - 1))]}; [ $i = 1 ] && t="$t (oldest)"; [ $i = $VICTIMS ] && t="$t (newest)"; echo "als-lo$i=$t"; done | paste -sd, -)
 export VIEW_SIZES=$(for i in $(seq 1 $VICTIMS); do echo "als-lo$i=${SIZES[$((i - 1))]}"; done | paste -sd, -)
 export VIEW_TAG_HEADER=admitted
@@ -76,12 +76,6 @@ live() { # live UNTIL_CMD [PROMPT]
       sleep "${REFRESH:-10}"
     fi
   done
-}
-
-set_quota() { # set_quota SLOTS: one slot = 1 CPU + 896Mi
-  kubectl patch clusterqueue $CQ --type=json -p "[
-    {\"op\":\"replace\",\"path\":\"/spec/resourceGroups/0/flavors/0/resources/0/nominalQuota\",\"value\":\"$1\"},
-    {\"op\":\"replace\",\"path\":\"/spec/resourceGroups/0/flavors/0/resources/1/nominalQuota\",\"value\":\"$(( $1 * 896 ))Mi\"}]" >/dev/null
 }
 
 admitted() { # admitted APP: its Workload holds quota
@@ -171,14 +165,16 @@ if [ -n "$FLOOR" ]; then
     { echo "  ❌ SparkPartialPreemption gate is off: ./demo-short.sh preflight sets it" >&2; exit 1; }
 fi
 if ! kubectl get clusterqueue $CQ >/dev/null 2>&1 || ! kubectl -n $NS get localqueue $LQ >/dev/null 2>&1; then
-  echo "  $CQ / $LQ missing: applying $(setup_file queues-setup.yaml)"
-  kubectl apply -f "$(setup_file queues-setup.yaml)" >/dev/null || exit 1
+  echo "  $CQ / $LQ missing: applying $(setup_file queues-cinco.yaml)"
+  kubectl apply -f "$(setup_file queues-cinco.yaml)" >/dev/null || exit 1
 fi
+q=$(kubectl get clusterqueue $CQ -o jsonpath='{.spec.resourceGroups[0].flavors[0].resources[0].nominalQuota}')
+[ "$q" = "$QUOTA" ] || { echo "  ❌ $CQ has $q slots; part 6 needs exactly $QUOTA: kubectl apply -f $(setup_file queues-cinco.yaml)" >&2; exit 1; }
 echo "  $CQ: classic preemption withinClusterQueue=$(kubectl get clusterqueue $CQ -o jsonpath='{.spec.preemption.withinClusterQueue}'); mode: $MODE"
 mkdir -p "$HERE/runs"
 LOCK="$HERE/runs/.default-preemption.lock"
 mkdir "$LOCK" 2>/dev/null || { echo "  refusing to start: another run-default-preemption.sh is in progress (remove $LOCK if not)" >&2; exit 3; }
-cleanup() { [ "${QUOTA_SET:-0}" = 1 ] && set_quota 36; rmdir "$LOCK" 2>/dev/null; }
+cleanup() { rmdir "$LOCK" 2>/dev/null; }
 trap cleanup EXIT
 others=$(kubectl -n $NS get $SA -o name 2>/dev/null | sed 's#.*/##' | grep -vE '^als-(lo[0-9]+|hi)$' || true)
 if [ -n "$others" ] && [ "${FORCE:-0}" != 1 ]; then
@@ -189,7 +185,6 @@ fi
 say "Cleaning $NS"
 kubectl -n $NS delete $SA --all --wait=true >/dev/null 2>&1
 for _ in $(seq 1 60); do [ "$(kubectl -n $NS get workloads,pods --no-headers 2>/dev/null | wc -l | tr -d ' ')" = 0 ] && break; sleep 3; done
-set_quota $QUOTA; QUOTA_SET=1
 
 say "Admitting $VICTIMS low-priority static apps one at a time (executors: ${SIZES[*]}), $([ -n "$FLOOR" ] && echo "floor $FLOOR" || echo "no floor") ($QUOTA of $QUOTA slots)"
 for i in $(seq 1 $VICTIMS); do

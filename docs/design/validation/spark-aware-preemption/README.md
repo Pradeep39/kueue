@@ -29,7 +29,7 @@ defaults have since been lowered to 30s and 60s. The runs showed busy executors 
 
 | | |
 |---|---|
-| [`setup/`](./setup/) | Cohort, ClusterQueues, LocalQueue, WorkloadPriorityClasses (12-slot baseline); the 36-slot `cluster-queue-tres` and P12's `PreemptionConfig` (r4); [`queues-setup.yaml`](./setup/queues-setup.yaml) recreates the demo's baseline (flavor, priority classes, `cluster-queue-uno`/`-dos`/`-tres` and their LocalQueues) after a clean deploy; [`queues-quatro.yaml`](./setup/queues-quatro.yaml) and [`queues-apache.yaml`](./setup/queues-apache.yaml) add the short demo's part-5 queue and the Apache LocalQueues; [`ensure-demo-env.sh`](./setup/ensure-demo-env.sh) checks all of it and sets up what is missing (the short demo's `preflight`) |
+| [`setup/`](./setup/) | Cohort, ClusterQueues, LocalQueue, WorkloadPriorityClasses (12-slot baseline); the 36-slot `cluster-queue-tres` and P12's `PreemptionConfig` (r4); [`queues-setup.yaml`](./setup/queues-setup.yaml) recreates the demo's baseline (flavor, priority classes, `cluster-queue-uno`/`-dos`/`-tres` and their LocalQueues) after a clean deploy; [`queues-quatro.yaml`](./setup/queues-quatro.yaml), [`queues-cinco.yaml`](./setup/queues-cinco.yaml) and [`queues-apache.yaml`](./setup/queues-apache.yaml) add the short demo's part-5 and part-6 queues and the Apache LocalQueues; [`ensure-demo-env.sh`](./setup/ensure-demo-env.sh) checks all of it and sets up what is missing (the short demo's `preflight`) |
 | [`scenarios/`](./scenarios/) | One manifest per scenario, both waves; the header records its setup and checks |
 | [`scripts/`](./scripts/) | Capture, analyzers, scenario generator, suite runners, results archiver |
 | [`results/`](./results/) | Per-run verdicts (`*.txt`), timelines (`*.timeline.csv`), suite logs |
@@ -274,8 +274,8 @@ Kueue or the operator after asking. `preflight --check` only reports.
 | 3. Spread (6 victims) | each gave 1; 0 evictions; grew back | each gave 1; 0 evictions; grew back 97s after the trigger |
 | 4. Round-robin (5 victims, 8 needed) | 2 gave 1, 3 gave 2; 0 evictions | 2 gave 1, 3 gave 2; 0 evictions |
 | 5. Configurable preemption | see below | see below |
-| 6. Default preemption, no floor | `als-lo5` and `als-lo3` evicted whole: 5 executors and 2 drivers lost, 7 slots freed for 6; `als-lo4` put back | identical |
-| 6. Same apps, `--floor 1` | `als-lo1` gave 3, `als-lo3` 2, `als-lo5` 1; 0 evictions, 0 restarts | identical |
+| 6. Default preemption, no floor (10 apps) | `als-lo10`, `als-lo9` and `als-lo7` evicted whole: 12 executors and 3 drivers lost, 15 slots freed for 12; `als-lo8` put back | identical |
+| 6. Same apps, `--floor 1` | all 10 apps gave 1, `als-lo1` and `als-lo7` a second; 0 evictions, 0 restarts | identical |
 
 Part 5 has two steps.
 
@@ -285,12 +285,13 @@ Part 5 has two steps.
    low-priority apps outside the pool gave 0. No app was evicted whole, and the pool apps grew back
    109s (Kubeflow) and 119s (Apache) after the trigger.
 
-Part 6 admits five low-priority static apps one at a time. They have 6, 1, 3, 1 and 2 executors and
-fill 18 slots, and the urgent app needs 6. Without a floor, a static app's floor is its whole executor
-count, so classic preemption runs. Its candidate order (lowest priority, then newest admitted first)
-ignores size, and its remove-then-put-back pass evicts two whole apps and frees one slot more than
-needed. With a floor of 1, the same 6 slots come out as executors from the three apps above their
-floor.
+Part 6 admits ten low-priority static apps one at a time into `cluster-queue-cinco` (40 slots,
+[`setup/queues-cinco.yaml`](./setup/queues-cinco.yaml)). They have 4, 2, 3, 2, 3, 2, 6, 2, 3 and 3
+executors, and the urgent app needs 12 slots. Without a floor, a static app's floor is its whole
+executor count, so classic preemption runs. Its candidate order (lowest priority, then newest
+admitted first) ignores size, and its remove-then-put-back pass evicts three whole apps, including
+the six-executor `als-lo7`, and frees three slots more than needed. With a floor of 1, the same 12
+slots come out as executors: one from every app, and a second from the two largest.
 
 On the Apache operator, Part 1's urgent app runs 20 SparkALS iterations instead of 10. With 10, it
 finished before a second eviction.
