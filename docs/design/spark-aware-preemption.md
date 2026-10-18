@@ -749,8 +749,8 @@ Two harness fixes:
    `controller.kubernetes.io/pod-deletion-cost`, so §5.4's ascending sweep follows the driver's choice.
    This meets #16233 item 4 with no Kueue polling of metrics. On Spark 4.2+ with the Deployment allocator,
    Spark's own binary marking (§5.4) already covers the idle case without the plugin.
-3. **Phase 3: wider coverage.** The Apache integration, the kueue-workload port (aci/kueue-workload#36),
-   and fair-sharing preemption.
+3. **Phase 3: wider coverage.** The kueue-workload port (aci/kueue-workload#36) and fair-sharing
+   preemption. The Apache integration is done (§11a).
 4. **Upstream.** Propose §5.2's separate floor, §5.3's spread rule and preemptor limit, §5.4's timeout,
    and §5.5's grow-back as extensions to KEP-975. Coordinate with #16806, which is bringing elastic
    SparkApplication support upstream.
@@ -766,13 +766,24 @@ Two harness fixes:
    gang?
 3. **Ordering grow-back by the chain root's creation time** changes queue ordering for those slices.
    Does that interact with `StrictFIFO` queueing?
-4. **How the operators react to many deleted executors.** The Apache operator's
-   `RunningWithPartialCapacity` state, and Apple's fork's extra states, have not been checked against
-   executors disappearing below `minExecutors`.
+4. **How the operators react to many deleted executors.** Answered for the Apache operator (§11a): below
+   `instanceConfig.minExecutors` it only reports `RunningWithBelowThresholdExecutors`, and the floor is
+   kept at or above that threshold. Apple's fork's extra states have not been checked.
 
 # 11a. Implementation notes (v1)
 
 Where the implementation on this branch differs from, or adds to, the sections above:
+
+- **The Apache SparkApplication integration** (`spark.apache.org/v1`) implements partial preemption the
+  same way as the Kubeflow one: the same `spark.kueue.preemption.minExecutors` property, floor
+  resolution, decommission defaults, grace-period mirroring, reclaim order and admission checks. The two
+  integrations share no code, so either can move to its own deployment.
+  One difference: the floor is never below the operator's `applicationTolerations.instanceConfig.minExecutors`.
+  Once an application has started, the operator reports `RunningWithBelowThresholdExecutors` below that
+  threshold; it does not stop the application (`AppRunningStep`). But the integration reports
+  `PodsReady` only in `RunningHealthy` and `RunningWithPartialCapacity`, so a reclaim below the
+  threshold would make the Workload look not ready, and `waitForPodsReady`'s recovery timeout (by
+  default its `timeout`) would evict it whole.
 
 - **Grow-back** uses the restore count, and the whole slice is grow-back while it stands (§5.5).
 - **The fallback is held off while a reclaim is in flight.** While any workload in the preemptor's
