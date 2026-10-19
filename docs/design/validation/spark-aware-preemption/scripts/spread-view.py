@@ -63,8 +63,10 @@ for p in pods:
         c[app]["starting"] += 1
 
 granted, urgent_admitted = 0, False
+with_workload = set()   # apps with a Workload: an app evicted whole keeps it while it has no Pods
 for w in wls:
     owner = next((o["name"] for o in w["metadata"].get("ownerReferences", []) if o.get("controller")), "")
+    with_workload.add(owner)
     st = w.get("status") or {}
     conds = {x["type"]: x["status"] for x in st.get("conditions", [])}
     if st.get("admission") and conds.get("Admitted") == "True" and conds.get("Finished") != "True":
@@ -103,7 +105,10 @@ if trigger and (urgent_admitted or urgent == "finished"):
     drv = "✓" if u["driver"] else ("done" if urgent == "finished" else "○")
     print(row(f"{'als-hi':9} " + (f"{'preemptor':{T}}  " if tags else "") + f"{drv:6}  {dots:{W}} {'-':>4}  "
               + f"preemptor: {urgent}", PREEMPTOR))
-victims = sorted((a for a in c if a.startswith("als-lo")), key=lambda a: int(a[6:]))
+# Every app that exists: Pods, a Workload, or a preemption since the trigger. An app evicted whole has
+# no Pods until it is readmitted, and must keep its row meanwhile.
+victims = sorted((a for a in set(c) | with_workload | set(evicted) | set(gave) if a.startswith("als-lo")),
+                 key=lambda a: int(a[6:]))
 for a in victims:
     k = c[a]
     dots = " ".join(["●"] * k["running"] + ["○"] * k["starting"] + ["◌"] * k["waiting"] + ["✕"] * k["stopping"])
@@ -134,7 +139,7 @@ for a in victims:
         status = f"running on {k['running']} (gave {g})"
     else:
         status = "running"
-    print(row(f"{a:9} " + (f"{tags.get(a, ''):{T}}  " if tags else "") + f"{drv:6}  {dots:{W}} {(g if trigger else '-'):>4}  {status}",
+    print(row(f"{a:9} " + (f"{tags.get(a, ''):{T}}  " if tags else "") + f"{drv:6}  {dots:{W}} {('-' if not trigger else 'all' if evicted[a] and not g else g):>4}  {status}",
               PREEMPTEE if trigger and (g or evicted[a]) else ""))
 print()
 print("  ● running   ○ starting   ◌ waiting for quota   ✕ stopping (reclaimed)")
