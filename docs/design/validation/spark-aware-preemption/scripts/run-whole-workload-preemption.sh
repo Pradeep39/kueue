@@ -96,7 +96,8 @@ table() {
   local tmp; tmp=$(mktemp -d)
   kubectl -n $NS get pods -l spark-role -o json > "$tmp/pods.json" 2>/dev/null
   kubectl -n $NS get workloads -o json > "$tmp/wls.json" 2>/dev/null
-  python3 -I "$HERE/demo-table.py" "$tmp/pods.json" "$tmp/wls.json" $QUOTA | grep -v "^  als-"
+  kubectl -n $NS get events -o json > "$tmp/events.json" 2>/dev/null
+  python3 -I "$HERE/demo-table.py" "$tmp/pods.json" "$tmp/wls.json" $QUOTA "$tmp/events.json" "$START" | grep -v "^  als-"
   rm -rf "$tmp"
 }
 

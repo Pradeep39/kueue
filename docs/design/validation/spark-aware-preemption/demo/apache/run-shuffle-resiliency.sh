@@ -90,7 +90,9 @@ view() {
   case "$ust" in RunningHealthy|RunningWithPartialCapacity|RunningWithBelowThresholdExecutors) [ -z "${URGENT_UP:-}" ] && URGENT_UP=$(date +%s) ;; esac
   VICTIM_STATE=$vst
   clear; date +%H:%M:%S
-  python3 -I "$HERE/shuffle-view.py" "$OUT" "$tmp/pods.json" "$tmp/du" "$urg" "$uex" "$vst" "$THRESH"
+  local udrv   # the urgent app's driver Pod exists once Kueue has admitted it
+  udrv=$(kubectl -n $NS get pods -l spark.operator/spark-app-name=urgent,spark-role=driver -o jsonpath='{.items[0].status.phase}' 2>/dev/null)
+  python3 -I "$HERE/shuffle-view.py" "$OUT" "$tmp/pods.json" "$tmp/du" "$urg" "$uex" "$vst" "$THRESH" "$udrv"
   READY=$?
   rm -rf "$tmp"
 }

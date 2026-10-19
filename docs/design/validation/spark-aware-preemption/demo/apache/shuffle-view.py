@@ -2,11 +2,14 @@
 """Live view for run-shuffle-resiliency.sh: one row per victim executor with its shuffle data, its state
 and, once Kueue reclaims it, what it handed over to the surviving executors (from its own log).
 
-  shuffle-view.py RUN_DIR PODS_JSON DU_FILE URGENT_STATE URGENT_EXECUTORS VICTIM_STATE THRESH_MIB
+  shuffle-view.py RUN_DIR PODS_JSON DU_FILE URGENT_STATE URGENT_EXECUTORS VICTIM_STATE THRESH_MIB [URGENT_DRIVER_PHASE]
 
 RUN_DIR holds exec-logs/<pod>.log and driver.log, streamed by the runner. DU_FILE has one
 "<pod> <KiB of shuffle files>" line per running executor. It prints the table, then one status line,
 and exits 0 once every running executor holds at least THRESH_MIB (the "ready" hint).
+Once the urgent app's driver exists (URGENT_DRIVER_PHASE set, so Kueue admitted it), it gets a row in
+green (the preemptor), and the reclaimed executors are shown in yellow (preemptees). NO_COLOR turns the
+colours off.
 """
 import json
 import os
@@ -14,7 +17,9 @@ import re
 import sys
 
 run, pods_json, du_file, urgent_state, urgent_execs, victim_state, thresh = sys.argv[1:8]
+urgent_driver = sys.argv[8] if len(sys.argv) > 8 else ""
 thresh = int(thresh)
+PREEMPTOR, PREEMPTEE, RESET = ("", "", "") if os.environ.get("NO_COLOR") else ("\033[1;32m", "\033[33m", "\033[0m")
 
 
 def read(path):
@@ -79,6 +84,9 @@ print(f"  pr-victim: SparkPageRank, shuffle-heavy, floor 2 ({victim_state.lower(
       f"{'':8}urgent app: {urgent_state}")
 print()
 print(f"  {'executor':9} {'node':12} {'shuffle MiB':>11}  {'state':16} handed over")
+if urgent_driver:
+    print(f"  {PREEMPTOR}{'urgent':9} {'-':12} {'-':>11}  {'preemptor':16} driver {urgent_driver.lower()}, "
+          f"{urgent_execs or 0} executor(s) running{RESET}")
 ready = bool(live)
 for eid in sorted(set(live) | set(logged)):
     if eid in live:
@@ -92,7 +100,8 @@ for eid in sorted(set(live) | set(logged)):
     note = handed_over(logged[eid]) if eid in logged else ""
     if state == "exited" and note:
         state = "reclaimed, exited"
-    print(f"  {eid:<9} {node:12} {shown:>11}  {state:16} {note}")
+    col = PREEMPTEE if (note or state == "decommissioning") else ""
+    print(f"  {col}{eid:<9} {node:12} {shown:>11}  {state:16} {note}{RESET if col else ''}")
 
 drv = read(os.path.join(run, "driver.log"))
 relocated = drv.count("Updating map output")
@@ -100,4 +109,6 @@ fetch = len(re.findall(r"FetchFailed|fetch failure", drv))
 resub = len(re.findall(r"Resubmitting", drv))
 print()
 print(f"  driver: map outputs relocated {relocated} · fetch failures {fetch} · stages resubmitted {resub}")
+if urgent_driver:
+    print(f"  {PREEMPTOR}green: preemptor (the urgent app){RESET}   {PREEMPTEE}yellow: preemptee (reclaimed executors){RESET}")
 sys.exit(0 if ready else 1)

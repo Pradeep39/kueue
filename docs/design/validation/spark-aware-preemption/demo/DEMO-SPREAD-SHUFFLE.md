@@ -27,6 +27,10 @@ Run `./demo-short.sh preflight`, then `./demo-short.sh all` (or `1`–`6` one at
 | 6. Default preemption | `./demo-short.sh 6` | Ten static apps of mixed size, no floor: Kueue's greedy selection evicts the newest apps whole (3 here) and frees more than it needs | ~3:00 |
 | 6. … with a floor | `./demo-short.sh 6 --floor 1` | The same apps with a floor of 1: the 12 slots come out as executors, one or two from each of the ten apps | ~3:30 |
 
+In every part's live table, once the urgent app is admitted it gets its own row in **green** (the
+preemptor). Every app or executor that gives capacity back, in part or by being evicted whole, is shown
+in **yellow** (a preemptee). `NO_COLOR=1` turns the colours off.
+
 Measured on the cluster with `AUTO=1`. Spark 4.0.1 works the same but took ~2 minutes longer in
 part 4: on that version the last victims are slower to get their executors back.
 

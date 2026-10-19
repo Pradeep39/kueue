@@ -23,7 +23,14 @@ TAG_HEADER = os.environ.get("VIEW_TAG_HEADER") or "candidate"
 T = max([len(v) for v in tags.values()] + [len(TAG_HEADER)]) if tags else 0
 quota, execs, urgent_execs = int(quota), int(execs), int(urgent_execs)
 sizes = {k: int(v) for k, v in (t.split("=", 1) for t in os.environ.get("VIEW_SIZES", "").split(",") if "=" in t)}
-W = max(len("executors"), 2 * max([execs] + list(sizes.values())) + 4)   # width of the executor-dots column
+W = max(len("executors"), 2 * max([execs, int(sys.argv[6])] + list(sizes.values())) + 4)   # executor-dots column
+# Row colours once the urgent app is admitted: the preemptor, and every app that gave capacity back.
+# NO_COLOR (any value) turns them off.
+PREEMPTOR, PREEMPTEE, RESET = ("", "", "") if os.environ.get("NO_COLOR") else ("\033[1;32m", "\033[33m", "\033[0m")
+
+
+def row(text, color=""):
+    return f"  {color}{text}{RESET if color else ''}"
 
 
 def items(path):
@@ -95,6 +102,12 @@ else:
 print(f"  urgent app (high priority, needs {urgent_execs + 1} slots): {urgent:30} queue: {granted} of {quota} slots granted")
 print()
 print(f"  {'app':9} " + (f"{TAG_HEADER:{T}}  " if tags else "") + f"{'driver':6}  {'executors':{W}} {'gave':>4}  status")
+# The urgent app gets its own row from the moment it is admitted.
+if trigger and (urgent_admitted or urgent == "finished"):
+    dots = " ".join(["●"] * u["running"] + ["○"] * u["starting"] + ["◌"] * u["waiting"])
+    drv = "✓" if u["driver"] else ("done" if urgent == "finished" else "○")
+    print(row(f"{'als-hi':9} " + (f"{'preemptor':{T}}  " if tags else "") + f"{drv:6}  {dots:{W}} {'-':>4}  "
+              + f"preemptor: {urgent}", PREEMPTOR))
 victims = sorted((a for a in c if a.startswith("als-lo")), key=lambda a: int(a[6:]))
 for a in victims:
     k = c[a]
@@ -126,6 +139,9 @@ for a in victims:
         status = f"running on {k['running']} (gave {g})"
     else:
         status = "running"
-    print(f"  {a:9} " + (f"{tags.get(a, ''):{T}}  " if tags else "") + f"{drv:6}  {dots:{W}} {(g if trigger else '-'):>4}  {status}")
+    print(row(f"{a:9} " + (f"{tags.get(a, ''):{T}}  " if tags else "") + f"{drv:6}  {dots:{W}} {(g if trigger else '-'):>4}  {status}",
+              PREEMPTEE if trigger and (g or evicted[a]) else ""))
 print()
 print("  ● running   ○ starting   ◌ waiting for quota   ✕ stopping (reclaimed)")
+if trigger:
+    print(f"  {PREEMPTOR}green: preemptor (the urgent app){RESET}   {PREEMPTEE}yellow: preemptee (gave capacity back){RESET}")
