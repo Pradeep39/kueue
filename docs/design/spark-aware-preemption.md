@@ -385,7 +385,15 @@ The victim's job reconciler sees the target and runs the reclaim:
    This is the same rule a ReplicaSet uses to scale down (KEP-2255), and Karpenter reads the same
    annotation. So any producer of costs is honoured, and Kueue never polls Spark metrics.
 
-   Each Pod is deleted with the reclaim's termination grace period (`DeleteOptions.GracePeriodSeconds`),
+   **Each Pod is removed through the Eviction API** (`pods/eviction`), not a plain delete. Eviction is
+   the conventional way for one controller to remove Pods another owns, and it honours
+   PodDisruptionBudgets:
+   - **A refused eviction** (HTTP 429, for example from a budget) is not an error. The Pod stays, the
+     next reconcile tries again, and the reclaim timeout still bounds the wait.
+   - **A forbidden eviction** (a ClusterRole that predates `pods/eviction`) falls back to a delete,
+     so a reclaim never stalls on RBAC during an upgrade.
+
+   Each eviction carries the reclaim's termination grace period (`DeleteOptions.GracePeriodSeconds`),
    resolved by the scheduler when it issues the target and recorded on the victim as
    `kueue.x-k8s.io/partial-preemption-reclaim-grace-period`:
 

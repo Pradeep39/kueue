@@ -18,6 +18,7 @@ package sparkapplication
 
 import (
 	"context"
+	"errors"
 	"slices"
 	"strings"
 	"testing"
@@ -27,7 +28,10 @@ import (
 	sparkv1beta2 "github.com/kubeflow/spark-operator/v2/api/v1beta2"
 	sparkcommon "github.com/kubeflow/spark-operator/v2/pkg/common"
 	corev1 "k8s.io/api/core/v1"
+	policyv1 "k8s.io/api/policy/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/component-base/featuregate"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
@@ -542,7 +546,7 @@ func TestReclaimPodsCompletes(t *testing.T) {
 	}
 }
 
-// TestReclaimPodsGracePeriod checks that Pods are deleted with the reclaim's grace period,
+// TestReclaimPodsGracePeriod checks that Pods are evicted with the reclaim's grace period,
 // rounded up to whole seconds, and with none when the reclaim has none.
 func TestReclaimPodsGracePeriod(t *testing.T) {
 	cases := map[string]struct {
@@ -560,18 +564,95 @@ func TestReclaimPodsGracePeriod(t *testing.T) {
 			var got []*int64
 			c := utiltesting.NewClientBuilder().
 				WithObjects(ppPod{name: "e1", node: "n1"}.obj(), ppPod{name: "e2", node: "n1"}.obj()).
-				WithInterceptorFuncs(interceptor.Funcs{Delete: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.DeleteOption) error {
-					o := &client.DeleteOptions{}
-					o.ApplyOptions(opts)
-					got = append(got, o.GracePeriodSeconds)
-					return c.Delete(ctx, obj, opts...)
+				WithInterceptorFuncs(interceptor.Funcs{SubResourceCreate: func(ctx context.Context, c client.Client, sub string, obj, subObj client.Object, opts ...client.SubResourceCreateOption) error {
+					if ev, ok := subObj.(*policyv1.Eviction); ok && sub == "eviction" {
+						var grace *int64
+						if ev.DeleteOptions != nil {
+							grace = ev.DeleteOptions.GracePeriodSeconds
+						}
+						got = append(got, grace)
+					}
+					return c.SubResource(sub).Create(ctx, obj, subObj, opts...)
 				}}).Build()
 			job := fromObject(withSparkConf(elasticApp().ExecutorInstances(2).Obj(), map[string]string{sparkConfPreemptionMinExecutors: "1"}))
 			if _, err := job.ReclaimPods(t.Context(), c, executorPodSetName, 1, tc.grace); err != nil {
 				t.Fatalf("ReclaimPods() error = %v", err)
 			}
 			if diff := cmp.Diff([]*int64{tc.want}, got); diff != "" {
-				t.Errorf("Delete grace period (-want +got):\n%s", diff)
+				t.Errorf("eviction grace period (-want +got):\n%s", diff)
+			}
+		})
+	}
+}
+
+// TestReclaimPodsEviction checks how executor Pods are removed: through the Eviction API, never
+// deleted directly; a refused eviction (a PodDisruptionBudget) is retried later rather than
+// failing the reclaim; and a forbidden eviction (a ClusterRole without pods/eviction) falls back
+// to a delete with the same grace period.
+func TestReclaimPodsEviction(t *testing.T) {
+	podsGR := schema.GroupResource{Resource: "pods"}
+	cases := map[string]struct {
+		evictErr      error
+		wantEvictions int
+		wantDeletes   []*int64
+		wantRemoved   int
+		wantErr       bool
+	}{
+		"evicted, not deleted directly": {
+			wantEvictions: 1, wantRemoved: 1,
+		},
+		"refused by a disruption budget: no error, nothing removed, retried later": {
+			evictErr:      apierrors.NewTooManyRequests("Cannot evict pod as it would violate the pod's disruption budget.", 10),
+			wantEvictions: 1,
+		},
+		"forbidden: deleted instead, with the reclaim's grace period": {
+			evictErr:      apierrors.NewForbidden(podsGR, "e1", errors.New("pods/eviction is not allowed")),
+			wantEvictions: 1, wantDeletes: []*int64{new(int64(45))}, wantRemoved: 1,
+		},
+		"other errors are returned": {
+			evictErr:      apierrors.NewInternalError(errors.New("boom")),
+			wantEvictions: 1, wantErr: true,
+		},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			features.SetFeatureGatesDuringTest(t, partialPreemptionGates)
+			evictions := 0
+			var deletes []*int64
+			c := utiltesting.NewClientBuilder().
+				WithObjects(ppPod{name: "e1", node: "n1"}.obj(), ppPod{name: "e2", node: "n1"}.obj()).
+				WithInterceptorFuncs(interceptor.Funcs{
+					SubResourceCreate: func(ctx context.Context, c client.Client, sub string, obj, subObj client.Object, opts ...client.SubResourceCreateOption) error {
+						if sub == "eviction" {
+							evictions++
+							if tc.evictErr != nil {
+								return tc.evictErr
+							}
+						}
+						return c.SubResource(sub).Create(ctx, obj, subObj, opts...)
+					},
+					Delete: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.DeleteOption) error {
+						o := &client.DeleteOptions{}
+						o.ApplyOptions(opts)
+						deletes = append(deletes, o.GracePeriodSeconds)
+						return c.Delete(ctx, obj, opts...)
+					},
+				}).Build()
+			done, err := fromObject(withSparkConf(elasticApp().ExecutorInstances(2).Obj(), map[string]string{sparkConfPreemptionMinExecutors: "1"})).ReclaimPods(t.Context(), c, executorPodSetName, 1, new(45*time.Second))
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("ReclaimPods() error = %v, wantErr %v", err, tc.wantErr)
+			}
+			if done {
+				t.Errorf("ReclaimPods() done = true, want false while a Pod is still being removed")
+			}
+			if evictions != tc.wantEvictions {
+				t.Errorf("evictions = %d, want %d", evictions, tc.wantEvictions)
+			}
+			if diff := cmp.Diff(tc.wantDeletes, deletes); diff != "" {
+				t.Errorf("direct deletes (-want +got):\n%s", diff)
+			}
+			if got := len(deletedPods(t, c)); got != tc.wantRemoved {
+				t.Errorf("Pods being removed = %d, want %d", got, tc.wantRemoved)
 			}
 		})
 	}

@@ -26,6 +26,9 @@ import (
 
 	sparkcommon "github.com/kubeflow/spark-operator/v2/pkg/common"
 	corev1 "k8s.io/api/core/v1"
+	policyv1 "k8s.io/api/policy/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/klog/v2"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -240,13 +243,15 @@ func compareReclaimOrder(a, b *corev1.Pod) int {
 }
 
 // +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch;delete
+// +kubebuilder:rbac:groups="",resources=pods/eviction,verbs=create
 
 // ReclaimPods implements jobframework.JobWithPartialPreemption.
 //
 // It is level-based: it counts the executor Pods still holding a grant, including those
-// already being deleted, and deletes only enough more to bring that count to keep. Calling
-// it again while deletions are in flight deletes nothing more. The driver is never listed,
-// gated Pods hold no grant and are never touched, and keep is never below the floor.
+// already being deleted, and evicts only enough more to bring that count to keep. Calling
+// it again while deletions are in flight evicts nothing more. The driver is never listed,
+// gated Pods hold no grant and are never touched, and keep is never below the floor. Pods are
+// removed through evictExecutorPod.
 func (j *SparkApplication) ReclaimPods(ctx context.Context, c client.Client, podSet kueue.PodSetReference, keep int32, gracePeriod *time.Duration) (bool, error) {
 	if podSet != executorPodSetName {
 		return false, fmt.Errorf("partial preemption of PodSet %q is not supported, only %q", podSet, executorPodSetName)
@@ -286,17 +291,48 @@ func (j *SparkApplication) ReclaimPods(ctx context.Context, c client.Client, pod
 		return false, nil
 	}
 	slices.SortFunc(candidates, compareReclaimOrder)
-	var opts []client.DeleteOption
+	var graceSeconds *int64
 	if gracePeriod != nil {
 		// Whole seconds, rounded up so a sub-second remainder is never cut.
-		opts = append(opts, client.GracePeriodSeconds(int64((*gracePeriod+time.Second-1)/time.Second)))
+		graceSeconds = ptr.To(int64((*gracePeriod + time.Second - 1) / time.Second))
 	}
 	log := ctrl.LoggerFrom(ctx)
 	for _, p := range candidates[:min(toDelete, len(candidates))] {
-		log.V(3).Info("Deleting executor Pod for partial preemption", "pod", klog.KObj(p), "keep", keep, "holding", holding)
-		if err := c.Delete(ctx, p, opts...); client.IgnoreNotFound(err) != nil {
+		log.V(3).Info("Evicting executor Pod for partial preemption", "pod", klog.KObj(p), "keep", keep, "holding", holding)
+		if err := evictExecutorPod(ctx, c, p, graceSeconds); err != nil {
 			return false, err
 		}
 	}
 	return false, nil
+}
+
+// evictExecutorPod removes p through the Eviction API rather than a plain delete. Eviction is the
+// conventional way for one controller to remove Pods another controller owns, and it honours
+// PodDisruptionBudgets. A refusal (HTTP 429, e.g. from a budget) is not an error: the Pod stays,
+// and the next ReclaimPods call tries again, while the reclaim timeout still bounds the wait.
+// When eviction is forbidden, as with a ClusterRole that predates pods/eviction, it deletes the
+// Pod instead, so a reclaim never stalls on RBAC.
+func evictExecutorPod(ctx context.Context, c client.Client, p *corev1.Pod, graceSeconds *int64) error {
+	eviction := &policyv1.Eviction{ObjectMeta: metav1.ObjectMeta{Name: p.Name, Namespace: p.Namespace}}
+	if graceSeconds != nil {
+		eviction.DeleteOptions = &metav1.DeleteOptions{GracePeriodSeconds: graceSeconds}
+	}
+	err := c.SubResource("eviction").Create(ctx, p, eviction)
+	log := ctrl.LoggerFrom(ctx)
+	switch {
+	case err == nil || apierrors.IsNotFound(err):
+		return nil
+	case apierrors.IsTooManyRequests(err):
+		log.V(3).Info("Eviction of executor Pod refused; retrying on the next reconcile", "pod", klog.KObj(p), "reason", err.Error())
+		return nil
+	case apierrors.IsForbidden(err):
+		log.V(2).Info("Eviction of executor Pod forbidden; deleting it instead", "pod", klog.KObj(p), "reason", err.Error())
+		var opts []client.DeleteOption
+		if graceSeconds != nil {
+			opts = append(opts, client.GracePeriodSeconds(*graceSeconds))
+		}
+		return client.IgnoreNotFound(c.Delete(ctx, p, opts...))
+	default:
+		return err
+	}
 }
