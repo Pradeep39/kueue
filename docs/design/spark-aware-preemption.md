@@ -366,11 +366,18 @@ keeps whole eviction. Its share simulation (`fairsharing/target.go`) works on wh
 For a partial target it instead:
 
 - writes `kueue.x-k8s.io/partial-preemption-target: "<new executor grant>"` on the victim Workload;
+- publishes the same target as **`status.admission.podSetAssignments[].reclaimTargetCount`**, the
+  Kueue-owned field KEP-975 defines for this request. Other job runtimes that implement the KEP's
+  contract watch this field. The annotation stays Kueue's own record of the reclaim; the field
+  mirrors it.
 - sets a `PartiallyPreempted` condition naming the preemptor and the count.
 
 It records a preemption expectation, so the preemptor is not planned again while it waits.
 
-The victim's job reconciler sees the target and runs the reclaim:
+The victim's job reconciler sees the target and runs the reclaim. **Before any Pod is evicted, it
+makes sure `reclaimTargetCount` is published**, writing it itself if the scheduler's write has not
+landed. A Workload CRD that predates the field prunes it; the reconciler logs that and reclaims
+without it, rather than stalling.
 
 1. **Delete the Pods, which tells each one to decommission.** It calls
    `ReclaimPods(n = granted − target)`. The Spark integration **sweeps the victim's ungated executor
@@ -416,8 +423,15 @@ The victim's job reconciler sees the target and runs the reclaim:
    in-place scale-down EQM already uses (`scaleDownAdmission`, `workloadslicing.go:603`). That path is
    allowed by the decrease-only `validateAdmissionUpdate` exception (`workload_webhook.go:410`). The
    cache charges `min(spec, granted)` (EQM §10.1), so usage drops by exactly the reclaimed executors.
-   The preemptor's next scheduling pass sees the free quota.
-4. **Clear.** It removes the target annotation and resolves the condition.
+   The preemptor's next scheduling pass sees the free quota. **The same status write clears
+   `reclaimTargetCount`**, so the release and the cleared target land together, as KEP-975 requires.
+4. **Clear.** It removes the target annotation and resolves the condition. An abandoned reclaim (the
+   victim was evicted, finished or lost its admission) also clears `reclaimTargetCount`.
+
+**Webhook.** `status.admission` is otherwise immutable once set. With the `SparkPartialPreemption`
+gate on, `validateAdmissionUpdate` lets `reclaimTargetCount` be set, changed or cleared on an
+admitted Workload, and validation rejects a value above the PodSet's `count`. With the gate off the
+admission stays fully immutable.
 
 **Why the order is load-bearing.** Lowering the grant before the Pods stop would hand their quota to
 the preemptor while they still run. That is the SC-2 breach EQM §12's `IsActive()` fix exists to

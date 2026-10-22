@@ -97,6 +97,12 @@ func (p *Preemptor) issuePartialPreemption(ctx context.Context, preemptor *workl
 		log.V(3).Info("Partial preemption already outstanding", "targetWorkload", klog.KObj(wl), "preemptingWorkload", klog.KObj(preemptor.Obj))
 		return nil
 	}
+	// KEP-975: publish the target on the victim's admission, the field other job runtimes watch.
+	// The job reconciler acts on the target annotation, and writes this itself before evicting
+	// any Pod if this write has not landed, so a failure here does not stop the reclaim.
+	if err := workload.UpdateReclaimTargetCount(ctx, p.client, wl, target.Reclaim.PodSet, &newTarget); err != nil {
+		log.Error(err, "Failed to set reclaimTargetCount", "targetWorkload", klog.KObj(wl))
+	}
 
 	reclaimed := granted - newTarget
 	message := fmt.Sprintf("Partially preempted %d Pod(s) of PodSet %s, from %d to %d, for workload %s. %s",

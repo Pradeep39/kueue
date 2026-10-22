@@ -31,6 +31,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	testingclock "k8s.io/utils/clock/testing"
+	"k8s.io/utils/ptr"
 	controllerruntime "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
@@ -78,7 +79,11 @@ type ppJob struct {
 	observed []ppObservation
 }
 
-type ppObservation struct{ grant, running int32 }
+// published is the reclaimTargetCount on the executor PodSet when ReclaimPods was called.
+type ppObservation struct {
+	grant, running int32
+	published      *int32
+}
 
 var _ JobWithPartialPreemption = (*ppJob)(nil)
 
@@ -98,7 +103,11 @@ func (j *ppJob) ReclaimPods(ctx context.Context, c client.Client, podSet kueue.P
 	wl := &kueue.Workload{}
 	if err := c.Get(ctx, client.ObjectKey{Namespace: "ns", Name: ppTipName}, wl); err == nil {
 		g, _ := workload.GrantedCount(wl, podSet)
-		j.observed = append(j.observed, ppObservation{grant: g, running: j.running})
+		obs := ppObservation{grant: g, running: j.running}
+		if n, ok := workload.ReclaimTargetCount(wl, podSet); ok {
+			obs.published = &n
+		}
+		j.observed = append(j.observed, obs)
 	}
 	if len(j.reclaimCalls) >= j.stopAfterCalls && j.running > keep {
 		j.running = keep
@@ -285,6 +294,8 @@ func TestPartialPreemptionReclaimOrchestration(t *testing.T) {
 		eventType     string
 		eventReason   string
 		restoreCount  string
+		// published is the reclaimTargetCount left on the executor PodSet (KEP-975).
+		published *int32
 	}
 	cases := map[string]struct {
 		gateOff        bool
@@ -300,6 +311,7 @@ func TestPartialPreemptionReclaimOrchestration(t *testing.T) {
 			want: want{
 				requeueAfter: 5 * time.Second, reclaimCalls: []int32{2}, grant: 4, cpu: "4",
 				condStatus: metav1.ConditionTrue, condReason: kueueconstants.PartialPreemptionIssuedReason, restoreCount: "4",
+				published: ptr.To[int32](2),
 			},
 		},
 		"pods not stopped, deadline close: requeue at the deadline": {
@@ -308,6 +320,7 @@ func TestPartialPreemptionReclaimOrchestration(t *testing.T) {
 			want: want{
 				requeueAfter: 3 * time.Second, reclaimCalls: []int32{2}, grant: 4, cpu: "4",
 				condStatus: metav1.ConditionTrue, condReason: kueueconstants.PartialPreemptionIssuedReason, restoreCount: "4",
+				published: ptr.To[int32](2),
 			},
 		},
 		"pods stopped: grant lowered to the target, spec untouched, target cleared": {
@@ -348,6 +361,15 @@ func TestPartialPreemptionReclaimOrchestration(t *testing.T) {
 		},
 		"evicted mid-reclaim: abandoned without touching the grant": {
 			wl:             withTarget(makePPTip(now), 2, now.Add(time.Minute), now).EvictedAt(now).Obj(),
+			stopAfterCalls: 1,
+			want: want{
+				grant: 4, cpu: "4", targetCleared: true,
+				condStatus: metav1.ConditionFalse, condReason: kueueconstants.PartialPreemptionAbandonedReason,
+				eventType: corev1.EventTypeNormal, eventReason: ReasonPartialPreemptionAbandoned,
+			},
+		},
+		"evicted mid-reclaim with the target published: the published target is cleared too": {
+			wl:             withPublished(withTarget(makePPTip(now), 2, now.Add(time.Minute), now).EvictedAt(now).Obj(), 2),
 			stopAfterCalls: 1,
 			want: want{
 				grant: 4, cpu: "4", targetCleared: true,
@@ -438,7 +460,52 @@ func TestPartialPreemptionReclaimOrchestration(t *testing.T) {
 			if tc.want.condReason != kueueconstants.PartialPreemptionTimedOutReason {
 				env.assertSC2()
 			}
+			var published *int32
+			if n, ok := workload.ReclaimTargetCount(got, ppExecutor); ok {
+				published = &n
+			}
+			if diff := cmp.Diff(tc.want.published, published); diff != "" {
+				t.Errorf("reclaimTargetCount left on the executor PodSet (-want,+got):\n%s", diff)
+			}
+			// KEP-975: every eviction pass starts with the target already published.
+			for i, obs := range env.job.observed {
+				if obs.published == nil || *obs.published != env.job.reclaimCalls[i] {
+					t.Errorf("ReclaimPods call %d: reclaimTargetCount = %v when reclaiming to %d, want it published first", i, obs.published, env.job.reclaimCalls[i])
+				}
+			}
 		})
+	}
+}
+
+// withPublished sets the executor PodSet's reclaimTargetCount on wl's admission.
+func withPublished(wl *kueue.Workload, n int32) *kueue.Workload {
+	workload.SetReclaimTargetCount(wl, ppExecutor, &n)
+	return wl
+}
+
+// TestPartialPreemptionWithoutReclaimTargetCountField checks that a Workload CRD that predates
+// reclaimTargetCount, which prunes the field on every write, does not stop the reclaim.
+func TestPartialPreemptionWithoutReclaimTargetCountField(t *testing.T) {
+	now := time.Now().Truncate(time.Second)
+	enablePPGates(t, true)
+	env := newPPEnv(t, now, 4, withTarget(makePPTip(now), 2, now.Add(time.Minute), now).Obj())
+	pruning := interceptor.NewClient(env.cl.(client.WithWatch), interceptor.Funcs{
+		SubResourceUpdate: func(ctx context.Context, c client.Client, sub string, obj client.Object, opts ...client.SubResourceUpdateOption) error {
+			if wl, ok := obj.(*kueue.Workload); ok {
+				workload.SetReclaimTargetCount(wl, "", nil)
+			}
+			return c.SubResource(sub).Update(ctx, obj, opts...)
+		},
+	})
+	env.cl = pruning
+	env.r = NewReconciler(pruning, env.rec, WithClock(env.clock))
+	env.job.stopAfterCalls = 1
+	env.reconcile()
+	if diff := cmp.Diff([]int32{2}, env.job.reclaimCalls); diff != "" {
+		t.Errorf("ReclaimPods keep arguments (-want,+got):\n%s", diff)
+	}
+	if g, _ := grantOf(t, env.get(ppTipName)); g != 2 {
+		t.Errorf("executor grant = %d, want 2: the reclaim must complete without the field", g)
 	}
 }
 
@@ -875,5 +942,35 @@ func TestJobFinishedFinishesEverySlice(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestPartialPreemptionClearsTargetWithTheGrant checks that the status write lowering the grant
+// also clears reclaimTargetCount, so the quota release and the cleared target land together
+// (KEP-975), rather than leaving the target published on a Workload already at it.
+func TestPartialPreemptionClearsTargetWithTheGrant(t *testing.T) {
+	now := time.Now().Truncate(time.Second)
+	enablePPGates(t, true)
+	env := newPPEnv(t, now, 4, withPublished(withTarget(makePPTip(now), 2, now.Add(time.Minute), now).Obj(), 2))
+	lowered := 0
+	watching := interceptor.NewClient(env.cl.(client.WithWatch), interceptor.Funcs{
+		SubResourceUpdate: func(ctx context.Context, c client.Client, sub string, obj client.Object, opts ...client.SubResourceUpdateOption) error {
+			if wl, ok := obj.(*kueue.Workload); ok {
+				if g, _ := workload.GrantedCount(wl, ppExecutor); g < 4 {
+					lowered++
+					if n, published := workload.ReclaimTargetCount(wl, ppExecutor); published {
+						t.Errorf("the write lowering the grant to %d still publishes reclaimTargetCount %d", g, n)
+					}
+				}
+			}
+			return c.SubResource(sub).Update(ctx, obj, opts...)
+		},
+	})
+	env.cl = watching
+	env.r = NewReconciler(watching, env.rec, WithClock(env.clock))
+	env.job.stopAfterCalls = 1
+	env.reconcile()
+	if lowered == 0 {
+		t.Fatal("the grant was never lowered")
 	}
 }

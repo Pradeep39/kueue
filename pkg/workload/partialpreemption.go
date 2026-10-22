@@ -17,13 +17,17 @@ limitations under the License.
 package workload
 
 import (
+	"context"
 	"strconv"
 	"time"
 
+	"k8s.io/client-go/util/retry"
 	"k8s.io/utils/ptr"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	kueue "sigs.k8s.io/kueue/apis/kueue/v1beta2"
 	"sigs.k8s.io/kueue/pkg/constants"
+	"sigs.k8s.io/kueue/pkg/features"
 )
 
 // PartialPreemptionSpec is what a Workload declares about how it may be partially preempted.
@@ -192,4 +196,70 @@ func PartialPreemptionReclaimGracePeriod(wl *kueue.Workload) (time.Duration, boo
 		return 0, false
 	}
 	return ParseGracePeriod(s)
+}
+
+// ReclaimTargetCount returns status.admission.podSetAssignments[].reclaimTargetCount for podSet,
+// the KEP-975 field that publishes an outstanding partial preemption's target.
+func ReclaimTargetCount(wl *kueue.Workload, podSet kueue.PodSetReference) (int32, bool) {
+	if wl.Status.Admission == nil {
+		return 0, false
+	}
+	for i := range wl.Status.Admission.PodSetAssignments {
+		psa := &wl.Status.Admission.PodSetAssignments[i]
+		if psa.Name == podSet && psa.ReclaimTargetCount != nil {
+			return *psa.ReclaimTargetCount, true
+		}
+	}
+	return 0, false
+}
+
+// SetReclaimTargetCount sets podSet's reclaimTargetCount on wl's admission in memory, or clears
+// it when target is nil, and reports whether anything changed. An empty podSet clears the field
+// on every PodSet; it never sets.
+func SetReclaimTargetCount(wl *kueue.Workload, podSet kueue.PodSetReference, target *int32) bool {
+	if wl.Status.Admission == nil {
+		return false
+	}
+	changed := false
+	for i := range wl.Status.Admission.PodSetAssignments {
+		psa := &wl.Status.Admission.PodSetAssignments[i]
+		if podSet != "" && psa.Name != podSet {
+			continue
+		}
+		want := target
+		if podSet == "" {
+			want = nil
+		}
+		if ptr.Equal(psa.ReclaimTargetCount, want) {
+			continue
+		}
+		if want == nil {
+			psa.ReclaimTargetCount = nil
+		} else {
+			psa.ReclaimTargetCount = ptr.To(*want)
+		}
+		changed = true
+	}
+	return changed
+}
+
+// UpdateReclaimTargetCount writes SetReclaimTargetCount's change to the API server with a
+// status update, re-reading wl and retrying on conflict. It does nothing while the
+// SparkPartialPreemption gate is off, or once wl holds no quota reservation. On return wl holds
+// what the API server stored, so a Workload CRD that predates the field shows up as the field
+// still missing.
+func UpdateReclaimTargetCount(ctx context.Context, c client.Client, wl *kueue.Workload, podSet kueue.PodSetReference, target *int32) error {
+	if !features.Enabled(features.SparkPartialPreemption) {
+		return nil
+	}
+	key := client.ObjectKeyFromObject(wl)
+	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		if err := c.Get(ctx, key, wl); err != nil {
+			return client.IgnoreNotFound(err)
+		}
+		if !HasQuotaReservation(wl) || !SetReclaimTargetCount(wl, podSet, target) {
+			return nil
+		}
+		return c.Status().Update(ctx, wl)
+	})
 }

@@ -648,6 +648,9 @@ func TestIssuePartialPreemption(t *testing.T) {
 					t.Errorf("Annotation %s = %q, want %q", k, got.Annotations[k], want)
 				}
 			}
+			if n, ok := workload.ReclaimTargetCount(&got, partialPodSet); !ok || n != 3 {
+				t.Errorf("reclaimTargetCount = (%d, %v), want (3, true): the target must be published on the admission (KEP-975)", n, ok)
+			}
 			cond := apimeta.FindStatusCondition(got.Status.Conditions, constants.PartiallyPreemptedCondition)
 			if cond == nil || cond.Status != metav1.ConditionTrue || cond.Reason != constants.PartialPreemptionIssuedReason {
 				t.Errorf("Unexpected PartiallyPreempted condition %+v", cond)
@@ -743,6 +746,9 @@ func TestIssuePartialPreemptionKeepsRestoreCount(t *testing.T) {
 	}
 	if got.Annotations[constants.PartialPreemptionRestoreCountAnnotation] != "6" || got.Annotations[constants.PartialPreemptionTargetAnnotation] != "3" {
 		t.Errorf("Unexpected annotations %v", got.Annotations)
+	}
+	if n, ok := workload.ReclaimTargetCount(&got, partialPodSet); !ok || n != 3 {
+		t.Errorf("reclaimTargetCount = (%d, %v), want (3, true)", n, ok)
 	}
 	if got.Annotations[constants.PartialPreemptionDeadlineAnnotation] != now.Add(60*time.Second).UTC().Format(time.RFC3339) {
 		t.Errorf("Deadline %q does not use the default timeout", got.Annotations[constants.PartialPreemptionDeadlineAnnotation])

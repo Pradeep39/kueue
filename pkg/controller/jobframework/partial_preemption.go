@@ -255,6 +255,11 @@ func (r *JobReconciler) executePartialPreemption(ctx context.Context, job Generi
 		}
 	}
 
+	// KEP-975: the target is published on the admission before any Pod is evicted.
+	if err := publishReclaimTargetCount(ctx, r.client, wl, podSet, target); err != nil {
+		return ctrl.Result{}, true, err
+	}
+
 	// Steps 1 and 2: delete the Pods and see whether they have stopped.
 	var grace *time.Duration
 	if d, ok := workload.PartialPreemptionReclaimGracePeriod(wl); ok {
@@ -296,7 +301,9 @@ func (r *JobReconciler) executePartialPreemption(ctx context.Context, job Generi
 		message = fmt.Sprintf("Pods of %s did not stop by the deadline %s; its grant was lowered from %d to %d anyway",
 			podSet, deadline.UTC().Format(time.RFC3339), granted, target)
 	}
-	if _, err := workloadslicing.LowerGrantedCounts(ctx, r.client, wl, workload.PodSetsCounts{podSet: target}, nil); err != nil {
+	// The published target is cleared in the same write that lowers the grant (KEP-975).
+	clearTarget := func(wl *kueue.Workload) bool { return workload.SetReclaimTargetCount(wl, podSet, nil) }
+	if _, err := workloadslicing.LowerGrantedCounts(ctx, r.client, wl, workload.PodSetsCounts{podSet: target}, clearTarget); err != nil {
 		return ctrl.Result{}, true, fmt.Errorf("lowering the grant of a partially preempted workload: %w", err)
 	}
 	// Resolving the condition is a separate write: the scheduler owns it through its own field
@@ -329,7 +336,29 @@ func (r *JobReconciler) abandonPartialPreemption(ctx context.Context, job Generi
 	return nil
 }
 
+// publishReclaimTargetCount makes sure the admission carries target as podSet's
+// reclaimTargetCount. The scheduler writes it when it issues the target; this covers a reclaim
+// that starts before that write lands. A Workload CRD that predates the field prunes it, so a
+// field that does not stick is logged and the reclaim goes on without it.
+func publishReclaimTargetCount(ctx context.Context, c client.Client, wl *kueue.Workload, podSet kueue.PodSetReference, target int32) error {
+	if got, ok := workload.ReclaimTargetCount(wl, podSet); ok && got == target {
+		return nil
+	}
+	if err := workload.UpdateReclaimTargetCount(ctx, c, wl, podSet, &target); err != nil {
+		return fmt.Errorf("publishing reclaimTargetCount: %w", err)
+	}
+	if got, ok := workload.ReclaimTargetCount(wl, podSet); features.Enabled(features.SparkPartialPreemption) &&
+		workload.HasQuotaReservation(wl) && (!ok || got != target) {
+		ctrl.LoggerFrom(ctx).V(2).Info("reclaimTargetCount was not stored; the Workload CRD may predate it. Reclaiming without it",
+			"workload", klog.KObj(wl), "podSet", podSet, "target", target)
+	}
+	return nil
+}
+
 func clearPartialPreemptionTarget(ctx context.Context, c client.Client, wl *kueue.Workload) error {
+	if err := workload.UpdateReclaimTargetCount(ctx, c, wl, "", nil); err != nil {
+		return fmt.Errorf("clearing reclaimTargetCount: %w", err)
+	}
 	if err := clientutil.Patch(ctx, c, wl, func() (bool, error) {
 		changed := setOrDeleteAnnotation(wl, constants.PartialPreemptionTargetAnnotation, nil)
 		changed = setOrDeleteAnnotation(wl, constants.PartialPreemptionReclaimGracePeriodAnnotation, nil) || changed
