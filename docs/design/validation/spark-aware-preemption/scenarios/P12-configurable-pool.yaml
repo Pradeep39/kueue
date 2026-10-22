@@ -1,0 +1,464 @@
+# Scenario P12-configurable-pool
+# Setup: setup/queues-tres.yaml with spec.preemption.withinClusterQueue and reclaimWithinCohort Never and the
+#   kueue.x-k8s.io/preemption-config-name: batch-pool annotation; setup/preemption-config-p12.yaml; the ConfigurablePreemptions
+#   gate; integrations.labelKeysToCopy [preemption-pool, preemption-role] in Kueue's configuration.
+# Wave 1: als-lo1..6 (default priority, preemption-pool=batch, driver + 3, floor 1) and als-lo7..10 (low priority, unlabeled, driver + 2, floor 1).
+# Wave 2: als-hi (high priority, preemption-role=urgent, static driver + 11) once every executor runs.
+# Judged by: req-check --slots 36 --preemption; pp-analyze --floor 1
+# ---- wave 1
+apiVersion: sparkoperator.k8s.io/v1beta2
+kind: SparkApplication
+metadata:
+  name: als-lo1
+  namespace: batch-ns-uno
+  annotations:
+    kueue.x-k8s.io/elastic-job: "true"
+  labels:
+    preemption-pool: "batch"
+    kueue.x-k8s.io/queue-name: batch-queue-tres
+    kueue.x-k8s.io/priority-class: default
+spec:
+  type: Scala
+  mode: cluster
+  image: docker.io/library/spark:4.0.1
+  imagePullPolicy: IfNotPresent
+  mainClass: org.apache.spark.examples.SparkALS
+  mainApplicationFile: local:///opt/spark/examples/jars/spark-examples.jar
+  arguments: ["1500", "1500", "12", "40", "200"]
+  sparkVersion: 4.0.1
+  sparkConf:
+    "spark.kueue.preemption.minExecutors": "1"
+    "spark.executor.instances": "3"
+    "spark.kubernetes.executor.podNamePrefix": "als-lo1"
+  driver:
+    cores: 1
+    memory: 512m
+    serviceAccount: spark-operator-spark
+    securityContext: &sc
+      capabilities:
+        drop: [ALL]
+      runAsGroup: 185
+      runAsUser: 185
+      runAsNonRoot: true
+      allowPrivilegeEscalation: false
+      seccompProfile:
+        type: RuntimeDefault
+  executor:
+    cores: 1
+    memory: 512m
+    securityContext: *sc
+---
+apiVersion: sparkoperator.k8s.io/v1beta2
+kind: SparkApplication
+metadata:
+  name: als-lo2
+  namespace: batch-ns-uno
+  annotations:
+    kueue.x-k8s.io/elastic-job: "true"
+  labels:
+    preemption-pool: "batch"
+    kueue.x-k8s.io/queue-name: batch-queue-tres
+    kueue.x-k8s.io/priority-class: default
+spec:
+  type: Scala
+  mode: cluster
+  image: docker.io/library/spark:4.0.1
+  imagePullPolicy: IfNotPresent
+  mainClass: org.apache.spark.examples.SparkALS
+  mainApplicationFile: local:///opt/spark/examples/jars/spark-examples.jar
+  arguments: ["1500", "1500", "12", "40", "200"]
+  sparkVersion: 4.0.1
+  sparkConf:
+    "spark.kueue.preemption.minExecutors": "1"
+    "spark.executor.instances": "3"
+    "spark.kubernetes.executor.podNamePrefix": "als-lo2"
+  driver:
+    cores: 1
+    memory: 512m
+    serviceAccount: spark-operator-spark
+    securityContext: &sc
+      capabilities:
+        drop: [ALL]
+      runAsGroup: 185
+      runAsUser: 185
+      runAsNonRoot: true
+      allowPrivilegeEscalation: false
+      seccompProfile:
+        type: RuntimeDefault
+  executor:
+    cores: 1
+    memory: 512m
+    securityContext: *sc
+---
+apiVersion: sparkoperator.k8s.io/v1beta2
+kind: SparkApplication
+metadata:
+  name: als-lo3
+  namespace: batch-ns-uno
+  annotations:
+    kueue.x-k8s.io/elastic-job: "true"
+  labels:
+    preemption-pool: "batch"
+    kueue.x-k8s.io/queue-name: batch-queue-tres
+    kueue.x-k8s.io/priority-class: default
+spec:
+  type: Scala
+  mode: cluster
+  image: docker.io/library/spark:4.0.1
+  imagePullPolicy: IfNotPresent
+  mainClass: org.apache.spark.examples.SparkALS
+  mainApplicationFile: local:///opt/spark/examples/jars/spark-examples.jar
+  arguments: ["1500", "1500", "12", "40", "200"]
+  sparkVersion: 4.0.1
+  sparkConf:
+    "spark.kueue.preemption.minExecutors": "1"
+    "spark.executor.instances": "3"
+    "spark.kubernetes.executor.podNamePrefix": "als-lo3"
+  driver:
+    cores: 1
+    memory: 512m
+    serviceAccount: spark-operator-spark
+    securityContext: &sc
+      capabilities:
+        drop: [ALL]
+      runAsGroup: 185
+      runAsUser: 185
+      runAsNonRoot: true
+      allowPrivilegeEscalation: false
+      seccompProfile:
+        type: RuntimeDefault
+  executor:
+    cores: 1
+    memory: 512m
+    securityContext: *sc
+---
+apiVersion: sparkoperator.k8s.io/v1beta2
+kind: SparkApplication
+metadata:
+  name: als-lo4
+  namespace: batch-ns-uno
+  annotations:
+    kueue.x-k8s.io/elastic-job: "true"
+  labels:
+    preemption-pool: "batch"
+    kueue.x-k8s.io/queue-name: batch-queue-tres
+    kueue.x-k8s.io/priority-class: default
+spec:
+  type: Scala
+  mode: cluster
+  image: docker.io/library/spark:4.0.1
+  imagePullPolicy: IfNotPresent
+  mainClass: org.apache.spark.examples.SparkALS
+  mainApplicationFile: local:///opt/spark/examples/jars/spark-examples.jar
+  arguments: ["1500", "1500", "12", "40", "200"]
+  sparkVersion: 4.0.1
+  sparkConf:
+    "spark.kueue.preemption.minExecutors": "1"
+    "spark.executor.instances": "3"
+    "spark.kubernetes.executor.podNamePrefix": "als-lo4"
+  driver:
+    cores: 1
+    memory: 512m
+    serviceAccount: spark-operator-spark
+    securityContext: &sc
+      capabilities:
+        drop: [ALL]
+      runAsGroup: 185
+      runAsUser: 185
+      runAsNonRoot: true
+      allowPrivilegeEscalation: false
+      seccompProfile:
+        type: RuntimeDefault
+  executor:
+    cores: 1
+    memory: 512m
+    securityContext: *sc
+---
+apiVersion: sparkoperator.k8s.io/v1beta2
+kind: SparkApplication
+metadata:
+  name: als-lo5
+  namespace: batch-ns-uno
+  annotations:
+    kueue.x-k8s.io/elastic-job: "true"
+  labels:
+    preemption-pool: "batch"
+    kueue.x-k8s.io/queue-name: batch-queue-tres
+    kueue.x-k8s.io/priority-class: default
+spec:
+  type: Scala
+  mode: cluster
+  image: docker.io/library/spark:4.0.1
+  imagePullPolicy: IfNotPresent
+  mainClass: org.apache.spark.examples.SparkALS
+  mainApplicationFile: local:///opt/spark/examples/jars/spark-examples.jar
+  arguments: ["1500", "1500", "12", "40", "200"]
+  sparkVersion: 4.0.1
+  sparkConf:
+    "spark.kueue.preemption.minExecutors": "1"
+    "spark.executor.instances": "3"
+    "spark.kubernetes.executor.podNamePrefix": "als-lo5"
+  driver:
+    cores: 1
+    memory: 512m
+    serviceAccount: spark-operator-spark
+    securityContext: &sc
+      capabilities:
+        drop: [ALL]
+      runAsGroup: 185
+      runAsUser: 185
+      runAsNonRoot: true
+      allowPrivilegeEscalation: false
+      seccompProfile:
+        type: RuntimeDefault
+  executor:
+    cores: 1
+    memory: 512m
+    securityContext: *sc
+---
+apiVersion: sparkoperator.k8s.io/v1beta2
+kind: SparkApplication
+metadata:
+  name: als-lo6
+  namespace: batch-ns-uno
+  annotations:
+    kueue.x-k8s.io/elastic-job: "true"
+  labels:
+    preemption-pool: "batch"
+    kueue.x-k8s.io/queue-name: batch-queue-tres
+    kueue.x-k8s.io/priority-class: default
+spec:
+  type: Scala
+  mode: cluster
+  image: docker.io/library/spark:4.0.1
+  imagePullPolicy: IfNotPresent
+  mainClass: org.apache.spark.examples.SparkALS
+  mainApplicationFile: local:///opt/spark/examples/jars/spark-examples.jar
+  arguments: ["1500", "1500", "12", "40", "200"]
+  sparkVersion: 4.0.1
+  sparkConf:
+    "spark.kueue.preemption.minExecutors": "1"
+    "spark.executor.instances": "3"
+    "spark.kubernetes.executor.podNamePrefix": "als-lo6"
+  driver:
+    cores: 1
+    memory: 512m
+    serviceAccount: spark-operator-spark
+    securityContext: &sc
+      capabilities:
+        drop: [ALL]
+      runAsGroup: 185
+      runAsUser: 185
+      runAsNonRoot: true
+      allowPrivilegeEscalation: false
+      seccompProfile:
+        type: RuntimeDefault
+  executor:
+    cores: 1
+    memory: 512m
+    securityContext: *sc
+---
+apiVersion: sparkoperator.k8s.io/v1beta2
+kind: SparkApplication
+metadata:
+  name: als-lo7
+  namespace: batch-ns-uno
+  annotations:
+    kueue.x-k8s.io/elastic-job: "true"
+  labels:
+    kueue.x-k8s.io/queue-name: batch-queue-tres
+    kueue.x-k8s.io/priority-class: low
+spec:
+  type: Scala
+  mode: cluster
+  image: docker.io/library/spark:4.0.1
+  imagePullPolicy: IfNotPresent
+  mainClass: org.apache.spark.examples.SparkALS
+  mainApplicationFile: local:///opt/spark/examples/jars/spark-examples.jar
+  arguments: ["1500", "1500", "12", "40", "200"]
+  sparkVersion: 4.0.1
+  sparkConf:
+    "spark.kueue.preemption.minExecutors": "1"
+    "spark.executor.instances": "2"
+    "spark.kubernetes.executor.podNamePrefix": "als-lo7"
+  driver:
+    cores: 1
+    memory: 512m
+    serviceAccount: spark-operator-spark
+    securityContext: &sc
+      capabilities:
+        drop: [ALL]
+      runAsGroup: 185
+      runAsUser: 185
+      runAsNonRoot: true
+      allowPrivilegeEscalation: false
+      seccompProfile:
+        type: RuntimeDefault
+  executor:
+    cores: 1
+    memory: 512m
+    securityContext: *sc
+---
+apiVersion: sparkoperator.k8s.io/v1beta2
+kind: SparkApplication
+metadata:
+  name: als-lo8
+  namespace: batch-ns-uno
+  annotations:
+    kueue.x-k8s.io/elastic-job: "true"
+  labels:
+    kueue.x-k8s.io/queue-name: batch-queue-tres
+    kueue.x-k8s.io/priority-class: low
+spec:
+  type: Scala
+  mode: cluster
+  image: docker.io/library/spark:4.0.1
+  imagePullPolicy: IfNotPresent
+  mainClass: org.apache.spark.examples.SparkALS
+  mainApplicationFile: local:///opt/spark/examples/jars/spark-examples.jar
+  arguments: ["1500", "1500", "12", "40", "200"]
+  sparkVersion: 4.0.1
+  sparkConf:
+    "spark.kueue.preemption.minExecutors": "1"
+    "spark.executor.instances": "2"
+    "spark.kubernetes.executor.podNamePrefix": "als-lo8"
+  driver:
+    cores: 1
+    memory: 512m
+    serviceAccount: spark-operator-spark
+    securityContext: &sc
+      capabilities:
+        drop: [ALL]
+      runAsGroup: 185
+      runAsUser: 185
+      runAsNonRoot: true
+      allowPrivilegeEscalation: false
+      seccompProfile:
+        type: RuntimeDefault
+  executor:
+    cores: 1
+    memory: 512m
+    securityContext: *sc
+---
+apiVersion: sparkoperator.k8s.io/v1beta2
+kind: SparkApplication
+metadata:
+  name: als-lo9
+  namespace: batch-ns-uno
+  annotations:
+    kueue.x-k8s.io/elastic-job: "true"
+  labels:
+    kueue.x-k8s.io/queue-name: batch-queue-tres
+    kueue.x-k8s.io/priority-class: low
+spec:
+  type: Scala
+  mode: cluster
+  image: docker.io/library/spark:4.0.1
+  imagePullPolicy: IfNotPresent
+  mainClass: org.apache.spark.examples.SparkALS
+  mainApplicationFile: local:///opt/spark/examples/jars/spark-examples.jar
+  arguments: ["1500", "1500", "12", "40", "200"]
+  sparkVersion: 4.0.1
+  sparkConf:
+    "spark.kueue.preemption.minExecutors": "1"
+    "spark.executor.instances": "2"
+    "spark.kubernetes.executor.podNamePrefix": "als-lo9"
+  driver:
+    cores: 1
+    memory: 512m
+    serviceAccount: spark-operator-spark
+    securityContext: &sc
+      capabilities:
+        drop: [ALL]
+      runAsGroup: 185
+      runAsUser: 185
+      runAsNonRoot: true
+      allowPrivilegeEscalation: false
+      seccompProfile:
+        type: RuntimeDefault
+  executor:
+    cores: 1
+    memory: 512m
+    securityContext: *sc
+---
+apiVersion: sparkoperator.k8s.io/v1beta2
+kind: SparkApplication
+metadata:
+  name: als-lo10
+  namespace: batch-ns-uno
+  annotations:
+    kueue.x-k8s.io/elastic-job: "true"
+  labels:
+    kueue.x-k8s.io/queue-name: batch-queue-tres
+    kueue.x-k8s.io/priority-class: low
+spec:
+  type: Scala
+  mode: cluster
+  image: docker.io/library/spark:4.0.1
+  imagePullPolicy: IfNotPresent
+  mainClass: org.apache.spark.examples.SparkALS
+  mainApplicationFile: local:///opt/spark/examples/jars/spark-examples.jar
+  arguments: ["1500", "1500", "12", "40", "200"]
+  sparkVersion: 4.0.1
+  sparkConf:
+    "spark.kueue.preemption.minExecutors": "1"
+    "spark.executor.instances": "2"
+    "spark.kubernetes.executor.podNamePrefix": "als-lo10"
+  driver:
+    cores: 1
+    memory: 512m
+    serviceAccount: spark-operator-spark
+    securityContext: &sc
+      capabilities:
+        drop: [ALL]
+      runAsGroup: 185
+      runAsUser: 185
+      runAsNonRoot: true
+      allowPrivilegeEscalation: false
+      seccompProfile:
+        type: RuntimeDefault
+  executor:
+    cores: 1
+    memory: 512m
+    securityContext: *sc
+
+# ---- wave 2
+---
+apiVersion: sparkoperator.k8s.io/v1beta2
+kind: SparkApplication
+metadata:
+  name: als-hi
+  namespace: batch-ns-uno
+  labels:
+    preemption-role: "urgent"
+    kueue.x-k8s.io/queue-name: batch-queue-tres
+    kueue.x-k8s.io/priority-class: high
+spec:
+  type: Scala
+  mode: cluster
+  image: docker.io/library/spark:4.0.1
+  imagePullPolicy: IfNotPresent
+  mainClass: org.apache.spark.examples.SparkALS
+  mainApplicationFile: local:///opt/spark/examples/jars/spark-examples.jar
+  arguments: ["1500", "1500", "12", "15", "200"]
+  sparkVersion: 4.0.1
+  sparkConf:
+    "spark.executor.instances": "11"
+    "spark.kubernetes.executor.podNamePrefix": "als-hi"
+  driver:
+    cores: 1
+    memory: 512m
+    serviceAccount: spark-operator-spark
+    securityContext: &sc
+      capabilities:
+        drop: [ALL]
+      runAsGroup: 185
+      runAsUser: 185
+      runAsNonRoot: true
+      allowPrivilegeEscalation: false
+      seccompProfile:
+        type: RuntimeDefault
+  executor:
+    cores: 1
+    memory: 512m
+    securityContext: *sc

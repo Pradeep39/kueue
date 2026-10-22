@@ -494,25 +494,19 @@ func (j *SparkApplication) computeLiveExecutorCount(ctx context.Context, c clien
 		return j.initialExecutorCount()
 	}
 
-	podList := &corev1.PodList{}
-	if err := c.List(ctx, podList,
-		client.InNamespace(j.Namespace),
-		client.MatchingLabels{
-			appNameLabel: j.Name,
-			roleLabel:    executorRoleValue,
-		},
-	); err != nil {
+	pods, err := j.executorPods(ctx, c)
+	if err != nil {
 		return 0, err
 	}
 
-	if len(podList.Items) == 0 {
+	if len(pods) == 0 {
 		// No executor pods yet, e.g. the application was just admitted.
 		return j.initialExecutorCount()
 	}
 
 	var live int32
-	for i := range podList.Items {
-		if isVerifiedLiveExecutor(&podList.Items[i]) {
+	for i := range pods {
+		if isVerifiedLiveExecutor(&pods[i]) {
 			live++
 		}
 	}

@@ -17,6 +17,8 @@ limitations under the License.
 package scheduler
 
 import (
+	"time"
+
 	"errors"
 	"fmt"
 	"maps"
@@ -71,6 +73,9 @@ type clusterQueue struct {
 	PreemptionConfigName *string
 	FairWeight           float64
 	FlavorFungibility    kueue.FlavorFungibility
+	// PartialPreemption holds the ClusterQueue's partial-preemption settings, parsed from its
+	// annotations. Only populated when the SparkPartialPreemption feature gate is enabled.
+	PartialPreemption PartialPreemptionSettings
 
 	// sliceGroups maps a workload-slice chain (namespace + the chain-root name carried in
 	// kueue.WorkloadSliceNameAnnotation) to the cached slices belonging to it.
@@ -208,6 +213,11 @@ func (c *clusterQueue) updateClusterQueue(
 		c.Labels = maps.Clone(in.Labels)
 		c.PreemptionConfigName = getPreemptionConfigName(in)
 	}
+	if features.Enabled(features.SparkPartialPreemption) {
+		c.PartialPreemption = parsePartialPreemptionSettings(in)
+	} else {
+		c.PartialPreemption = PartialPreemptionSettings{}
+	}
 	c.isStopped = ptr.Deref(in.Spec.StopPolicy, kueue.None) != kueue.None
 
 	c.AdmissionChecks = admissioncheck.NewAdmissionChecks(in)
@@ -239,6 +249,41 @@ func (c *clusterQueue) updateClusterQueue(
 	}
 	c.DynamicQuotaOrchestrator = dqo.EffectiveOrchestrator(in.Status.EffectiveQuotas)
 	return nil
+}
+
+// PartialPreemptionSettings are a ClusterQueue's partial-preemption settings
+// (docs/design/spark-aware-preemption.md §6).
+type PartialPreemptionSettings struct {
+	// Enabled is true when the SparkPartialPreemption feature gate is on.
+	Enabled bool
+	// FallbackWait is true when the ClusterQueue chose "Wait": a preemptor whose minimum
+	// partial preemption cannot fit stays pending instead of falling back to whole eviction.
+	FallbackWait bool
+	// Timeout bounds how long a partial preemption waits for the reclaimed Pods to stop. 0
+	// means the ClusterQueue sets none, and the timeout is derived from the grace period.
+	Timeout time.Duration
+	// TerminationGracePeriod is the grace period reclaimed Pods are deleted with when their job
+	// declares none. nil means the ClusterQueue sets none.
+	TerminationGracePeriod *time.Duration
+}
+
+func parsePartialPreemptionSettings(in *kueue.ClusterQueue) PartialPreemptionSettings {
+	settings := PartialPreemptionSettings{Enabled: true}
+	if in.Annotations == nil {
+		return settings
+	}
+	settings.FallbackWait = in.Annotations[constants.PartialPreemptionFallbackAnnotation] == constants.PartialPreemptionFallbackWait
+	if v, ok := in.Annotations[constants.PartialPreemptionTimeoutAnnotation]; ok {
+		if d, err := time.ParseDuration(v); err == nil && d > 0 {
+			settings.Timeout = d
+		}
+	}
+	if v, ok := in.Annotations[constants.PartialPreemptionTerminationGracePeriodAnnotation]; ok {
+		if d, ok := workload.ParseGracePeriod(v); ok {
+			settings.TerminationGracePeriod = &d
+		}
+	}
+	return settings
 }
 
 func getPreemptionConfigName(in *kueue.ClusterQueue) *string {

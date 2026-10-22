@@ -97,6 +97,7 @@ func makeElasticPodForPodSet(name string, podSet kueue.PodSetReference) *testing
 
 func TestReconcile(t *testing.T) {
 	features.SetFeatureGateDuringTest(t, features.ElasticJobsViaWorkloadSlices, true)
+	features.SetFeatureGateDuringTest(t, features.SparkPartialPreemption, true)
 	features.SetFeatureGateDuringTest(t, features.ElasticJobsViaWorkloadSlicesForProvisioningRequests, true)
 	now := time.Now().Truncate(time.Second)
 
@@ -139,6 +140,125 @@ func TestReconcile(t *testing.T) {
 					Annotation(kueue.WorkloadAnnotation, "wl").
 					Annotation(kueue.WorkloadSliceNameAnnotation, "wl").
 					Obj(),
+			},
+		},
+		"a pod being deleted still counts as ungated": {
+			// spark-aware-preemption §5.4 step 2: while a partial preemption waits for its
+			// reclaimed Pods to stop, the grant is still the old one. Those Pods are being
+			// deleted but still hold node resources, so they must keep counting against the
+			// grant; otherwise room = granted - ungated rises mid-reclaim and a gated
+			// replacement is released onto the quota the preemptor is about to receive.
+			workloads: []kueue.Workload{
+				*utiltestingapi.MakeWorkload("wl", "ns").
+					Finalizers(kueue.ResourceInUseFinalizerName).
+					Annotation(workloadslicing.EnabledAnnotationKey, workloadslicing.EnabledAnnotationValue).
+					ControllerReference(rayClusterGVK, "ray", "ray-uid").
+					PodSets(*utiltestingapi.MakePodSet(kueue.DefaultPodSetName, 2).Request(corev1.ResourceCPU, "1").Obj()).
+					ReserveQuotaAt(
+						utiltestingapi.MakeAdmission("cq").
+							PodSets(utiltestingapi.MakePodSetAssignment(kueue.DefaultPodSetName).
+								Assignment(corev1.ResourceCPU, "flavor", "2").
+								Count(2).
+								Obj()).
+							Obj(), now,
+					).
+					AdmittedAt(true, now).
+					Obj(),
+			},
+			pods: []corev1.Pod{
+				*makeElasticPodForPodSet("pod-deleting", kueue.DefaultPodSetName).
+					Finalizer("test/hold").
+					StatusPhase(corev1.PodRunning).
+					DeletionTimestamp(now).
+					Obj(),
+				*makeElasticPodForPodSet("pod-running", kueue.DefaultPodSetName).
+					StatusPhase(corev1.PodRunning).
+					Obj(),
+				*makeElasticPodForPodSet("pod-replacement", kueue.DefaultPodSetName).
+					Gate(kueue.ElasticJobSchedulingGate).
+					Obj(),
+			},
+			wantPods: []corev1.Pod{
+				*makeElasticPodForPodSet("pod-deleting", kueue.DefaultPodSetName).
+					Finalizer("test/hold").
+					StatusPhase(corev1.PodRunning).
+					Obj(),
+				*makeElasticPodForPodSet("pod-replacement", kueue.DefaultPodSetName).
+					Gate(kueue.ElasticJobSchedulingGate).
+					Obj(),
+				*makeElasticPodForPodSet("pod-running", kueue.DefaultPodSetName).
+					StatusPhase(corev1.PodRunning).
+					Obj(),
+			},
+		},
+		"an outstanding partial preemption caps ungating at its target": {
+			// Observed on a cluster: the reclaimed Pods had stopped but the grant was not yet
+			// lowered, so the old grant of 4 made room for two recreated replacements and four
+			// executors ran against what became a grant of 2. The target is the cap.
+			workloads: []kueue.Workload{
+				*utiltestingapi.MakeWorkload("wl", "ns").
+					Finalizers(kueue.ResourceInUseFinalizerName).
+					Annotation(workloadslicing.EnabledAnnotationKey, workloadslicing.EnabledAnnotationValue).
+					Annotation(constants.PartialPreemptionPodSetAnnotation, string(kueue.DefaultPodSetName)).
+					Annotation(constants.PartialPreemptionMinCountAnnotation, "1").
+					Annotation(constants.PartialPreemptionTargetAnnotation, "2").
+					ControllerReference(rayClusterGVK, "ray", "ray-uid").
+					PodSets(*utiltestingapi.MakePodSet(kueue.DefaultPodSetName, 4).Request(corev1.ResourceCPU, "1").Obj()).
+					ReserveQuotaAt(
+						utiltestingapi.MakeAdmission("cq").
+							PodSets(utiltestingapi.MakePodSetAssignment(kueue.DefaultPodSetName).
+								Assignment(corev1.ResourceCPU, "flavor", "4").
+								Count(4).
+								Obj()).
+							Obj(), now,
+					).
+					AdmittedAt(true, now).
+					Obj(),
+			},
+			pods: []corev1.Pod{
+				*makeElasticPodForPodSet("pod-a", kueue.DefaultPodSetName).StatusPhase(corev1.PodRunning).Obj(),
+				*makeElasticPodForPodSet("pod-b", kueue.DefaultPodSetName).StatusPhase(corev1.PodRunning).Obj(),
+				*makeElasticPodForPodSet("pod-c", kueue.DefaultPodSetName).Gate(kueue.ElasticJobSchedulingGate).Obj(),
+				*makeElasticPodForPodSet("pod-d", kueue.DefaultPodSetName).Gate(kueue.ElasticJobSchedulingGate).Obj(),
+			},
+			wantPods: []corev1.Pod{
+				*makeElasticPodForPodSet("pod-a", kueue.DefaultPodSetName).StatusPhase(corev1.PodRunning).Obj(),
+				*makeElasticPodForPodSet("pod-b", kueue.DefaultPodSetName).StatusPhase(corev1.PodRunning).Obj(),
+				*makeElasticPodForPodSet("pod-c", kueue.DefaultPodSetName).Gate(kueue.ElasticJobSchedulingGate).Obj(),
+				*makeElasticPodForPodSet("pod-d", kueue.DefaultPodSetName).Gate(kueue.ElasticJobSchedulingGate).Obj(),
+			},
+		},
+		"without a partial preemption outstanding the grant is the cap": {
+			workloads: []kueue.Workload{
+				*utiltestingapi.MakeWorkload("wl", "ns").
+					Finalizers(kueue.ResourceInUseFinalizerName).
+					Annotation(workloadslicing.EnabledAnnotationKey, workloadslicing.EnabledAnnotationValue).
+					Annotation(constants.PartialPreemptionPodSetAnnotation, string(kueue.DefaultPodSetName)).
+					Annotation(constants.PartialPreemptionMinCountAnnotation, "1").
+					ControllerReference(rayClusterGVK, "ray", "ray-uid").
+					PodSets(*utiltestingapi.MakePodSet(kueue.DefaultPodSetName, 4).Request(corev1.ResourceCPU, "1").Obj()).
+					ReserveQuotaAt(
+						utiltestingapi.MakeAdmission("cq").
+							PodSets(utiltestingapi.MakePodSetAssignment(kueue.DefaultPodSetName).
+								Assignment(corev1.ResourceCPU, "flavor", "4").
+								Count(4).
+								Obj()).
+							Obj(), now,
+					).
+					AdmittedAt(true, now).
+					Obj(),
+			},
+			pods: []corev1.Pod{
+				*makeElasticPodForPodSet("pod-a", kueue.DefaultPodSetName).StatusPhase(corev1.PodRunning).Obj(),
+				*makeElasticPodForPodSet("pod-b", kueue.DefaultPodSetName).StatusPhase(corev1.PodRunning).Obj(),
+				*makeElasticPodForPodSet("pod-c", kueue.DefaultPodSetName).Gate(kueue.ElasticJobSchedulingGate).Obj(),
+				*makeElasticPodForPodSet("pod-d", kueue.DefaultPodSetName).Gate(kueue.ElasticJobSchedulingGate).Obj(),
+			},
+			wantPods: []corev1.Pod{
+				*makeElasticPodForPodSet("pod-a", kueue.DefaultPodSetName).StatusPhase(corev1.PodRunning).Obj(),
+				*makeElasticPodForPodSet("pod-b", kueue.DefaultPodSetName).StatusPhase(corev1.PodRunning).Obj(),
+				*makeElasticPodForPodSet("pod-c", kueue.DefaultPodSetName).Obj(),
+				*makeElasticPodForPodSet("pod-d", kueue.DefaultPodSetName).Obj(),
 			},
 		},
 		"cap is the granted count, not the requested count": {

@@ -1,0 +1,47 @@
+== SHUF-1012-2301
+  23:02:10 victim pr-victim applied (10 executors, floor 2, PageRank 50 iterations, grace 30s)
+  23:02:43 TRIGGER: urgent applied; min per-executor shuffle 23 MiB
+  shuffle MiB per executor at trigger: 1:23 10:23 2:27 3:28 4:29 5:33 6:34 7:37 8:38 9:42
+
+  executors Spark was told to decommission: 10, 9, 4
+
+  per decommissioned executor (from its own log):
+  executor   decom-signal shuffle-migrated rdd-migrated  finished                 exit
+  10                    1               73            4       yes INFO ShutdownHookMan
+  9                     1               82            4       yes INFO ShutdownHookMan
+  4                     1               98            4       yes INFO ShutdownHookMan
+
+  driver:
+    map outputs relocated to another executor ('Updating map output'): 253
+    'Shuffle files lost for executor' lines: 3  (logged on every executor loss; harmless when outputs were relocated first)
+    resubmitted stages / fetch failures / lost or killed tasks: 0
+    executor failures counted: 0
+    time from decommission signal to exit, per executor: 10: 11.0s, 9: 11.0s, 4: 11.0s
+    last job line: 04:03:10 INFO DAGScheduler: Job 0 finished: collect at SparkPageRank.scala:79, took 41221.424086 ms
+
+  sample executor lines (first decommissioned executor):
+    04:02:27 INFO CoarseGrainedExecutorBackend: Registering SIGPWR handler to trigger decommissioning.
+    04:02:44 INFO CoarseGrainedExecutorBackend: Decommission executor 10.
+    04:02:44 INFO BlockManager: Starting block manager decommissioning process...
+    04:02:44 INFO CoarseGrainedExecutorBackend: Will exit when finished decommissioning
+    04:02:44 INFO BlockManagerDecommissioner: Starting block migration
+    04:02:44 INFO BlockManagerDecommissioner: Attempting to migrate all RDD blocks
+    04:02:44 INFO BlockManagerDecommissioner: Attempting to migrate all shuffle blocks
+    04:02:44 INFO BlockManagerDecommissioner: Start refreshing migratable shuffle blocks
+    04:02:44 INFO BlockManagerDecommissioner: Attempting to migrate all cached RDD blocks
+    04:02:44 INFO BlockManagerDecommissioner: 72 of 72 local shuffles are added. In total, 72 shuffles are remained.
+    04:02:44 INFO BlockManagerDecommissioner: Need to replicate 4 RDD blocks for block manager decommissioning
+    04:02:44 INFO BlockManagerDecommissioner: Starting shuffle block migration thread for BlockManagerId(5, <pod-ip>, 35359, None)
+    04:02:44 INFO BlockManagerDecommissioner: Starting shuffle block migration thread for BlockManagerId(4, <pod-ip>, 40777, None)
+    04:02:44 INFO BlockManagerDecommissioner: Starting shuffle block migration thread for BlockManagerId(9, <pod-ip>, 42089, None)
+
+  sample driver relocation lines:
+    04:02:44 INFO ShuffleStatus: Updating map output for 672 to BlockManagerId(4, <pod-ip>, 40777, None)
+    04:02:44 INFO ShuffleStatus: Updating map output for 626 to BlockManagerId(3, <pod-ip>, 41131, None)
+    04:02:44 INFO ShuffleStatus: Updating map output for 722 to BlockManagerId(5, <pod-ip>, 35359, None)
+    04:02:44 INFO ShuffleStatus: Updating map output for 686 to BlockManagerId(6, <pod-ip>, 33677, None)
+    04:02:44 INFO ShuffleStatus: Updating map output for 710 to BlockManagerId(9, <pod-ip>, 42089, None)
+PASS  SC-1 quota is a ceiling                                    SC-1 quota ceiling (12 cpu): HELD on 248 samples
+PASS  SC-1b live Pods within quota                               SC-1b real capacity (ungated live pods x 1cpu <= 12): HELD
+PASS  SC-2 every running worker has a grant (R-3, R-6)           SC-2 every running executor has a grant: HELD (428 checks, grace 3s)
+PASS  capture integrity                                          watch starts: pods=1 workloads=1 (1 = no restart)

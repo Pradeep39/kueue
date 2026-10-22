@@ -1254,6 +1254,11 @@ func (in *PodSetAssignment) DeepCopyInto(out *PodSetAssignment) {
 		*out = new(int32)
 		**out = **in
 	}
+	if in.ReclaimTargetCount != nil {
+		in, out := &in.ReclaimTargetCount, &out.ReclaimTargetCount
+		*out = new(int32)
+		**out = **in
+	}
 	if in.TopologyAssignment != nil {
 		in, out := &in.TopologyAssignment, &out.TopologyAssignment
 		*out = new(TopologyAssignment)

@@ -31,4 +31,9 @@ const (
 	ReasonJobNestingTooDeep     = "JobNestingTooDeep"
 
 	ReasonWorkloadPriorityClassNotFound = "WorkloadPriorityClassNotFound"
+
+	// Partial preemption (docs/design/spark-aware-preemption.md §5.4).
+	ReasonPartialPreemptionComplete  = "PartialPreemptionComplete"
+	ReasonPartialPreemptionTimedOut  = "PartialPreemptionTimedOut"
+	ReasonPartialPreemptionAbandoned = "PartialPreemptionAbandoned"
 )

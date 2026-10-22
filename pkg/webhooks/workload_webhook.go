@@ -315,6 +315,9 @@ func validateAdmission(obj, oldObj *kueue.Workload, path *field.Path) field.Erro
 		if !names.Has(ps.Name) {
 			allErrs = append(allErrs, field.NotFound(psaPath.Child("name"), ps.Name))
 		}
+		if ps.ReclaimTargetCount != nil && ps.Count != nil && *ps.ReclaimTargetCount > *ps.Count {
+			allErrs = append(allErrs, field.Invalid(psaPath.Child("reclaimTargetCount"), *ps.ReclaimTargetCount, fmt.Sprintf("must not be greater than count (%d)", *ps.Count)))
+		}
 		if count := ptr.Deref(ps.Count, 0); count > 0 {
 			for k, v := range ps.ResourceUsage {
 				if resources.AmountFromQuantity(k, v).RemInt64(int64(count)).Sign() != 0 {
@@ -419,6 +422,16 @@ func validateAdmissionUpdate(new, old *kueue.Admission, path *field.Path, elasti
 		for i := range new.PodSetAssignments {
 			old.PodSetAssignments[i].TopologyAssignment = new.PodSetAssignments[i].TopologyAssignment
 			old.PodSetAssignments[i].DelayedTopologyRequest = new.PodSetAssignments[i].DelayedTopologyRequest
+		}
+	}
+	// KEP-975: Kueue publishes an outstanding partial preemption's target on the admission, and
+	// clears it when the reclaim ends, so reclaimTargetCount may change on an admitted Workload.
+	if features.Enabled(features.SparkPartialPreemption) {
+		if len(new.PodSetAssignments) != len(old.PodSetAssignments) {
+			return apivalidation.ValidateImmutableField(new, old, path)
+		}
+		for i := range new.PodSetAssignments {
+			old.PodSetAssignments[i].ReclaimTargetCount = new.PodSetAssignments[i].ReclaimTargetCount
 		}
 	}
 	if elastic && features.Enabled(features.ElasticJobsViaWorkloadSlices) {

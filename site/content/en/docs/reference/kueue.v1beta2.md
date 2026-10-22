@@ -2303,6 +2303,18 @@ Value could be missing for Workloads created before this field was added,
 in that case spec.podSets[*].count value will be used.</p>
 </td>
 </tr>
+<tr><td><code>reclaimTargetCount</code><br/>
+<code>int32</code>
+</td>
+<td>
+   <p>reclaimTargetCount, when set and lower than count, requests the elastic job to scale this
+PodSet down to reclaimTargetCount so partial preemption can reclaim its quota. Kueue owns
+this field; the job runtime reads it and sheds pods down to reclaimTargetCount. Kueue clears
+this field once the PodSet has converged to reclaimTargetCount or below, in the same update
+that lowers count.
+This is an alpha field and requires enabling the SparkPartialPreemption feature gate.</p>
+</td>
+</tr>
 <tr><td><code>topologyAssignment</code><br/>
 <a href="#kueue-x-k8s-io-v1beta2-TopologyAssignment"><code>TopologyAssignment</code></a>
 </td>

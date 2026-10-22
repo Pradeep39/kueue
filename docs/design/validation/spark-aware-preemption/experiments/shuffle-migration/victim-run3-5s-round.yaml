@@ -1,0 +1,60 @@
+apiVersion: sparkoperator.k8s.io/v1beta2
+kind: SparkApplication
+metadata:
+  name: pr-victim
+  namespace: batch-ns-uno
+  annotations:
+    kueue.x-k8s.io/elastic-job: "true"
+  labels:
+    kueue.x-k8s.io/queue-name: batch-queue-uno
+    kueue.x-k8s.io/priority-class: low
+spec:
+  type: Scala
+  mode: cluster
+  image: docker.io/library/spark:4.0.1
+  imagePullPolicy: IfNotPresent
+  mainClass: org.apache.spark.examples.SparkPageRank
+  mainApplicationFile: local:///opt/spark/examples/jars/spark-examples.jar
+  arguments: ["file:///data/edges.txt", "50"]
+  sparkVersion: 4.0.1
+  sparkConf:
+    "spark.kueue.preemption.minExecutors": "2"
+    "spark.executor.instances": "10"
+    "spark.kubernetes.executor.terminationGracePeriodSeconds": "30s"
+    "spark.sql.files.maxPartitionBytes": "2m"
+    "spark.default.parallelism": "40"
+    "spark.storage.decommission.replicationReattemptInterval": "5s"
+    "spark.storage.decommission.maxReplicationFailuresPerBlock": "18"
+    "spark.kubernetes.executor.podNamePrefix": "pr-victim"
+  volumes: [{name: data, emptyDir: {}}]
+  driver:
+    initContainers:
+    - name: gen-edges
+      image: docker.io/library/spark:4.0.1
+      command: ["sh", "-c", 'awk "BEGIN{srand(42); for(i=0;i<2000000;i++) print int(rand()*200000), int(rand()*200000)}" > /data/edges.txt']
+      volumeMounts: [{name: data, mountPath: /data}]
+      securityContext: {runAsUser: 185, runAsNonRoot: true, allowPrivilegeEscalation: false, capabilities: {drop: [ALL]}, seccompProfile: {type: RuntimeDefault}}
+    volumeMounts: [{name: data, mountPath: /data}]
+    cores: 1
+    memory: 512m
+    serviceAccount: spark-operator-spark
+    securityContext: &sc
+      capabilities:
+        drop: [ALL]
+      runAsGroup: 185
+      runAsUser: 185
+      runAsNonRoot: true
+      allowPrivilegeEscalation: false
+      seccompProfile:
+        type: RuntimeDefault
+  executor:
+    initContainers:
+    - name: gen-edges
+      image: docker.io/library/spark:4.0.1
+      command: ["sh", "-c", 'awk "BEGIN{srand(42); for(i=0;i<2000000;i++) print int(rand()*200000), int(rand()*200000)}" > /data/edges.txt']
+      volumeMounts: [{name: data, mountPath: /data}]
+      securityContext: {runAsUser: 185, runAsNonRoot: true, allowPrivilegeEscalation: false, capabilities: {drop: [ALL]}, seccompProfile: {type: RuntimeDefault}}
+    volumeMounts: [{name: data, mountPath: /data}]
+    cores: 1
+    memory: 512m
+    securityContext: *sc

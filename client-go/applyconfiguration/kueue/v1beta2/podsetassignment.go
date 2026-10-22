@@ -42,6 +42,13 @@ type PodSetAssignmentApplyConfiguration struct {
 	// in that case spec.podSets[*].count value will be used.
 	//
 	Count *int32 `json:"count,omitempty"`
+	// reclaimTargetCount, when set and lower than count, requests the elastic job to scale this
+	// PodSet down to reclaimTargetCount so partial preemption can reclaim its quota. Kueue owns
+	// this field; the job runtime reads it and sheds pods down to reclaimTargetCount. Kueue clears
+	// this field once the PodSet has converged to reclaimTargetCount or below, in the same update
+	// that lowers count.
+	// This is an alpha field and requires enabling the SparkPartialPreemption feature gate.
+	ReclaimTargetCount *int32 `json:"reclaimTargetCount,omitempty"`
 	// topologyAssignment indicates the topology assignment divided into
 	// topology domains corresponding to the lowest level of the topology.
 	// The assignment specifies the number of Pods to be scheduled per topology
@@ -206,6 +213,14 @@ func (b *PodSetAssignmentApplyConfiguration) WithResourceUsage(value v1.Resource
 // If called multiple times, the Count field is set to the value of the last call.
 func (b *PodSetAssignmentApplyConfiguration) WithCount(value int32) *PodSetAssignmentApplyConfiguration {
 	b.Count = &value
+	return b
+}
+
+// WithReclaimTargetCount sets the ReclaimTargetCount field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the ReclaimTargetCount field is set to the value of the last call.
+func (b *PodSetAssignmentApplyConfiguration) WithReclaimTargetCount(value int32) *PodSetAssignmentApplyConfiguration {
+	b.ReclaimTargetCount = &value
 	return b
 }
 

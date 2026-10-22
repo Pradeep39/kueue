@@ -17,10 +17,15 @@ limitations under the License.
 package sparkapplication
 
 import (
+	"fmt"
+	"strconv"
+	"strings"
+
 	"context"
 	"slices"
 
 	sparkv1beta2 "github.com/kubeflow/spark-operator/v2/api/v1beta2"
+	admissionv1 "k8s.io/api/admission/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
@@ -115,7 +120,107 @@ func (w *SparkApplicationWebhook) Default(ctx context.Context, obj *sparkv1beta2
 		utilpod.GateTemplate(job.Spec.Executor.Template, kueue.ElasticJobSchedulingGate)
 	}
 
+	if isCreateRequest(ctx) && partialPreemptionEnabled(job) && job.reclaimable() {
+		applyDecommissionDefaults(job)
+	}
+
 	return nil
+}
+
+// isCreateRequest reports whether the admission request being defaulted is a CREATE. The
+// mutating webhook is registered for CREATE only (see the marker above), but the
+// partial-preemption defaults must never touch an existing application's spec: the Spark
+// Operator re-runs an application on any spec change outside its exemption list. A context
+// without an admission request (unit tests) is treated as a create.
+func isCreateRequest(ctx context.Context) bool {
+	req, err := admission.RequestFromContext(ctx)
+	if err != nil {
+		return true
+	}
+	return req.Operation == admissionv1.Create
+}
+
+// reclaimable reports whether partial preemption could ever take an executor from the
+// application: its resolved floor is below the most executors it can run. For Dynamic
+// Allocation that is maxExecutors (unbounded when unset, as in Spark); for a static
+// application it is its executor count.
+func (j *SparkApplication) reclaimable() bool {
+	floor, err := j.resolvedPartialPreemptionFloor()
+	if err != nil {
+		return false
+	}
+	if j.dynamicAllocationEnabled() {
+		maxExecutors, ok := j.dynamicAllocationExecutorCount("maxExecutors")
+		return !ok || floor < maxExecutors
+	}
+	count, err := j.numInitialExecutors()
+	return err == nil && floor < count
+}
+
+// applyDecommissionDefaults turns on Spark's graceful decommissioning for a reclaimable
+// application, so deleting an executor Pod migrates its blocks rather than losing them
+// (docs/design/spark-aware-preemption.md §5.4). Values the application sets explicitly,
+// including "false", are left alone.
+func applyDecommissionDefaults(job *SparkApplication) {
+	for _, key := range decommissionSparkConfDefaults {
+		if _, ok := job.Spec.SparkConf[key]; ok {
+			continue
+		}
+		if job.Spec.SparkConf == nil {
+			job.Spec.SparkConf = map[string]string{}
+		}
+		job.Spec.SparkConf[key] = "true"
+	}
+	mirrorExecutorTerminationGracePeriod(job)
+}
+
+// mirrorExecutorTerminationGracePeriod copies an executor grace period the application sets in
+// one place to the other: the Pod template (Spark before 4.1) and
+// spark.kubernetes.executor.terminationGracePeriodSeconds (Spark 4.1+, which overrides the
+// template). An application that sets neither is left alone: Kubernetes and Spark both default
+// to 30s, and partial preemption applies its own grace period when it deletes the Pods.
+func mirrorExecutorTerminationGracePeriod(job *SparkApplication) {
+	var templateGrace *int64
+	if t := job.Spec.Executor.Template; t != nil {
+		templateGrace = t.Spec.TerminationGracePeriodSeconds
+	}
+	confGrace, confSet := job.Spec.SparkConf[sparkConfExecutorTerminationGracePeriod]
+	switch {
+	case templateGrace != nil && !confSet:
+		job.Spec.SparkConf[sparkConfExecutorTerminationGracePeriod] = strconv.FormatInt(*templateGrace, 10) + "s"
+	case templateGrace == nil && confSet:
+		seconds, ok := sparkTimeSeconds(confGrace)
+		if !ok {
+			return
+		}
+		if job.Spec.Executor.Template == nil {
+			job.Spec.Executor.Template = emptyExecutorPodTemplateSpec.DeepCopy()
+		}
+		job.Spec.Executor.Template.Spec.TerminationGracePeriodSeconds = ptr.To(seconds)
+	}
+}
+
+// sparkTimeSeconds parses a Spark time property whose default unit is seconds, the way Spark's
+// timeConf(TimeUnit.SECONDS) does: a bare number is seconds, and the suffixes ms, s, m/min, h
+// and d are accepted. Sub-second values are truncated.
+func sparkTimeSeconds(v string) (int64, bool) {
+	v = strings.ToLower(strings.TrimSpace(v))
+	units := []struct {
+		suffix string
+		ms     int64
+	}{{"ms", 1}, {"min", 60_000}, {"s", 1_000}, {"m", 60_000}, {"h", 3_600_000}, {"d", 86_400_000}}
+	mult := int64(1_000)
+	for _, u := range units {
+		if strings.HasSuffix(v, u.suffix) {
+			v, mult = strings.TrimSuffix(v, u.suffix), u.ms
+			break
+		}
+	}
+	n, err := strconv.ParseInt(v, 10, 64)
+	if err != nil || n < 0 {
+		return 0, false
+	}
+	return n * mult / 1_000, true
 }
 
 // +kubebuilder:webhook:path=/validate-sparkoperator-k8s-io-v1beta2-sparkapplication,mutating=false,failurePolicy=fail,sideEffects=None,groups=sparkoperator.k8s.io,resources=sparkapplications,verbs=create;update,versions=v1beta2,name=vsparkapplication.kb.io,admissionReviewVersions=v1
@@ -126,11 +231,38 @@ var _ admission.Validator[*sparkv1beta2.SparkApplication] = &SparkApplicationWeb
 func (w *SparkApplicationWebhook) ValidateCreate(ctx context.Context, obj *sparkv1beta2.SparkApplication) (admission.Warnings, error) {
 	log := ctrl.LoggerFrom(ctx).WithName("sparkapplication-webhook")
 	log.Info("Validating create")
-	validationErrs, err := w.validateCreate(ctx, obj, w.maxTimeoutOnWorkload)
+	validationErrs, err := w.validateCreate(ctx, nil, obj, w.maxTimeoutOnWorkload)
 	if err != nil {
 		return nil, err
 	}
-	return nil, validationErrs.ToAggregate()
+	return w.partialPreemptionWarnings(nil, obj), validationErrs.ToAggregate()
+}
+
+// partialPreemptionWarnings warns, without rejecting, about a partial-preemption floor that
+// will be ignored: spark.kueue.preemption.minExecutors only takes effect on the elastic path,
+// so on an application without the elastic-job annotation it silently does nothing, and the
+// application is preempted whole. Found in testing: the property alone looks like an opt-in.
+// On update it warns only when the property is added or changed.
+func (w *SparkApplicationWebhook) partialPreemptionWarnings(oldJob, job *sparkv1beta2.SparkApplication) admission.Warnings {
+	if !features.Enabled(features.SparkPartialPreemption) {
+		return nil
+	}
+	if !w.manageJobsWithoutQueueName && jobframework.QueueName(fromObject(job)) == "" {
+		return nil
+	}
+	if _, set := job.Spec.SparkConf[sparkConfPreemptionMinExecutors]; !set || isAnElasticJob(job) {
+		return nil
+	}
+	if oldJob != nil && !preemptionMinExecutorsChanged(oldJob, job) {
+		return nil
+	}
+	return admission.Warnings{floorIgnoredWarning()}
+}
+
+func floorIgnoredWarning() string {
+	return fmt.Sprintf(
+		"sparkConf %q has no effect without the %s: %q annotation; this application is not partially preempted and will be preempted whole",
+		sparkConfPreemptionMinExecutors, workloadslicing.EnabledAnnotationKey, workloadslicing.EnabledAnnotationValue)
 }
 
 // returns whether the SparkApplication is an elastic job or not
@@ -138,7 +270,8 @@ func isAnElasticJob(sparkApp *sparkv1beta2.SparkApplication) bool {
 	return workloadslicing.Enabled(sparkApp)
 }
 
-func (w *SparkApplicationWebhook) validateCreate(ctx context.Context, job *sparkv1beta2.SparkApplication, maxTimeoutOnWorkload *metav1.Duration) (field.ErrorList, error) {
+// validateCreate validates job. oldJob is nil on create, and the previous object on update.
+func (w *SparkApplicationWebhook) validateCreate(ctx context.Context, oldJob, job *sparkv1beta2.SparkApplication, maxTimeoutOnWorkload *metav1.Duration) (field.ErrorList, error) {
 	var allErrors field.ErrorList
 	kueueJob := fromObject(job)
 
@@ -171,6 +304,20 @@ func (w *SparkApplicationWebhook) validateCreate(ctx context.Context, job *spark
 				),
 			)
 		}
+
+		// The partial-preemption floor. Only a new or changed value is rejected: an
+		// application created before the gate was turned on must still accept updates,
+		// including Kueue's own suspend, and is simply treated as having no property.
+		if features.Enabled(features.SparkPartialPreemption) && preemptionMinExecutorsChanged(oldJob, job) {
+			if _, _, err := kueueJob.sparkConfPreemptionMinExecutorsValue(); err != nil {
+				allErrors = append(allErrors,
+					field.Invalid(sparkConfPath.Key(sparkConfPreemptionMinExecutors),
+						spec.SparkConf[sparkConfPreemptionMinExecutors],
+						"must be a non-negative integer",
+					),
+				)
+			}
+		}
 	}
 
 	allErrors = append(allErrors, jobframework.ValidateJobOnCreate(kueueJob, maxTimeoutOnWorkload)...)
@@ -183,6 +330,17 @@ func (w *SparkApplicationWebhook) validateCreate(ctx context.Context, job *spark
 	}
 
 	return allErrors, nil
+}
+
+// preemptionMinExecutorsChanged reports whether job's spark.kueue.preemption.minExecutors is
+// new (oldJob is nil, i.e. a create) or differs from oldJob's.
+func preemptionMinExecutorsChanged(oldJob, job *sparkv1beta2.SparkApplication) bool {
+	if oldJob == nil {
+		return true
+	}
+	oldValue, oldOk := oldJob.Spec.SparkConf[sparkConfPreemptionMinExecutors]
+	newValue, newOk := job.Spec.SparkConf[sparkConfPreemptionMinExecutors]
+	return oldOk != newOk || oldValue != newValue
 }
 
 func validateElasticJob(job *sparkv1beta2.SparkApplication) field.ErrorList {
@@ -241,12 +399,12 @@ func (w *SparkApplicationWebhook) ValidateUpdate(ctx context.Context, oldSparkAp
 	log := ctrl.LoggerFrom(ctx).WithName("sparkapplication-webhook")
 	log.V(5).Info("Validating update")
 	allErrors := jobframework.ValidateJobOnUpdate(fromObject(oldSparkApp), fromObject(newSparkApp), w.queues.DefaultLocalQueueExist, w.maxTimeoutOnWorkload)
-	validationErrs, err := w.validateCreate(ctx, newSparkApp, nil)
+	validationErrs, err := w.validateCreate(ctx, oldSparkApp, newSparkApp, nil)
 	if err != nil {
 		return nil, err
 	}
 	allErrors = append(allErrors, validationErrs...)
-	return nil, allErrors.ToAggregate()
+	return w.partialPreemptionWarnings(oldSparkApp, newSparkApp), allErrors.ToAggregate()
 }
 
 // ValidateDelete implements webhook.CustomValidator so a webhook will be registered for the type

@@ -1,0 +1,101 @@
+# baseline-S5-gate-off  (capture: REQ-1011-1054-S5-preempt-atomic)
+# kueue-controller-manager replicas=1: ghcr.io/pradeep39/kueue:v0.20.0-devel-1315-g096f6ff72
+
+## req-check --preemption
+PASS  R-1 accounting tracks what runs                            ledger above live Pods: longest 12s (peak +12); live Pods above ledger: longest 0s
+PASS  R-4 capacity returned on scale-down                        longest over-reservation 12s at 16:24:35; ledger at end 4 cpu (apps not all finished: {'als-lo1': 'COMPLETED', 'als-lo2': 'RUNNING', 'als-hi': 'COMPLETED'})
+PASS  R-13 per-worker charge matches the Pod                     0 samples where ledger memory/cpu differs from live Pods' request (charge == Pod request)
+PASS  SC-1 quota is a ceiling                                    SC-1 quota ceiling (12 cpu): HELD on 194 samples
+FAIL  SC-1b live Pods within quota                               SC-1b real capacity (ungated live pods x 1cpu <= 12): EXCEEDED in 2 span(s): 16:24:38+1s peak=13, 16:26:05+1s peak=15
+PASS  SC-2 every running worker has a grant (R-3, R-6)           SC-2 every running executor has a grant: HELD (4907 checks, grace 3s)
+PASS  capture integrity                                          watch starts: pods=1 workloads=1 (1 = no restart)
+PASS  R-4 evicted quota released promptly once Pods stop         9 evictions; release after last active Pod: median 0s, max 2s
+INFO  R-2 resize while admitted, no restart                      preemption run; restarts {'als-lo1': 5, 'als-lo2': 6, 'als-hi': 0} are evictions, not resizes
+PASS  R-5 the job's resource is not modified to account for it   spec generation bumps vs suspend flips per app: als-hi 1/1, als-lo1 11/11, als-lo2 13/13
+PASS  R-8 starts below its maximum (maxExecutors 30 > 12 slots)  admitted ['als-hi', 'als-lo1', 'als-lo2'] of ['als-hi', 'als-lo1', 'als-lo2']
+INFO  R-11 workers awaiting quota bounded                        no cap in this run; peak gated per app {'als-hi': 3, 'als-lo1': 3, 'als-lo2': 6}
+INFO  R-12 no free capacity idle behind a pending scale-up       69s idle (preemption run)
+
+## pp-analyze --expect-whole 11
+== REQ-1011-1054-S5-preempt-atomic
+   whole preemptions 11, partial preemptions 0, reclaims completed 0, timed out 0, restarts (PENDING_RERUN) 13
+   app        state        end(s) drivers whole partial reruns execDel decom  graceful/unfinished/killed/unexpected failedEx
+   als-hi     COMPLETED       288       1     0       0      1      37   off                               0/0/22/0        0
+   als-lo1    COMPLETED       373       6     5       0      6      23   off                                -/-/-/-        0
+   als-lo2    RUNNING           -       7     6       0      6      41   off                                0/0/1/0        0
+   -- requirements
+   PASS  PR-1 whole evictions only where expected                   11 whole evictions, expected 11
+   PASS  PR-2 driver never reduced (1 driver per life)              every app kept one driver per admission
+   PASS  PR-4 reclaims released quota after Pods stopped (no timeout) 0 completed, 0 timed out
+   PASS  PR-6 low-priority (grow-back) slices never preempt         preemptions issued by victims {'als-lo1': 0, 'als-lo2': 0}
+   PASS  Quota released when an application finishes (<=5s)         all slices finished promptly
+
+## summary.txt
+window 16:21:42 .. 16:29:42 UTC, 49 buckets of 10s
+
+== Gate-blocked executor Pods
+peak gated total: 8 at 16:25:12   ({'als-lo1': 2, 'als-lo2': 6})
+  als-hi: peak 3 at 16:25:52
+  als-lo1: peak 3 at 16:23:52
+  als-lo2: peak 6 at 16:22:12
+quota: nominal memory 5376Mi; executor pod request 896Mi -> ~6 pod slots (Kueue's charge may differ from the pod request; see §8.5)
+gate removals (Kueue ungating): 92;  gated Pods deleted while still gated: 153
+
+== Requested vs granted executors (pending replacement slice vs the app's admitted grant)
+  als-hi: requested 10 vs granted 7 at 16:25:52  (gap 3)
+  als-lo1: requested 3 vs granted 0 at 16:22:52  (gap 3)
+  als-lo2: requested 11 vs granted 3 at 16:22:52  (gap 8)
+max requested on any pending slice: 11
+
+== Admission wait
+longest still-pending age seen: 72s
+    90.0s  als-lo2    replacement executors=3   sparkapplication-als-lo2-10e14
+    79.0s  als-lo1    replacement executors=3   sparkapplication-als-lo1-9ca55
+    58.0s  als-lo1    replacement executors=3   sparkapplication-als-lo1-83a45
+    22.0s  als-lo2    replacement executors=4   sparkapplication-als-lo2-59376
+    21.0s  als-lo2    replacement executors=3   sparkapplication-als-lo2-f17a7
+    20.0s  als-lo1    replacement executors=7   sparkapplication-als-lo1-d8cbc
+    17.0s  als-lo1    replacement executors=3   sparkapplication-als-lo1-e2f09
+    11.0s  als-lo1    replacement executors=4   sparkapplication-als-lo1-33640
+  what preceded each replacement admitted after >=10s (15s look-back):
+    sparkapplication-als-lo2-10e14: gated Pods deleted=0, driver excess-request deletions=0, idle-removal lines=0
+    sparkapplication-als-lo1-9ca55: gated Pods deleted=0, driver excess-request deletions=0, idle-removal lines=0
+    sparkapplication-als-lo1-83a45: gated Pods deleted=0, driver excess-request deletions=0, idle-removal lines=2
+    sparkapplication-als-lo2-59376: gated Pods deleted=13, driver excess-request deletions=0, idle-removal lines=0
+    sparkapplication-als-lo2-f17a7: gated Pods deleted=16, driver excess-request deletions=0, idle-removal lines=0
+    sparkapplication-als-lo1-d8cbc: gated Pods deleted=15, driver excess-request deletions=0, idle-removal lines=0
+    sparkapplication-als-lo1-e2f09: gated Pods deleted=16, driver excess-request deletions=0, idle-removal lines=0
+    sparkapplication-als-lo1-33640: gated Pods deleted=5, driver excess-request deletions=0, idle-removal lines=0
+
+== Conflict churn
+kueue: 188 conflicts, 154 'Reconciler error' lines
+  by resource:   {'workloads': 184, 'sparkapplications': 4}
+  by controller: {'sparkapplication': 102, 'workload-reconciler': 71, 'scheduler': 15}
+  top objects:   [('workloads/sparkapplication-als-lo2-da58a', 22), ('workloads/sparkapplication-als-lo2-f17a7', 14), ('workloads/sparkapplication-als-lo2-95c82', 13), ('workloads/sparkapplication-als-lo2-59376', 11), ('workloads/sparkapplication-als-lo2-10e14', 10)]
+spark-operator: 0 conflicts  by resource {}
+apiserver 409s: no Prometheus data
+writes seen on the watch: workloads 815, sparkapplications 612
+  workload writers:   {'kueue/': 515, 'kueue-admission/status': 186, 'kueue-job-controller-PodsReady/status': 76, 'kueue/status': 38}
+  sparkapp writers:   {'spark-operator/status': 591, 'kueue/': 21}
+
+== Does churn track the gated count?
+  pearson(conflicts, gated_total) = +0.37
+  pearson(conflicts, pending_slices) = +0.46
+  pearson(conflicts, wl_writes) = +0.63
+  conflicts per minute: gated>0 32.6  vs  gated=0 14.5   (23 vs 26 buckets)
+
+Correlation is not mechanism: confirm against the top conflicted objects and the timeline.
+
+== Events (count by kind/reason)
+    113  Workload/WaitingForQuota
+    107  Pod/Scheduled
+     99  Pod/Pulled
+     99  Pod/Created
+     99  Pod/Started
+     68  Workload/WaitingForPreemptedWorkloads
+     66  Workload/Admitted
+     66  Workload/QuotaReserved
+     61  SparkApplication/CreatedWorkload
+     47  Pod/Killing
+     43  SparkApplication/SparkExecutorPending
+     37  Workload/WorkloadSliceReplaced

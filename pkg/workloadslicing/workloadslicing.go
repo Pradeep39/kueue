@@ -677,3 +677,50 @@ func updatePodSetCountsWithRetry(ctx context.Context, clnt client.Client, wl *ku
 		return clnt.Status().Update(ctx, wl)
 	})
 }
+
+// errLowerGrantNotElastic is returned by LowerGrantedCounts for a Workload whose admission
+// Kueue's own webhook keeps fully immutable, so the lowering would be rejected anyway.
+var errLowerGrantNotElastic = errors.New("only an elastic workload's grant can be lowered in place")
+
+// LowerGrantedCounts lowers wl's granted PodSetAssignment counts to counts in place, through
+// scaleDownAdmission, WITHOUT changing spec.podSets. It is how a partial preemption gives back
+// the quota of the Pods it reclaimed (docs/design/spark-aware-preemption.md §5.4 step 3); the
+// job's request stays where it was, so the job reconciler then sees spec > grant and creates a
+// scale-up slice for the difference, which is the grow-back (§5.5).
+//
+// Only decreases are applied, which is all validateAdmissionUpdate's elastic exception accepts.
+// mutate, when not nil, is applied in the same status write (e.g. to resolve a condition), and
+// its result alone also triggers a write. wl is re-read before every attempt, so callers may
+// pass a cached object, and it holds the stored Workload on return.
+//
+// It returns whether a write was made. A Workload that holds no quota reservation is left
+// untouched.
+func LowerGrantedCounts(ctx context.Context, clnt client.Client, wl *kueue.Workload, counts workload.PodSetsCounts, mutate func(*kueue.Workload) bool) (bool, error) {
+	if !IsElasticWorkload(wl) {
+		return false, errLowerGrantNotElastic
+	}
+	key := client.ObjectKeyFromObject(wl)
+	written := false
+	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		written = false
+		if err := clnt.Get(ctx, key, wl); err != nil {
+			return err
+		}
+		if !workload.HasQuotaReservation(wl) {
+			return nil
+		}
+		changed := scaleDownAdmission(wl, counts)
+		if mutate != nil && mutate(wl) {
+			changed = true
+		}
+		if !changed {
+			return nil
+		}
+		if err := clnt.Status().Update(ctx, wl); err != nil {
+			return err
+		}
+		written = true
+		return nil
+	})
+	return written, err
+}
