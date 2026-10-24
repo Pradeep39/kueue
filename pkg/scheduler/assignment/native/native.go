@@ -133,4 +133,3 @@ func (p *nativePlanner) needsTASForPreemption(cq *schdcache.ClusterQueueSnapshot
 		(workload.IsExplicitlyRequestingTAS(p.wl.Obj.Spec.PodSets...) || cq.IsTASOnly()) &&
 		!workload.HasTopologyAssignmentWithUnhealthyNode(p.wl.Obj)
 }
-
