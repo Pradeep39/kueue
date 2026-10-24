@@ -44,6 +44,7 @@ import (
 	kueue "sigs.k8s.io/kueue/apis/kueue/v1beta2"
 	kueueconstants "sigs.k8s.io/kueue/pkg/constants"
 	"sigs.k8s.io/kueue/pkg/controller/constants"
+	apachesparkv1 "sigs.k8s.io/kueue/pkg/controller/jobs/apachesparkapplication/api/v1"
 	"sigs.k8s.io/kueue/pkg/features"
 	utilpod "sigs.k8s.io/kueue/pkg/util/pod"
 	"sigs.k8s.io/kueue/pkg/util/waitforpodsready"
@@ -70,6 +71,7 @@ var (
 		rayv1.GroupVersion.WithKind("RayJob").String(),
 		rayv1.GroupVersion.WithKind("RayService").String(),
 		sparkv1beta2.GroupVersion.WithKind("SparkApplication").String(),
+		apachesparkv1.GroupVersion.WithKind("SparkApplication").String(),
 	)
 	supportedPrebuiltWlJobGVKs = sets.New(
 		batchv1.SchemeGroupVersion.WithKind("Job").String(),

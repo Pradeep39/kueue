@@ -27,6 +27,12 @@
     lockToDefault: false
     preRelease: Beta
     version: "0.19"
+- name: ApacheSparkApplicationIntegration
+  versionedSpecs:
+  - default: false
+    lockToDefault: false
+    preRelease: Alpha
+    version: "0.17"
 - name: AssignQueueLabelsForPods
   versionedSpecs:
   - default: true
@@ -107,6 +113,12 @@
     lockToDefault: false
     preRelease: Alpha
     version: "0.20"
+- name: ElasticJobsViaWorkloadSlicesForApacheSparkApplication
+  versionedSpecs:
+  - default: false
+    lockToDefault: false
+    preRelease: Alpha
+    version: "0.21"
 - name: ElasticJobsViaWorkloadSlicesForProvisioningRequests
   versionedSpecs:
   - default: false
@@ -587,6 +599,12 @@
     lockToDefault: false
     preRelease: Alpha
     version: "0.17"
+- name: SparkPartialPreemption
+  versionedSpecs:
+  - default: false
+    lockToDefault: false
+    preRelease: Alpha
+    version: "0.20"
 - name: TASAssignmentsEncodingByHostnamePrefix
   versionedSpecs:
   - default: true
