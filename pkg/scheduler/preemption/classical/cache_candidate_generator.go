@@ -17,6 +17,7 @@ limitations under the License.
 package classical
 
 import (
+	"slices"
 	"time"
 
 	"github.com/go-logr/logr"
@@ -299,4 +300,48 @@ func attachSortedWorkloads(cache *schdcache.CandidateOrderCache, cmp schdcache.C
 			g[i].sortedWorkloads, g[i].evictedCount = cache.Get(g[i].cq, cmp)
 		}
 	}
+}
+
+// Candidates returns every candidate, in the order Next yields them, whatever its validity:
+// segment by segment, each segment's buckets merged by the same comparator. Candidates that
+// can never be preempted are left out.
+func (c *cacheCandidateIterator) Candidates() []Candidate {
+	var out []Candidate
+	for _, seg := range c.segments {
+		start := len(out)
+		for _, b := range seg {
+			for _, wl := range b.sortedWorkloads {
+				if _, ok := b.cq.Workloads[workload.Key(wl.Obj)]; !ok {
+					continue
+				}
+				variant := classifyPreemptionVariant(c.hierarchicalReclaimCtx, wl, b.hasHierarchicalAdvantage)
+				if variant == Never {
+					continue
+				}
+				out = append(out, Candidate{
+					WorkloadInfo: wl,
+					Reason:       variant.PreemptionReason(),
+					elem:         &candidateElem{wl: wl, lca: b.lca, preemptionVariant: variant},
+					cq:           b.cq,
+				})
+			}
+		}
+		// A stable sort keeps bucket order on ties, as the merge in nextFromSegment does.
+		slices.SortStableFunc(out[start:], func(a, b Candidate) int {
+			return c.cmp(a.WorkloadInfo, b.WorkloadInfo)
+		})
+	}
+	return out
+}
+
+// IsValid reports whether the candidate may still be preempted given the current state of
+// the snapshot, by the same rules Next applies.
+func (c *cacheCandidateIterator) IsValid(candidate Candidate, borrow bool) bool {
+	if c.hierarchicalReclaimCtx.Cq.Name == candidate.WorkloadInfo.ClusterQueue {
+		return true
+	}
+	if borrow && candidate.elem.preemptionVariant == ReclaimWithoutBorrowing {
+		return false
+	}
+	return !c.cqIsPruned(&bucket{cq: candidate.cq, lca: candidate.elem.lca})
 }

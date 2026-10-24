@@ -170,21 +170,50 @@ func (p *PreemptionEvaluator) FindCandidates(
 	return
 }
 
+// CandidateTargets returns, from the most to the least preferred, the targets selected by
+// the rules activated by trigger. Unlike FindCandidates it neither checks fits nor removes
+// anything from the snapshot, so a caller that takes only part of each candidate, as partial
+// preemption does, can plan over them. A nil PreemptionEvaluator, or a rule that cannot be
+// evaluated, yields none.
+func (p *PreemptionEvaluator) CandidateTargets(
+	snapshot *schdcache.Snapshot,
+	preemptor *workload.Info,
+	frsNeedPreemption sets.Set[resources.FlavorResource],
+	trigger kueuealpha.PreemptionConfigActivationTrigger,
+) []*policy.Target {
+	if p == nil || !p.hasRulesFor(trigger) {
+		return nil
+	}
+	candidates, err := p.orderedCandidates(snapshot, frsNeedPreemption, trigger)
+	if err != nil {
+		return nil
+	}
+	targets := make([]*policy.Target, 0, len(candidates))
+	for _, candidate := range candidates {
+		targets = append(targets, candidate.target(snapshot))
+	}
+	return targets
+}
+
+func (c *configurableCandidate) target(snapshot *schdcache.Snapshot) *policy.Target {
+	return &policy.Target{
+		WorkloadInfo: c.WlInfo,
+		Reason:       kueue.ConfigurablePreemptionReason,
+		WorkloadCq:   snapshot.ClusterQueue(c.WlInfo.ClusterQueue),
+		ConfigurablePreemptionReasonData: &policy.ConfigurablePreemptionReasonData{
+			ConfigName:                c.ConfigName,
+			RuleNameToSelectorIndexes: c.RuleNameToSelectorIndexes,
+		},
+	}
+}
+
 func iterateOverCandidates(
 	snapshot *schdcache.Snapshot,
 	candidates []*configurableCandidate,
 	yield func(*policy.Target) bool,
 ) (interrupted bool) {
 	for _, candidate := range candidates {
-		if !yield(&policy.Target{
-			WorkloadInfo: candidate.WlInfo,
-			Reason:       kueue.ConfigurablePreemptionReason,
-			WorkloadCq:   snapshot.ClusterQueue(candidate.WlInfo.ClusterQueue),
-			ConfigurablePreemptionReasonData: &policy.ConfigurablePreemptionReasonData{
-				ConfigName:                candidate.ConfigName,
-				RuleNameToSelectorIndexes: candidate.RuleNameToSelectorIndexes,
-			},
-		}) {
+		if !yield(candidate.target(snapshot)) {
 			return true
 		}
 	}

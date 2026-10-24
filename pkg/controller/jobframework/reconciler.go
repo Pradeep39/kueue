@@ -475,6 +475,12 @@ func (r *JobReconciler) ReconcileGenericJob(ctx context.Context, req ctrl.Reques
 
 	log.V(2).Info("Reconciling Job")
 
+	// 0. Run an outstanding partial preemption before any slice scaling, which must not
+	// lower the grant while the reclaimed Pods still run.
+	if result, stop, err := r.reconcilePartialPreemption(ctx, job); stop {
+		return result, err
+	}
+
 	// 1. Attempt to retrieve an existing workload (if any) for this job.
 	wl, err := r.ensureOneWorkload(ctx, job, object)
 	if err != nil {
@@ -563,6 +569,14 @@ func (r *JobReconciler) ReconcileGenericJob(ctx context.Context, req ctrl.Reques
 			}
 			r.record.Eventf(object, nil, corev1.EventTypeNormal, ReasonFinishedWorkload, "FinishedWorkload",
 				"Workload '%s' is declared finished", workload.Key(wl))
+		}
+		// An elastic job can have more than one live slice: an admitted one and a scale-up
+		// slice still pending. wl is only one of them, so finish the others too, or the
+		// admitted slice keeps its quota after the job has ended.
+		if workloadslicing.Enabled(object) {
+			if err := r.finishRemainingSlices(ctx, job, wl, success, message); err != nil {
+				return ctrl.Result{}, err
+			}
 		}
 
 		// Execute job finalization logic
@@ -1232,6 +1246,9 @@ func (r *JobReconciler) ensureOneWorkload(ctx context.Context, job GenericJob, o
 		}
 		if compatible {
 			if err := r.syncWorkloadSlicePriority(ctx, job, object, wl); err != nil {
+				return nil, err
+			}
+			if err := r.syncPartialPreemptionAnnotations(ctx, job, wl); err != nil {
 				return nil, err
 			}
 			if wl != nil {
@@ -2011,6 +2028,14 @@ func ConstructWorkload(ctx context.Context, c client.Client, job GenericJob, lab
 		return nil, err
 	}
 
+	if pp, ok := partialPreemptionFor(job); ok {
+		marked, err := observedMarkedPods(ctx, c, pp)
+		if err != nil {
+			return nil, err
+		}
+		applyPartialPreemptionDeclaration(wl, pp, marked)
+	}
+
 	return wl, nil
 }
 
@@ -2088,6 +2113,9 @@ func prepareWorkloadSlice(ctx context.Context, clnt client.Client, job GenericJo
 			originName = oldSlice.Name
 		}
 		metav1.SetMetaDataAnnotation(&wl.ObjectMeta, kueue.WorkloadSliceNameAnnotation, originName)
+		// A replacement of a partially preempted slice is grow-back up to the count the
+		// predecessor had before it was reclaimed (spark-aware-preemption §5.5).
+		carryRestoreCount(wl, &oldSlice)
 		return nil
 	default:
 		// Any other slices length is invalid. I.E, we expect to have at most 1 "current/old" workload slice.
@@ -2534,4 +2562,30 @@ func mergeAnnotations(job GenericJob, customAnnotations map[string]string) (map[
 		}
 	}
 	return merged, changed
+}
+
+// finishRemainingSlices finishes every not-finished Workload of a finished elastic job other than
+// done, which the caller has already handled.
+func (r *JobReconciler) finishRemainingSlices(ctx context.Context, job GenericJob, done *kueue.Workload, success bool, message string) error {
+	object := job.Object()
+	list := &kueue.WorkloadList{}
+	if err := r.client.List(ctx, list, client.InNamespace(object.GetNamespace()), OwnerReferenceIndexFieldMatcher(job.GVK(), object.GetName())); err != nil {
+		return err
+	}
+	reason := kueue.WorkloadFinishedReasonSucceeded
+	if !success {
+		reason = kueue.WorkloadFinishedReasonFailed
+	}
+	for i := range list.Items {
+		wl := &list.Items[i]
+		if (done != nil && wl.UID == done.UID) || workloadfinish.IsFinished(wl) {
+			continue
+		}
+		if err := workloadfinish.Finish(ctx, r.client, wl, reason, message, r.clock); err != nil && !apierrors.IsNotFound(err) {
+			return err
+		}
+		r.record.Eventf(object, nil, corev1.EventTypeNormal, ReasonFinishedWorkload, "FinishedWorkload",
+			"Workload '%s' is declared finished", workload.Key(wl))
+	}
+	return nil
 }

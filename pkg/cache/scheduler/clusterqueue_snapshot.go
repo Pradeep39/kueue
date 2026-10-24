@@ -64,6 +64,7 @@ type ClusterQueueSnapshot struct {
 	// PreemptionConfigName is the name of the PreemptionConfig referenced by the ClusterQueue.
 	// Only present when the ConfigurablePreemptions feature gate is enabled.
 	PreemptionConfigName      *string
+	PartialPreemption         PartialPreemptionSettings
 	FairWeight                float64
 	FlavorFungibility         kueue.FlavorFungibility
 	AdmissionScope            kueue.AdmissionScope

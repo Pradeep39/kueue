@@ -20,6 +20,7 @@ package workloadslicing
 import (
 	"cmp"
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 
@@ -29,8 +30,10 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/sets"
+	"k8s.io/client-go/util/retry"
 	"k8s.io/klog/v2"
 	"k8s.io/utils/clock"
+	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -39,8 +42,10 @@ import (
 	"sigs.k8s.io/kueue/pkg/constants"
 	"sigs.k8s.io/kueue/pkg/controller/core/indexer"
 	"sigs.k8s.io/kueue/pkg/features"
+	"sigs.k8s.io/kueue/pkg/resources"
 	"sigs.k8s.io/kueue/pkg/scheduler/preemption"
 	slicesutil "sigs.k8s.io/kueue/pkg/util/slices"
+	utiltas "sigs.k8s.io/kueue/pkg/util/tas"
 	"sigs.k8s.io/kueue/pkg/workload"
 	"sigs.k8s.io/kueue/pkg/workload/concurrentadmission"
 	workloadevict "sigs.k8s.io/kueue/pkg/workload/evict"
@@ -523,4 +528,88 @@ func FindReplacedSliceTarget(preemptor *kueue.Workload, targets []*preemption.Ta
 		}
 	}
 	return targets, nil
+}
+
+// scaleDownAdmission lowers wl's granted PodSetAssignments to counts, returning whether
+// anything changed.
+//
+// The scheduler cache derives a workload's usage from status.admission
+// (workload.totalRequestsFromAdmission), not from spec.podSets, so lowering the granted
+// counts is what actually releases the quota.
+//
+// ResourceUsage is the podSet total, so it is rescaled proportionally. A TopologyAssignment
+// is truncated to the new count so TAS domain accounting stays consistent.
+func scaleDownAdmission(wl *kueue.Workload, counts workload.PodSetsCounts) bool {
+	if wl.Status.Admission == nil {
+		return false
+	}
+	changed := false
+	for i := range wl.Status.Admission.PodSetAssignments {
+		psa := &wl.Status.Admission.PodSetAssignments[i]
+		newCount, ok := counts[psa.Name]
+		if !ok || psa.Count == nil || newCount >= *psa.Count {
+			continue
+		}
+		oldCount := *psa.Count
+		psa.Count = ptr.To(newCount)
+		if psa.ResourceUsage != nil {
+			usage := resources.NewRequestsFromResourceList(psa.ResourceUsage)
+			usage.Divide(int64(oldCount))
+			usage.Mul(int64(newCount))
+			psa.ResourceUsage = usage.ToResourceList(nil)
+		}
+		if psa.TopologyAssignment != nil {
+			psa.TopologyAssignment = utiltas.V1Beta2From(
+				utiltas.TruncateAssignment(utiltas.InternalFrom(psa.TopologyAssignment), newCount))
+		}
+		changed = true
+	}
+	return changed
+}
+
+// errLowerGrantNotElastic is returned by LowerGrantedCounts for a Workload whose admission
+// Kueue's own webhook keeps fully immutable, so the lowering would be rejected anyway.
+var errLowerGrantNotElastic = errors.New("only an elastic workload's grant can be lowered in place")
+
+// LowerGrantedCounts lowers wl's granted PodSetAssignment counts to counts in place, through
+// scaleDownAdmission, WITHOUT changing spec.podSets. It is how a partial preemption gives back
+// the quota of the Pods it reclaimed (docs/design/spark-aware-preemption.md §5.4 step 3); the
+// job's request stays where it was, so the job reconciler then sees spec > grant and creates a
+// scale-up slice for the difference, which is the grow-back (§5.5).
+//
+// Only decreases are applied, which is all validateAdmissionUpdate's elastic exception accepts.
+// mutate, when not nil, is applied in the same status write (e.g. to resolve a condition), and
+// its result alone also triggers a write. wl is re-read before every attempt, so callers may
+// pass a cached object, and it holds the stored Workload on return.
+//
+// It returns whether a write was made. A Workload that holds no quota reservation is left
+// untouched.
+func LowerGrantedCounts(ctx context.Context, clnt client.Client, wl *kueue.Workload, counts workload.PodSetsCounts, mutate func(*kueue.Workload) bool) (bool, error) {
+	if !IsElasticWorkload(wl) {
+		return false, errLowerGrantNotElastic
+	}
+	key := client.ObjectKeyFromObject(wl)
+	written := false
+	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		written = false
+		if err := clnt.Get(ctx, key, wl); err != nil {
+			return err
+		}
+		if !workload.HasQuotaReservation(wl) {
+			return nil
+		}
+		changed := scaleDownAdmission(wl, counts)
+		if mutate != nil && mutate(wl) {
+			changed = true
+		}
+		if !changed {
+			return nil
+		}
+		if err := clnt.Status().Update(ctx, wl); err != nil {
+			return err
+		}
+		written = true
+		return nil
+	})
+	return written, err
 }

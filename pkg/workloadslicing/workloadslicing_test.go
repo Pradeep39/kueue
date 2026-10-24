@@ -27,6 +27,7 @@ import (
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/fields"
 	"k8s.io/apimachinery/pkg/labels"
@@ -2388,6 +2389,100 @@ func TestFindLatestActiveWorkload(t *testing.T) {
 			}
 			if gotName != tc.want {
 				t.Errorf("FindLatestActiveWorkload() = %q, want %q", gotName, tc.want)
+			}
+		})
+	}
+}
+
+// TestLowerGrantedCounts pins the grant lowering a partial preemption ends with
+// (spark-aware-preemption §5.4 step 3): the grant and its resource usage go down to the target,
+// spec.podSets does not, and only decreases are applied.
+func TestLowerGrantedCounts(t *testing.T) {
+	const executor kueue.PodSetReference = "executor"
+	now := time.Now().Truncate(time.Second)
+	makeWl := func(elastic bool, reserved bool) *kueue.Workload {
+		w := utiltestingapi.MakeWorkload("wl", "ns").
+			PodSets(
+				*utiltestingapi.MakePodSet("driver", 1).Request(corev1.ResourceCPU, "1").Obj(),
+				*utiltestingapi.MakePodSet(executor, 4).Request(corev1.ResourceCPU, "1").Obj(),
+			)
+		if elastic {
+			w = w.Annotation(EnabledAnnotationKey, EnabledAnnotationValue)
+		}
+		if reserved {
+			w = w.ReserveQuotaAt(utiltestingapi.MakeAdmission("cq").PodSets(
+				utiltestingapi.MakePodSetAssignment("driver").Assignment(corev1.ResourceCPU, "default", "1").Count(1).Obj(),
+				utiltestingapi.MakePodSetAssignment(executor).Assignment(corev1.ResourceCPU, "default", "4").Count(4).Obj(),
+			).Obj(), now).AdmittedAt(true, now)
+		}
+		return w.Obj()
+	}
+	cases := map[string]struct {
+		wl          *kueue.Workload
+		counts      workload.PodSetsCounts
+		mutate      bool
+		wantWritten bool
+		wantErr     bool
+		wantGrant   int32
+		wantCPU     string
+	}{
+		"lowers the grant and its usage, leaving spec alone": {
+			wl: makeWl(true, true), counts: workload.PodSetsCounts{executor: 2}, mutate: true,
+			wantWritten: true, wantGrant: 2, wantCPU: "2",
+		},
+		"never raises a grant": {
+			wl: makeWl(true, true), counts: workload.PodSetsCounts{executor: 6},
+			wantGrant: 4, wantCPU: "4",
+		},
+		"the mutation alone is still written": {
+			wl: makeWl(true, true), counts: workload.PodSetsCounts{executor: 4}, mutate: true,
+			wantWritten: true, wantGrant: 4, wantCPU: "4",
+		},
+		"a workload without a reservation is left alone": {
+			wl: makeWl(true, false), counts: workload.PodSetsCounts{executor: 2}, mutate: true,
+		},
+		"a non-elastic workload is refused, as the webhook would": {
+			wl: makeWl(false, true), counts: workload.PodSetsCounts{executor: 2}, mutate: true,
+			wantErr: true, wantGrant: 4, wantCPU: "4",
+		},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			features.SetFeatureGateDuringTest(t, features.ElasticJobsViaWorkloadSlices, true)
+			ctx, _ := utiltesting.ContextWithLog(t)
+			clnt := utiltesting.NewClientBuilder().WithObjects(tc.wl).WithStatusSubresource(&kueue.Workload{}).Build()
+			var mutate func(*kueue.Workload) bool
+			if tc.mutate {
+				mutate = func(w *kueue.Workload) bool {
+					return apimeta.SetStatusCondition(&w.Status.Conditions, metav1.Condition{Type: "Marker", Status: metav1.ConditionTrue, Reason: "Test"})
+				}
+			}
+			written, err := LowerGrantedCounts(ctx, clnt, tc.wl.DeepCopy(), tc.counts, mutate)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("LowerGrantedCounts() error = %v, wantErr %v", err, tc.wantErr)
+			}
+			if written != tc.wantWritten {
+				t.Errorf("LowerGrantedCounts() written = %v, want %v", written, tc.wantWritten)
+			}
+			got := &kueue.Workload{}
+			if err := clnt.Get(ctx, client.ObjectKeyFromObject(tc.wl), got); err != nil {
+				t.Fatal(err)
+			}
+			if diff := cmp.Diff(workload.PodSetsCounts{"driver": 1, executor: 4}, workload.ExtractPodSetCountsFromWorkload(got)); diff != "" {
+				t.Errorf("spec counts changed (-want,+got):\n%s", diff)
+			}
+			if tc.wantGrant == 0 {
+				return
+			}
+			if g, _ := workload.GrantedCount(got, executor); g != tc.wantGrant {
+				t.Errorf("granted executors = %d, want %d", g, tc.wantGrant)
+			}
+			cpu := got.Status.Admission.PodSetAssignments[1].ResourceUsage[corev1.ResourceCPU]
+			if cpu.Cmp(resource.MustParse(tc.wantCPU)) != 0 {
+				t.Errorf("executor CPU usage = %s, want %s", cpu.String(), tc.wantCPU)
+			}
+			if hasMarker := apimeta.IsStatusConditionTrue(got.Status.Conditions, "Marker"); hasMarker != tc.wantWritten {
+				t.Errorf("mutation persisted = %v, want %v", hasMarker, tc.wantWritten)
 			}
 		})
 	}
