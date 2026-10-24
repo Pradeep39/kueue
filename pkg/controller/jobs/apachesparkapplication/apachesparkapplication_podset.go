@@ -17,7 +17,6 @@ limitations under the License.
 package apachesparkapplication
 
 import (
-	"context"
 	"fmt"
 	"slices"
 	"strconv"
@@ -25,11 +24,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
-	"k8s.io/utils/ptr"
-	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	kueue "sigs.k8s.io/kueue/apis/kueue/v1beta2"
-	"sigs.k8s.io/kueue/pkg/controller/jobframework"
 	sparkv1 "sigs.k8s.io/kueue/pkg/controller/jobs/apachesparkapplication/api/v1"
 )
 
@@ -430,123 +425,44 @@ func (j *SparkApplication) declaredInitialExecutors() (int32, error) {
 	return count, nil
 }
 
-// isVerifiedLiveExecutor reports whether pod should currently count against the executor
-// PodSet: it exists and has not reached a terminal phase.
-//
-// A Pending pod still counts - quota must be reserved as soon as the pod is admitted to the
-// cluster, not once it happens to reach Running, or there is a window in which Dynamic
-// Allocation has consumed real capacity that Kueue does not know about. A pod with a
-// DeletionTimestamp also still counts: Dynamic Allocation deletes executors it no longer
-// wants, but the containers keep running and occupying node resources until the pod
-// actually reaches Succeeded or Failed. Excluding it the instant the delete is issued would
-// undercount live pods and manufacture spurious intermediate counts while Dynamic
-// Allocation works through a batch of deletions.
-func isVerifiedLiveExecutor(pod *corev1.Pod) bool {
-	switch pod.Status.Phase {
-	case corev1.PodSucceeded, corev1.PodFailed:
-		return false
-	default:
-		return true
-	}
-}
-
-// liveExecutorCount returns the executor count to size the executor PodSet with, caching
-// the result for the lifetime of this *SparkApplication.
-//
-// PodSets() is called several times per reconcile (equivalence checks, then workload
-// construction). Without caching, two calls could observe different live counts if Dynamic
-// Allocation churns pods between them, producing a spurious "not equivalent" verdict and
-// self-inflicted workload-slice churn. NewJob() allocates a fresh wrapper per reconcile, so
-// the cache is scoped to one pass and never goes stale across reconciles.
-func (j *SparkApplication) liveExecutorCount(ctx context.Context, c client.Client) (int32, error) {
-	if j.cachedLiveExecutorCount != nil {
-		return *j.cachedLiveExecutorCount, nil
-	}
-	count, err := j.computeLiveExecutorCount(ctx, c)
-	if err != nil {
-		return 0, err
-	}
-	j.cachedLiveExecutorCount = ptr.To(count)
-	return count, nil
-}
-
-// computeLiveExecutorCount is the uncached implementation of liveExecutorCount.
-//
-// Spark's ExecutorAllocationManager runs in the driver and creates and deletes executor
-// pods directly against the Kubernetes API without ever touching the SparkApplication, so
-// spark.executor.instances goes stale the moment Dynamic Allocation scales. When Dynamic
-// Allocation is on, this lists the live executor pods and trusts that count instead.
-//
-// This never writes back to the SparkApplication: the operator treats any spec change on a
-// running application as a full update and tears the app down to resubmit it, so deriving
-// the count read-only is the only way to keep accounting correct without disrupting the run.
-//
-// The derived count is clamped to Dynamic Allocation's own minExecutors/maxExecutors bounds;
+// numExecutors returns the executor count to request quota for. With Dynamic Allocation, an
+// elastic application follows the executors the driver keeps (pending or running), as the
+// operator declares them in status.executorState, so terminating executors hold quota until
+// they stop. Before the driver reports any, it is the initial count Dynamic Allocation starts
+// with. The derived count is clamped to Dynamic Allocation's own minExecutors/maxExecutors;
 // see clampToDynamicAllocationBounds for why the lower bound is load-bearing.
-func (j *SparkApplication) computeLiveExecutorCount(ctx context.Context, c client.Client) (int32, error) {
-	if !j.dynamicAllocationEnabled() {
+//
+// The count is derived, never written back: the operator treats any spec change on a running
+// application as a full update and resubmits it.
+func (j *SparkApplication) numExecutors() (int32, error) {
+	if !isAnElasticJob(j.SparkApplication) || !j.dynamicAllocationEnabled() {
 		return j.staticExecutorCount()
 	}
-
-	if c == nil {
-		// No client available, e.g. webhook validation building a PodSet template purely
-		// to inspect its metadata. Fall back to the pre-startup estimate.
+	if !j.driverStarted() || len(j.Status.ExecutorState) == 0 {
 		return j.initialExecutorCount()
 	}
-
-	podList := &corev1.PodList{}
-	if err := c.List(ctx, podList,
-		client.InNamespace(j.Namespace),
-		client.MatchingLabels{
-			appNameLabel: j.Name,
-			roleLabel:    executorRoleValue,
-		},
-	); err != nil {
-		return 0, err
-	}
-
-	if len(podList.Items) == 0 {
-		// No executor pods yet, e.g. the application was just admitted.
-		return j.initialExecutorCount()
-	}
-
-	var live int32
-	for i := range podList.Items {
-		if isVerifiedLiveExecutor(&podList.Items[i]) {
-			live++
-		}
-	}
-	return j.clampToDynamicAllocationBounds(live)
+	return j.clampToDynamicAllocationBounds(j.numActiveExecutors())
 }
 
-// workloadSequenceNumber returns the number of Workloads ever created for this application,
-// finished or not, caching it for the lifetime of this *SparkApplication.
-//
-// GetWorkloadNameExtraPart folds this into the generated slice name so a name is never
-// reused across the application's lifetime. See that method for why a live executor count
-// is not sufficient on its own.
-func (j *SparkApplication) workloadSequenceNumber(ctx context.Context, c client.Client) (int32, error) {
-	if j.cachedWorkloadSequenceNumber != nil {
-		return *j.cachedWorkloadSequenceNumber, nil
+// numActiveExecutors returns the number of executors the driver keeps, pending or running.
+func (j *SparkApplication) numActiveExecutors() int32 {
+	var count int32
+	for _, st := range j.Status.ExecutorState {
+		if st == sparkv1.ExecutorStatePending || st == sparkv1.ExecutorStateRunning {
+			count++
+		}
 	}
-	if c == nil {
-		// No client available (webhook validation): nothing to list against, so this is
-		// left uncached and recomputes to 0. That only affects building a template to
-		// inspect metadata, never the naming of a Workload that actually gets created.
-		return 0, nil
-	}
+	return count
+}
 
-	wlList := &kueue.WorkloadList{}
-	if err := c.List(ctx, wlList,
-		client.InNamespace(j.Namespace),
-		jobframework.OwnerReferenceIndexFieldMatcher(gvk, j.Name),
-	); err != nil {
-		return 0, err
-	}
-
-	count := int32(len(wlList.Items))
-	j.cachedWorkloadSequenceNumber = ptr.To(count)
-	return count, nil
+// driverStarted reports whether status.executorState belongs to a driver of the current
+// attempt. It includes the terminal states: falling back to the initial executors there would
+// look like a scale-up, and the job reconciler would then not find the active workload slice
+// to finish it.
+func (j *SparkApplication) driverStarted() bool {
+	state := j.Status.CurrentState.CurrentStateSummary
+	return state != sparkv1.DriverRequested &&
+		(slices.Contains(runningStates, state) || slices.Contains(terminalStates, state))
 }
 
 // instanceConfig safely reaches .spec.applicationTolerations.instanceConfig.

@@ -17,6 +17,7 @@ limitations under the License.
 package apachesparkapplication
 
 import (
+	"k8s.io/component-base/featuregate"
 	"slices"
 	"testing"
 
@@ -58,21 +59,38 @@ func TestIsAnElasticJob(t *testing.T) {
 	// ElasticJobsViaWorkloadSlices has been Beta and enabled by default since 0.18, so
 	// this has to be turned off explicitly rather than relying on the default.
 	t.Run("annotation without the feature gate is not elastic", func(t *testing.T) {
-		features.SetFeatureGateDuringTest(t, features.ElasticJobsViaWorkloadSlices, false)
+		features.SetFeatureGatesDuringTest(t, map[featuregate.Feature]bool{
+			features.ElasticJobsViaWorkloadSlices:                          false,
+			features.ElasticJobsViaWorkloadSlicesForApacheSparkApplication: false,
+		})
 		if isAnElasticJob(elasticApp(sparkv1.ApplicationSpec{})) {
 			t.Error("isAnElasticJob() = true with the feature gate off, want false")
 		}
 	})
 
-	t.Run("annotation with the feature gate is elastic", func(t *testing.T) {
-		features.SetFeatureGateDuringTest(t, features.ElasticJobsViaWorkloadSlices, true)
+	t.Run("annotation without the Apache elastic feature gate is not elastic", func(t *testing.T) {
+		features.SetFeatureGatesDuringTest(t, map[featuregate.Feature]bool{
+			features.ElasticJobsViaWorkloadSlices:                          true,
+			features.ElasticJobsViaWorkloadSlicesForApacheSparkApplication: false,
+		})
+		if isAnElasticJob(elasticApp(sparkv1.ApplicationSpec{})) {
+			t.Error("isAnElasticJob() = true with the Apache elastic feature gate off, want false")
+		}
+	})
+
+	t.Run("annotation with the feature gates is elastic", func(t *testing.T) {
+		features.SetFeatureGatesDuringTest(t, map[featuregate.Feature]bool{
+			features.ElasticJobsViaWorkloadSlices:                          true,
+			features.ApacheSparkApplicationIntegration:                     true,
+			features.ElasticJobsViaWorkloadSlicesForApacheSparkApplication: true,
+		})
 		if !isAnElasticJob(elasticApp(sparkv1.ApplicationSpec{})) {
-			t.Error("isAnElasticJob() = false with annotation and gate set, want true")
+			t.Error("isAnElasticJob() = false with annotation and gates set, want true")
 		}
 	})
 
 	t.Run("no annotation is not elastic", func(t *testing.T) {
-		features.SetFeatureGateDuringTest(t, features.ElasticJobsViaWorkloadSlices, true)
+		features.SetFeatureGateDuringTest(t, features.ElasticJobsViaWorkloadSlicesForApacheSparkApplication, true)
 		if isAnElasticJob(&sparkv1.SparkApplication{}) {
 			t.Error("isAnElasticJob() = true without the annotation, want false")
 		}

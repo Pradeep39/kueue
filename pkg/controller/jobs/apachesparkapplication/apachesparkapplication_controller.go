@@ -131,31 +131,12 @@ func NewJob() jobframework.GenericJob {
 
 var NewReconciler = jobframework.NewGenericReconcilerFactory(NewJob,
 	func(b *builder.Builder, _ client.Client) *builder.Builder {
-		b = b.Named(controllerName)
-		if !features.Enabled(features.ElasticJobsViaWorkloadSlices) {
-			// Avoid registering a cluster-wide Pod watch when the feature it exists to
-			// serve is off. liveExecutorCount() still runs on every normal reconcile; it
-			// just won't be prompted by Pod events alone.
-			return b
-		}
-		return b.Watches(&corev1.Pod{}, newExecutorPodHandler(), builder.WithPredicates(executorPodPredicate{}))
+		return b.Named(controllerName)
 	})
 
-// SparkApplication wraps the CRD type rather than aliasing it, so that reconcile-scoped
-// cache fields can live alongside it. NewJob() allocates a fresh wrapper per Reconcile(),
-// which scopes those caches to a single reconcile pass automatically.
+// SparkApplication wraps the CRD type.
 type SparkApplication struct {
 	*sparkv1.SparkApplication
-
-	// cachedLiveExecutorCount memoizes liveExecutorCount() for the lifetime of this
-	// wrapper. PodSets() is called several times per reconcile; without caching, two
-	// calls could observe different live counts if Dynamic Allocation churns pods in
-	// between, causing spurious "not equivalent" verdicts and workload-slice churn.
-	cachedLiveExecutorCount *int32
-
-	// cachedWorkloadSequenceNumber memoizes workloadSequenceNumber(). See
-	// GetWorkloadNameExtraPart for why it exists.
-	cachedWorkloadSequenceNumber *int32
 }
 
 var (
@@ -163,24 +144,16 @@ var (
 	_ jobframework.ElasticWorkloadNameProvider = (*SparkApplication)(nil)
 )
 
-// GetWorkloadNameExtraPart implements jobframework.ElasticWorkloadNameProvider.
-//
-// The default extra part is object.GetGeneration(), which only advances when the spec
-// changes. Dynamic Allocation scales executors by creating and deleting pods directly
-// against the API server without ever touching the spec - that is the whole point of
-// liveExecutorCount() - so generation alone stays frozen across every scale event.
-//
-// Folding in the live executor count is not sufficient either: a superseded slice is
-// Finished but not deleted absent a retention policy, so its deterministic name persists.
-// Real Dynamic Allocation workloads oscillate within a narrow band of counts, so a later
-// scale-up that revisits a previously used count would recompute the same name and collide
-// with the old, dead object - a permanent failure once every count in the band has been used
-// once. workloadSequenceNumber() counts every Workload ever owned by this application, so it
-// only grows and a name is never reused.
+// GetWorkloadNameExtraPart folds the attempt and the number of tracked executors into the
+// elastic workload-slice name. The Spark driver scales executors without bumping
+// metadata.generation; without this the slice name would key on that generation alone, so a
+// second scale-up would recompute an already-existing slice name and fail to mint its
+// replacement. The operator only adds entries to status.executorState within an attempt, so
+// the count grows with every scale-up.
 func (j *SparkApplication) GetWorkloadNameExtraPart() string {
 	extra := strconv.FormatInt(j.GetGeneration(), 10)
-	if j.cachedWorkloadSequenceNumber != nil {
-		extra += "_" + strconv.FormatInt(int64(*j.cachedWorkloadSequenceNumber), 10)
+	if a := j.Status.CurrentAttemptSummary; a != nil && a.AttemptInfo != nil {
+		extra += fmt.Sprintf("_%d_%d", a.AttemptInfo.ID, len(j.Status.ExecutorState))
 	}
 	return extra
 }
@@ -260,8 +233,8 @@ func (j *SparkApplication) PodLabelSelector() string {
 	return fmt.Sprintf("%s=%s", appNameLabel, j.Name)
 }
 
-func (j *SparkApplication) PodSets(ctx context.Context, c client.Client) ([]kueue.PodSet, error) {
-	executorCount, err := j.liveExecutorCount(ctx, c)
+func (j *SparkApplication) PodSets(context.Context, client.Client) ([]kueue.PodSet, error) {
+	executorCount, err := j.numExecutors()
 	if err != nil {
 		return nil, err
 	}
@@ -290,15 +263,6 @@ func (j *SparkApplication) PodSets(ctx context.Context, c client.Client) ([]kueu
 				return nil, err
 			}
 			podSets[i].TopologyRequest = topologyRequest
-		}
-	}
-
-	// Pre-compute and cache the sequence number GetWorkloadNameExtraPart() needs, since
-	// that method has no client of its own to List() with. Only relevant for elastic jobs,
-	// where a generated slice name must never be reused.
-	if jobframework.WorkloadSliceEnabled(j) {
-		if _, err := j.workloadSequenceNumber(ctx, c); err != nil {
-			return nil, err
 		}
 	}
 
@@ -359,25 +323,13 @@ func (j *SparkApplication) RestorePodSetsInfo(ctx context.Context, podSetsInfo [
 			template.Spec.Tolerations = slices.Clone(info.Tolerations)
 			changed = true
 		}
-		// Deliberately NOT restoring SchedulingGates -- same defect as the Kubeflow
-		// SparkApplication integration, and it deadlocks preemption identically.
-		//
-		// RunWithPodSetsInfo never sets them, so there is nothing admission-side to undo,
-		// and info.SchedulingGates is always empty here: PodSets() builds a template for
-		// quota math that does not carry the gate, so GetPodSetsInfoFromWorkload ->
-		// podset.FromPodSet reads an empty list off the Workload's PodSet template.
-		//
-		// Restoring that empty list wipes the executor template's schedulingGates, and
-		// validateElasticJob requires an elastic job to keep the ElasticJobSchedulingGate.
-		// Since stopJob applies Suspend() and RestorePodSetsInfo() in a single patch, the
-		// webhook rejects the whole update -- so preemption can never suspend the job, the
-		// evicted slice keeps its quota reservation and the preemptor starves.
-		//
-		// Nothing re-adds the gate either: mapachesparkapplication is registered for CREATE
-		// only, while vapachesparkapplication runs on CREATE and UPDATE.
-		//
-		// The gate is owned by the webhook for the lifetime of the object, so leave whatever
-		// is on the object untouched.
+		// The PodSet template carries the executor template's scheduling gates, including
+		// ElasticJobSchedulingGate, so restoring them keeps the elastic gate and removes any
+		// gate admission added.
+		if !slices.Equal(template.Spec.SchedulingGates, info.SchedulingGates) {
+			template.Spec.SchedulingGates = slices.Clone(info.SchedulingGates)
+			changed = true
+		}
 		if !maps.Equal(template.Labels, info.Labels) {
 			template.Labels = maps.Clone(info.Labels)
 			changed = true

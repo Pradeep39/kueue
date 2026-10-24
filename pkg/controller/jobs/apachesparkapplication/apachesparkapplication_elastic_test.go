@@ -18,19 +18,20 @@ package apachesparkapplication
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
+	"fmt"
 	"testing"
 
+	"github.com/google/go-cmp/cmp"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/utils/ptr"
-	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	kueue "sigs.k8s.io/kueue/apis/kueue/v1beta2"
 	sparkv1 "sigs.k8s.io/kueue/pkg/controller/jobs/apachesparkapplication/api/v1"
+	"sigs.k8s.io/kueue/pkg/features"
 	"sigs.k8s.io/kueue/pkg/podset"
 	utiltesting "sigs.k8s.io/kueue/pkg/util/testing"
+	"sigs.k8s.io/kueue/pkg/workloadslicing"
 )
 
 // daSpec builds a Dynamic-Allocation-enabled spec.
@@ -42,151 +43,156 @@ func daSpec(extra map[string]string) sparkv1.ApplicationSpec {
 	return sparkv1.ApplicationSpec{SparkConf: conf}
 }
 
-func executorPod(name string, phase corev1.PodPhase, deleting bool) *corev1.Pod {
-	pod := &corev1.Pod{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      name,
-			Namespace: "ns",
-			Labels: map[string]string{
-				appNameLabel: "pi",
-				roleLabel:    executorRoleValue,
-			},
-		},
-		Status: corev1.PodStatus{Phase: phase},
-	}
-	if deleting {
-		pod.Finalizers = []string{"test/keep"}
-		pod.DeletionTimestamp = ptr.To(metav1.Now())
-	}
-	return pod
-}
-
-func jobInNamespace(spec sparkv1.ApplicationSpec) *SparkApplication {
+// elasticAppWithState builds an elastic application with spec, whose driver is in state and reports
+// executors in status.executorState.
+func elasticAppWithState(spec sparkv1.ApplicationSpec, state sparkv1.ApplicationStateSummary, executors map[string]sparkv1.ExecutorState) *SparkApplication {
 	return &SparkApplication{SparkApplication: &sparkv1.SparkApplication{
-		ObjectMeta: metav1.ObjectMeta{Name: "pi", Namespace: "ns"},
-		Spec:       spec,
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        "pi",
+			Namespace:   "ns",
+			Annotations: map[string]string{workloadslicing.EnabledAnnotationKey: workloadslicing.EnabledAnnotationValue},
+		},
+		Spec: spec,
+		Status: sparkv1.ApplicationStatus{
+			CurrentState:  sparkv1.ApplicationState{CurrentStateSummary: state},
+			ExecutorState: executors,
+		},
 	}}
 }
 
-func TestLiveExecutorCount(t *testing.T) {
+// executors builds a status.executorState with the given states, one executor each.
+func executors(states ...sparkv1.ExecutorState) map[string]sparkv1.ExecutorState {
+	out := make(map[string]sparkv1.ExecutorState, len(states))
+	for i, st := range states {
+		out[fmt.Sprintf("pi-exec-%d", i+1)] = st
+	}
+	return out
+}
+
+func TestNumExecutors(t *testing.T) {
+	const (
+		pending   = sparkv1.ExecutorStatePending
+		running   = sparkv1.ExecutorStateRunning
+		completed = sparkv1.ExecutorStateCompleted
+		failed    = sparkv1.ExecutorStateFailed
+		unknown   = sparkv1.ExecutorStateUnknown
+	)
 	cases := map[string]struct {
-		spec sparkv1.ApplicationSpec
-		pods []client.Object
-		want int32
+		spec       sparkv1.ApplicationSpec
+		state      sparkv1.ApplicationStateSummary
+		executors  map[string]sparkv1.ExecutorState
+		notElastic bool
+		gateOff    bool
+		want       int32
 	}{
-		"dynamic allocation off ignores live pods entirely": {
-			spec: sparkv1.ApplicationSpec{SparkConf: map[string]string{"spark.executor.instances": "3"}},
-			pods: []client.Object{
-				executorPod("e0", corev1.PodRunning, false),
-				executorPod("e1", corev1.PodRunning, false),
-			},
-			want: 3,
+		"dynamic allocation off ignores executorState entirely": {
+			spec:      sparkv1.ApplicationSpec{SparkConf: map[string]string{"spark.executor.instances": "3"}},
+			state:     sparkv1.RunningHealthy,
+			executors: executors(running, running),
+			want:      3,
 		},
-		"no pods yet falls back to initialExecutors": {
-			spec: daSpec(map[string]string{"spark.dynamicAllocation.initialExecutors": "4"}),
-			want: 4,
+		"a non-elastic application uses the static count": {
+			spec:       daSpec(map[string]string{"spark.executor.instances": "3"}),
+			state:      sparkv1.RunningHealthy,
+			executors:  executors(running),
+			notElastic: true,
+			want:       3,
 		},
-		"no pods yet falls back to minExecutors": {
-			spec: daSpec(map[string]string{"spark.dynamicAllocation.minExecutors": "2"}),
-			want: 2,
+		"with the Apache elastic gate off the application is not elastic": {
+			spec:      daSpec(map[string]string{"spark.executor.instances": "3"}),
+			state:     sparkv1.RunningHealthy,
+			executors: executors(running),
+			gateOff:   true,
+			want:      3,
+		},
+		"no executors reported yet falls back to initialExecutors": {
+			spec:  daSpec(map[string]string{"spark.dynamicAllocation.initialExecutors": "4"}),
+			state: sparkv1.DriverReady,
+			want:  4,
+		},
+		"no executors reported yet falls back to minExecutors": {
+			spec:  daSpec(map[string]string{"spark.dynamicAllocation.minExecutors": "2"}),
+			state: sparkv1.DriverReady,
+			want:  2,
 		},
 		"initialExecutors beats minExecutors": {
 			spec: daSpec(map[string]string{
 				"spark.dynamicAllocation.initialExecutors": "5",
 				"spark.dynamicAllocation.minExecutors":     "2",
 			}),
-			want: 5,
+			state: sparkv1.Submitted,
+			want:  5,
 		},
 		"no dynamic allocation counts at all falls back to the static count": {
-			spec: daSpec(map[string]string{"spark.executor.instances": "6"}),
-			want: 6,
+			spec:  daSpec(map[string]string{"spark.executor.instances": "6"}),
+			state: sparkv1.Submitted,
+			want:  6,
 		},
-		"live pods override the configured count": {
-			spec: daSpec(map[string]string{"spark.dynamicAllocation.initialExecutors": "1"}),
-			pods: []client.Object{
-				executorPod("e0", corev1.PodRunning, false),
-				executorPod("e1", corev1.PodRunning, false),
-				executorPod("e2", corev1.PodRunning, false),
-			},
-			want: 3,
+		"reported executors override the configured count": {
+			spec:      daSpec(map[string]string{"spark.dynamicAllocation.initialExecutors": "1"}),
+			state:     sparkv1.RunningHealthy,
+			executors: executors(running, running, running),
+			want:      3,
 		},
-		// Quota must be reserved as soon as the pod is admitted to the cluster, not once
-		// it reaches Running.
-		"pending pods count": {
-			spec: daSpec(nil),
-			pods: []client.Object{
-				executorPod("e0", corev1.PodRunning, false),
-				executorPod("e1", corev1.PodPending, false),
-			},
-			want: 2,
+		// Quota must be reserved as soon as the driver asks for an executor, not once it
+		// reaches Running. That includes executors still held by the elastic gate.
+		"pending executors count": {
+			spec:      daSpec(nil),
+			state:     sparkv1.RunningHealthy,
+			executors: executors(running, pending),
+			want:      2,
 		},
-		// The containers keep running and occupying node resources until the pod actually
-		// terminates, so a pod being deleted still counts.
-		"terminating pods still count": {
-			spec: daSpec(nil),
-			pods: []client.Object{
-				executorPod("e0", corev1.PodRunning, false),
-				executorPod("e1", corev1.PodRunning, true),
-			},
-			want: 2,
+		"terminated and unknown executors do not count": {
+			spec:      daSpec(nil),
+			state:     sparkv1.RunningHealthy,
+			executors: executors(running, completed, failed, unknown),
+			want:      1,
 		},
-		"terminal pods do not count": {
-			spec: daSpec(nil),
-			pods: []client.Object{
-				executorPod("e0", corev1.PodRunning, false),
-				executorPod("e1", corev1.PodSucceeded, false),
-				executorPod("e2", corev1.PodFailed, false),
-			},
-			want: 1,
+		// The operator's executorState belongs to the previous attempt until a new driver
+		// reports, so a restart reserves the initial count again.
+		"a restarting application falls back to the initial count": {
+			spec:      daSpec(map[string]string{"spark.dynamicAllocation.initialExecutors": "2"}),
+			state:     sparkv1.ScheduledToRestart,
+			executors: executors(running, running, running, running),
+			want:      2,
 		},
-		"pods of another application are not counted": {
-			spec: daSpec(map[string]string{"spark.dynamicAllocation.initialExecutors": "1"}),
-			pods: []client.Object{
-				executorPod("e0", corev1.PodRunning, false),
-				func() client.Object {
-					other := executorPod("other-e0", corev1.PodRunning, false)
-					other.Labels[appNameLabel] = "not-pi"
-					return other
-				}(),
-			},
-			want: 1,
+		"a requested driver has not reported executors yet": {
+			spec:      daSpec(map[string]string{"spark.dynamicAllocation.initialExecutors": "2"}),
+			state:     sparkv1.DriverRequested,
+			executors: executors(running, running, running, running),
+			want:      2,
 		},
-		"driver pods are not counted as executors": {
-			spec: daSpec(map[string]string{"spark.dynamicAllocation.initialExecutors": "1"}),
-			pods: []client.Object{
-				executorPod("e0", corev1.PodRunning, false),
-				func() client.Object {
-					driver := executorPod("pi-0-driver", corev1.PodRunning, false)
-					driver.Labels[roleLabel] = driverRoleValue
-					return driver
-				}(),
-			},
-			want: 1,
+		// Falling back to the initial count once the application ends would look like a
+		// scale-up, and the job reconciler would not find the active slice to finish.
+		"a finished application keeps following executorState": {
+			spec: daSpec(map[string]string{
+				"spark.dynamicAllocation.initialExecutors": "5",
+				"spark.dynamicAllocation.minExecutors":     "1",
+			}),
+			state:     sparkv1.Succeeded,
+			executors: executors(running, completed, completed),
+			want:      1,
 		},
-		// A reconcile landing while the driver is still creating its initial executors sees a
-		// strictly smaller prefix of them. Without the minExecutors floor the derived count is
-		// 1, which EnsureWorkloadSlices reads as a scale-down and patches the granted PodSet
-		// down to 1 -- dismantling the gang it was just admitted with.
-		"live count below minExecutors is raised to the floor": {
+		// Executors the driver is still starting are reported one by one. Without the
+		// minExecutors floor the derived count would be 1, which EnsureWorkloadSlices reads
+		// as a scale-down of the gang it was just admitted with.
+		"a count below minExecutors is raised to the floor": {
 			spec: daSpec(map[string]string{
 				"spark.dynamicAllocation.minExecutors": "3",
 				"spark.dynamicAllocation.maxExecutors": "30",
 			}),
-			pods: []client.Object{executorPod("e0", corev1.PodRunning, false)},
-			want: 3,
+			state:     sparkv1.DriverReady,
+			executors: executors(running),
+			want:      3,
 		},
-		"live count above maxExecutors is capped at the ceiling": {
+		"a count above maxExecutors is capped at the ceiling": {
 			spec: daSpec(map[string]string{
 				"spark.dynamicAllocation.minExecutors": "1",
 				"spark.dynamicAllocation.maxExecutors": "2",
 			}),
-			pods: []client.Object{
-				executorPod("e0", corev1.PodRunning, false),
-				executorPod("e1", corev1.PodPending, false),
-				executorPod("e2", corev1.PodPending, false),
-				executorPod("e3", corev1.PodPending, false),
-			},
-			want: 2,
+			state:     sparkv1.RunningHealthy,
+			executors: executors(running, pending, pending, pending),
+			want:      2,
 		},
 		// maxExecutors is applied last, so an inverted configuration can never inflate the
 		// count above the declared maximum.
@@ -195,15 +201,17 @@ func TestLiveExecutorCount(t *testing.T) {
 				"spark.dynamicAllocation.minExecutors": "8",
 				"spark.dynamicAllocation.maxExecutors": "2",
 			}),
-			pods: []client.Object{executorPod("e0", corev1.PodRunning, false)},
-			want: 2,
+			state:     sparkv1.RunningHealthy,
+			executors: executors(running),
+			want:      2,
 		},
-		"declared instances below minExecutors reserves the floor before any pods exist": {
+		"declared instances below minExecutors reserves the floor before any executors exist": {
 			spec: daSpec(map[string]string{
 				"spark.executor.instances":             "1",
 				"spark.dynamicAllocation.minExecutors": "3",
 			}),
-			want: 3,
+			state: sparkv1.Submitted,
+			want:  3,
 		},
 		// The conf keys Spark itself acts on outrank instanceConfig on the Dynamic
 		// Allocation path too, and drive the clamp. instanceConfig remains the fallback.
@@ -215,9 +223,10 @@ func TestLiveExecutorCount(t *testing.T) {
 				}
 				return spec
 			}(),
-			want: 9,
+			state: sparkv1.Submitted,
+			want:  9,
 		},
-		"instanceConfig minExecutors raises a live count below the floor": {
+		"instanceConfig minExecutors raises a count below the floor": {
 			spec: func() sparkv1.ApplicationSpec {
 				spec := daSpec(nil)
 				spec.ApplicationTolerations = &sparkv1.ApplicationTolerations{
@@ -225,10 +234,11 @@ func TestLiveExecutorCount(t *testing.T) {
 				}
 				return spec
 			}(),
-			pods: []client.Object{executorPod("e0", corev1.PodRunning, false)},
-			want: 3,
+			state:     sparkv1.RunningWithBelowThresholdExecutors,
+			executors: executors(running),
+			want:      3,
 		},
-		"instanceConfig maxExecutors caps a live count above the ceiling": {
+		"instanceConfig maxExecutors caps a count above the ceiling": {
 			spec: func() sparkv1.ApplicationSpec {
 				spec := daSpec(nil)
 				spec.ApplicationTolerations = &sparkv1.ApplicationTolerations{
@@ -236,15 +246,12 @@ func TestLiveExecutorCount(t *testing.T) {
 				}
 				return spec
 			}(),
-			pods: []client.Object{
-				executorPod("e0", corev1.PodRunning, false),
-				executorPod("e1", corev1.PodRunning, false),
-				executorPod("e2", corev1.PodRunning, false),
-			},
-			want: 2,
+			state:     sparkv1.RunningHealthy,
+			executors: executors(running, running, running),
+			want:      2,
 		},
-		// Dynamic Allocation obeys the sparkConf bounds, so a live count of 3 is raised to
-		// the sparkConf floor of 8 rather than capped at instanceConfig's 2.
+		// Dynamic Allocation obeys the sparkConf bounds, so a count of 3 is raised to the
+		// sparkConf floor of 8 rather than capped at instanceConfig's 2.
 		"sparkConf bounds take precedence over the instanceConfig equivalents": {
 			spec: func() sparkv1.ApplicationSpec {
 				spec := daSpec(map[string]string{
@@ -256,12 +263,9 @@ func TestLiveExecutorCount(t *testing.T) {
 				}
 				return spec
 			}(),
-			pods: []client.Object{
-				executorPod("e0", corev1.PodRunning, false),
-				executorPod("e1", corev1.PodRunning, false),
-				executorPod("e2", corev1.PodRunning, false),
-			},
-			want: 8,
+			state:     sparkv1.RunningWithPartialCapacity,
+			executors: executors(running, running, running),
+			want:      8,
 		},
 		"declared instances above the dynamic allocation counts wins": {
 			spec: daSpec(map[string]string{
@@ -269,113 +273,50 @@ func TestLiveExecutorCount(t *testing.T) {
 				"spark.dynamicAllocation.initialExecutors": "2",
 				"spark.dynamicAllocation.minExecutors":     "1",
 			}),
-			want: 6,
+			state: sparkv1.Submitted,
+			want:  6,
 		},
 	}
 
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			c := utiltesting.NewClientBuilder(sparkv1.AddToScheme).WithObjects(tc.pods...).Build()
-
-			got, err := jobInNamespace(tc.spec).liveExecutorCount(context.Background(), c)
+			features.SetFeatureGateDuringTest(t, features.ElasticJobsViaWorkloadSlicesForApacheSparkApplication, !tc.gateOff)
+			job := elasticAppWithState(tc.spec, tc.state, tc.executors)
+			if tc.notElastic {
+				job.Annotations = nil
+			}
+			got, err := job.numExecutors()
 			if err != nil {
-				t.Fatalf("liveExecutorCount() returned unexpected error: %v", err)
+				t.Fatalf("numExecutors() returned unexpected error: %v", err)
 			}
 			if got != tc.want {
-				t.Errorf("liveExecutorCount() = %d, want %d", got, tc.want)
+				t.Errorf("numExecutors() = %d, want %d", got, tc.want)
 			}
 		})
 	}
 }
 
-// TestLiveExecutorCountIsCachedPerWrapper guards the invariant that makes PodSets() stable
-// within one reconcile: two calls must agree even if the live pod set changes in between,
-// otherwise the equivalence check against the stored Workload produces spurious
-// "not equivalent" verdicts and self-inflicted workload-slice churn.
-func TestLiveExecutorCountIsCachedPerWrapper(t *testing.T) {
-	ctx := context.Background()
-	c := utiltesting.NewClientBuilder(sparkv1.AddToScheme).
-		WithObjects(executorPod("e0", corev1.PodRunning, false)).
-		Build()
-
-	job := jobInNamespace(daSpec(nil))
-
-	first, err := job.liveExecutorCount(ctx, c)
-	if err != nil {
-		t.Fatalf("first liveExecutorCount() returned unexpected error: %v", err)
+func TestGetWorkloadNameExtraPart(t *testing.T) {
+	job := elasticAppWithState(daSpec(nil), sparkv1.Submitted, nil)
+	job.Generation = 2
+	if got, want := job.GetWorkloadNameExtraPart(), "2"; got != want {
+		t.Errorf("before the first attempt: GetWorkloadNameExtraPart() = %q, want %q", got, want)
 	}
-
-	// Dynamic Allocation scales up underneath us.
-	if err := c.Create(ctx, executorPod("e1", corev1.PodRunning, false)); err != nil {
-		t.Fatalf("failed to create the second executor pod: %v", err)
+	job.Status.CurrentAttemptSummary = &sparkv1.ApplicationAttemptSummary{AttemptInfo: &sparkv1.AttemptInfo{ID: 0}}
+	if got, want := job.GetWorkloadNameExtraPart(), "2_0_0"; got != want {
+		t.Errorf("first attempt, no executors: GetWorkloadNameExtraPart() = %q, want %q", got, want)
 	}
-
-	second, err := job.liveExecutorCount(ctx, c)
-	if err != nil {
-		t.Fatalf("second liveExecutorCount() returned unexpected error: %v", err)
+	// Every scale-up adds an entry, so the name never repeats within an attempt, even when
+	// the driver later shrinks back to an earlier count.
+	job.Status.ExecutorState = executors(sparkv1.ExecutorStateRunning, sparkv1.ExecutorStateCompleted, sparkv1.ExecutorStateRunning)
+	if got, want := job.GetWorkloadNameExtraPart(), "2_0_3"; got != want {
+		t.Errorf("three tracked executors: GetWorkloadNameExtraPart() = %q, want %q", got, want)
 	}
-	if first != second {
-		t.Errorf("liveExecutorCount() changed within one wrapper: %d then %d", first, second)
+	job.Status.CurrentAttemptSummary.AttemptInfo.ID = 1
+	job.Status.ExecutorState = nil
+	if got, want := job.GetWorkloadNameExtraPart(), "2_1_0"; got != want {
+		t.Errorf("second attempt: GetWorkloadNameExtraPart() = %q, want %q", got, want)
 	}
-
-	// A fresh wrapper, as NewJob() produces per reconcile, must observe the new count.
-	fresh, err := jobInNamespace(daSpec(nil)).liveExecutorCount(ctx, c)
-	if err != nil {
-		t.Fatalf("fresh liveExecutorCount() returned unexpected error: %v", err)
-	}
-	if fresh != 2 {
-		t.Errorf("a fresh wrapper saw %d executors, want 2", fresh)
-	}
-}
-
-// TestLiveExecutorCountWithoutClient covers the webhook path, which builds PodSet templates
-// with a nil client purely to inspect their metadata.
-func TestLiveExecutorCountWithoutClient(t *testing.T) {
-	got, err := jobInNamespace(daSpec(map[string]string{
-		"spark.dynamicAllocation.initialExecutors": "3",
-	})).liveExecutorCount(context.Background(), nil)
-	if err != nil {
-		t.Fatalf("liveExecutorCount() returned unexpected error: %v", err)
-	}
-	if got != 3 {
-		t.Errorf("liveExecutorCount() = %d, want the initial estimate 3", got)
-	}
-}
-
-func TestIsTrackedExecutorPod(t *testing.T) {
-	cases := map[string]struct {
-		mutate func(*corev1.Pod)
-		want   bool
-	}{
-		"executor pod with the app label": {want: true},
-		"driver pod": {
-			mutate: func(p *corev1.Pod) { p.Labels[roleLabel] = driverRoleValue },
-		},
-		"executor pod without the app label": {
-			mutate: func(p *corev1.Pod) { delete(p.Labels, appNameLabel) },
-		},
-		"pod with no labels at all": {
-			mutate: func(p *corev1.Pod) { p.Labels = nil },
-		},
-	}
-
-	for name, tc := range cases {
-		t.Run(name, func(t *testing.T) {
-			pod := executorPod("e0", corev1.PodRunning, false)
-			if tc.mutate != nil {
-				tc.mutate(pod)
-			}
-			if got := isTrackedExecutorPod(pod); got != tc.want {
-				t.Errorf("isTrackedExecutorPod() = %v, want %v", got, tc.want)
-			}
-		})
-	}
-
-	t.Run("non-pod object", func(t *testing.T) {
-		if isTrackedExecutorPod(&sparkv1.SparkApplication{}) {
-			t.Error("isTrackedExecutorPod() = true for a non-Pod object, want false")
-		}
-	})
 }
 
 // TestEnsureTemplateSpecNeverMarshalsNullContainers is a regression guard.
@@ -413,7 +354,7 @@ func TestEnsureTemplateSpecNeverMarshalsNullContainers(t *testing.T) {
 
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			job := jobInNamespace(tc.spec)
+			job := wrap(tc.spec)
 			template := job.ensureTemplateSpec(tc.role)
 
 			if template.Spec.Containers == nil {
@@ -432,42 +373,41 @@ func TestEnsureTemplateSpecNeverMarshalsNullContainers(t *testing.T) {
 	}
 }
 
-// TestRestorePodSetsInfoPreservesElasticSchedulingGate pins the elastic-preemption
-// deadlock for this integration. It is the same defect the Kubeflow SparkApplication
-// integration had, and it deadlocks preemption identically.
+// TestRestorePodSetsInfoPreservesElasticSchedulingGate guards the elastic gate across a stop.
 //
-// stopJob applies Suspend() and RestorePodSetsInfo() in a single patch. PodSets() builds
-// a template for quota math that does not carry the ElasticJobSchedulingGate, so
-// GetPodSetsInfoFromWorkload -> podset.FromPodSet always yields an empty SchedulingGates
-// list. Restoring that list wipes the gate from the executor template, and
-// validateElasticJob rejects the resulting update:
+// stopJob applies Suspend() and RestorePodSetsInfo() in one patch, and validateElasticJob
+// requires an elastic job to keep the ElasticJobSchedulingGate, so a restore that wiped it
+// would have the webhook reject the suspend: preemption could never stop the job, the evicted
+// slice would keep its quota reservation and the preemptor would starve. The gates are
+// restored from the Workload's PodSets, whose templates carry the executor template's gates,
+// so the elastic gate survives and a gate added on admission is removed.
 //
-//	an elastic job must carry the kueue.x-k8s.io/elastic-job scheduling gate on its
-//	executor pod template
-//
-// Nothing re-adds it, since mapachesparkapplication is registered for CREATE only while
-// vapachesparkapplication runs on CREATE and UPDATE. The suspend therefore never lands,
-// the evicted slice keeps its quota reservation, and the preemptor starves.
-//
-// Negative control: restore the SchedulingGates assignment in RestorePodSetsInfo and this
-// test fails with the gate wiped to empty.
+// Negative control: restore from PodSetInfos with no gates and the gate is wiped.
 func TestRestorePodSetsInfoPreservesElasticSchedulingGate(t *testing.T) {
 	elasticGate := corev1.PodSchedulingGate{Name: kueue.ElasticJobSchedulingGate}
+	admissionGate := corev1.PodSchedulingGate{Name: "example.com/admission"}
 
 	job := wrap(daSpec(nil))
 	// Mirror what the mutating webhook does at CREATE.
-	executor := job.ensureTemplateSpec(roleExecutor)
-	executor.Spec.SchedulingGates = []corev1.PodSchedulingGate{elasticGate}
+	job.ensureTemplateSpec(roleExecutor).Spec.SchedulingGates = []corev1.PodSchedulingGate{elasticGate}
 	job.ensureTemplateSpec(roleDriver)
 
-	// What stopJob actually passes: derived from the Workload's PodSets, which carry no gates.
-	job.RestorePodSetsInfo(context.Background(), []podset.PodSetInfo{{}, {}})
+	// What stopJob passes: derived from the Workload's PodSets, built before admission.
+	podSets, err := job.PodSets(t.Context(), nil)
+	if err != nil {
+		t.Fatalf("PodSets() = %v", err)
+	}
+	info := []podset.PodSetInfo{podset.FromPodSet(&podSets[0]), podset.FromPodSet(&podSets[1])}
 
-	got := templateSpec(job.SparkApplication, roleExecutor).Spec.SchedulingGates
-	if len(got) != 1 || got[0].Name != kueue.ElasticJobSchedulingGate {
-		t.Errorf("executor SchedulingGates after restore = %v, want [%s]\n"+
-			"the gate must survive, or the webhook rejects the suspend patch and preemption deadlocks",
-			got, kueue.ElasticJobSchedulingGate)
+	// Admission adds a gate of its own.
+	executor := templateSpec(job.SparkApplication, roleExecutor)
+	executor.Spec.SchedulingGates = append(executor.Spec.SchedulingGates, admissionGate)
+
+	job.RestorePodSetsInfo(t.Context(), info)
+
+	if diff := cmp.Diff([]corev1.PodSchedulingGate{elasticGate}, templateSpec(job.SparkApplication, roleExecutor).Spec.SchedulingGates); diff != "" {
+		t.Errorf("executor SchedulingGates after restore (-want,+got):\n%s\n"+
+			"the elastic gate must survive, or the webhook rejects the suspend patch and preemption deadlocks", diff)
 	}
 }
 
@@ -490,9 +430,8 @@ func TestRestorePodSetsInfoPreservesElasticSchedulingGate(t *testing.T) {
 // recorded template carries it, and the merge sees that stale value against the current
 // slice's. A fixture that restores from empty maps wipes the CR and cannot reproduce it.
 //
-// Negative control, verified: reinstate the SchedulingGates assignment in
-// RestorePodSetsInfo and the suspend subtest fails with the real validator error
-// ("an elastic job must carry the kueue.x-k8s.io/elastic-job scheduling gate ...").
+// Negative control: have RestorePodSetsInfo restore gates from empty PodSetInfos and the
+// suspend subtest fails with the real validator error.
 //
 // The re-admission subtest has NO verified negative control. Bypassing podset.Merge in
 // RunWithPodSetsInfo — the mutation that broke the Kubeflow integration the same way —

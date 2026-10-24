@@ -117,7 +117,7 @@ func (w *SparkApplicationWebhook) Default(ctx context.Context, obj *sparkv1.Spar
 
 // isAnElasticJob reports whether the application opted into workload slices.
 func isAnElasticJob(app *sparkv1.SparkApplication) bool {
-	return workloadslicing.Enabled(app)
+	return features.Enabled(features.ElasticJobsViaWorkloadSlicesForApacheSparkApplication) && workloadslicing.Enabled(app)
 }
 
 // +kubebuilder:webhook:path=/validate-spark-apache-org-v1-sparkapplication,mutating=false,failurePolicy=fail,sideEffects=None,groups=spark.apache.org,resources=sparkapplications,verbs=create;update,versions=v1,name=vapachesparkapplication.kb.io,admissionReviewVersions=v1
@@ -148,8 +148,8 @@ func (w *SparkApplicationWebhook) validateCreate(ctx context.Context, obj *spark
 
 		// Dynamic Allocation lets the driver create and delete executors directly against
 		// the API server without touching the spec. That is only safe to admit when
-		// workload slices are in play, because then the executor PodSet count is re-derived
-		// from live pods and each scale-up is gated on a new slice being granted quota.
+		// workload slices are in play, because then the executor PodSet count follows
+		// status.executorState and each scale-up is gated on a new slice being granted quota.
 		// Without slices the count would go stale and quota accounting would silently rot.
 		if isAnElasticJob(obj) {
 			allErrors = append(allErrors, validateElasticJob(obj)...)
@@ -158,7 +158,7 @@ func (w *SparkApplicationWebhook) validateCreate(ctx context.Context, obj *spark
 				sparkConfPath.Key("spark.dynamicAllocation.enabled"), true,
 				fmt.Sprintf("a Kueue managed job can use dynamicAllocation only when the %s feature gate is on "+
 					"and the application is annotated %s=%s",
-					features.ElasticJobsViaWorkloadSlices,
+					features.ElasticJobsViaWorkloadSlicesForApacheSparkApplication,
 					workloadslicing.EnabledAnnotationKey, workloadslicing.EnabledAnnotationValue)))
 		}
 

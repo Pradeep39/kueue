@@ -190,7 +190,46 @@ type ApplicationStatus struct {
 	// reached from both success and failure, so the history is the only way to recover
 	// which outcome a released application actually had.
 	StateTransitionHistory map[string]ApplicationState `json:"stateTransitionHistory,omitempty"`
+
+	// CurrentAttemptSummary describes the current attempt. Its id tells attempts apart.
+	CurrentAttemptSummary *ApplicationAttemptSummary `json:"currentAttemptSummary,omitempty"`
+
+	// ExecutorState is the state of each executor of the current attempt, by executor pod
+	// name. The operator starts it empty with each attempt and when the application is
+	// suspended, and only adds entries within an attempt.
+	ExecutorState map[string]ExecutorState `json:"executorState,omitempty"`
 }
+
+// ApplicationAttemptSummary is the partial summary of an application attempt.
+type ApplicationAttemptSummary struct {
+	AttemptInfo *AttemptInfo `json:"attemptInfo,omitempty"`
+}
+
+// AttemptInfo identifies an application attempt.
+type AttemptInfo struct {
+	ID int64 `json:"id,omitempty"`
+}
+
+// ExecutorState mirrors org.apache.spark.k8s.operator.status.ExecutorState.
+type ExecutorState string
+
+const (
+	// ExecutorStatePending means the executor pod is not yet scheduled, held by a scheduling
+	// gate, or starting.
+	ExecutorStatePending ExecutorState = "PENDING"
+	// ExecutorStateRunning means the executor pod is running, including while it is being
+	// deleted.
+	ExecutorStateRunning ExecutorState = "RUNNING"
+	// ExecutorStateCompleted means the executor pod succeeded, or disappeared after the
+	// application succeeded.
+	ExecutorStateCompleted ExecutorState = "COMPLETED"
+	// ExecutorStateFailed means the executor pod failed, or disappeared while the driver was
+	// not running.
+	ExecutorStateFailed ExecutorState = "FAILED"
+	// ExecutorStateUnknown means the phase of the executor pod is unknown, or the pod
+	// disappeared while the driver was running.
+	ExecutorStateUnknown ExecutorState = "UNKNOWN"
+)
 
 // ApplicationState is a single entry of the operator's state machine.
 type ApplicationState struct {
@@ -216,6 +255,19 @@ func (in *ApplicationStatus) DeepCopyInto(out *ApplicationStatus) {
 		out.StateTransitionHistory = make(map[string]ApplicationState, len(in.StateTransitionHistory))
 		for k, v := range in.StateTransitionHistory {
 			out.StateTransitionHistory[k] = v
+		}
+	}
+	if in.CurrentAttemptSummary != nil {
+		out.CurrentAttemptSummary = new(ApplicationAttemptSummary)
+		if in.CurrentAttemptSummary.AttemptInfo != nil {
+			out.CurrentAttemptSummary.AttemptInfo = new(AttemptInfo)
+			*out.CurrentAttemptSummary.AttemptInfo = *in.CurrentAttemptSummary.AttemptInfo
+		}
+	}
+	if in.ExecutorState != nil {
+		out.ExecutorState = make(map[string]ExecutorState, len(in.ExecutorState))
+		for k, v := range in.ExecutorState {
+			out.ExecutorState[k] = v
 		}
 	}
 }
