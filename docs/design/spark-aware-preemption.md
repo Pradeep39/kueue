@@ -18,6 +18,10 @@ eviction (EQM §12) first. This document assumes them.
 
 Status: **design, not implemented.** Code references are to `main` at `4a79c790d`.
 
+On branch `spark-da-partial-preemption` the implementation sits on upstream `main` with
+kubernetes-sigs/kueue#17127 merged rather than on the fork's own elastic SparkApplication code. EQM
+is not on that branch. §11b lists what changed.
+
 Related work:
 
 - [kubernetes-sigs/kueue#16233](https://github.com/kubernetes-sigs/kueue/issues/16233) states the
@@ -628,7 +632,8 @@ The one exception is the timeout of §5.4. It has the same trade-off as `IsActiv
 stuck terminating, and is reported by an event.
 
 **Superseded slices.** These are already excluded from candidates (EQM §10.2). Reclaiming from the tip
-and lowering the tip's grant keeps the chain accounting unchanged.
+and lowering the tip's grant keeps the chain accounting unchanged. On upstream, which has no such
+exclusion, the planner skips them itself (§11b).
 
 ## 5.7 Observability
 
@@ -865,6 +870,45 @@ Where the implementation on this branch differs from, or adds to, the sections a
   pass's writes land finds the grant already at the target. It finishes the cleanup without lowering
   the grant again or emitting a second completion event.
 - **Metrics (§5.7) are not implemented yet.** Events cover the lifecycle.
+
+# 11b. Port onto upstream elastic SparkApplication (#17127)
+
+Branch `spark-da-partial-preemption` starts from upstream `main` and merges
+[#17127](https://github.com/kubernetes-sigs/kueue/pull/17127), the design the Kueue community chose
+for Dynamic Allocation: executors are gated until a slice admits them, and the executor count follows
+the `status.executorState` the operator declares. Partial preemption is ported on top. The design above
+is unchanged; these are the differences from the fork base it was written against.
+
+- **The executor count comes from `status.executorState`.** Both integrations size the executor
+  PodSet from the PENDING and RUNNING executors the operator declares, clamped to Dynamic
+  Allocation's bounds, instead of listing live executor Pods. Gated replacements are PENDING, so the
+  grow-back of §5.5 works as described. Pods are listed only to evict them and to count the
+  pod-deletion-cost marks. For the Kubeflow integration, Dynamic Allocation is read from
+  `spec.dynamicAllocation`, as #17127 reads it.
+- **`PartialPreemptionMarkedPods` takes the reconcile's context and client.** #17127's Kubeflow
+  `SparkApplication` is the CRD type itself, with no per-reconcile cache for `PodSets()` to leave a
+  count in.
+- **Lowering a grant needs a webhook exception.** Upstream keeps `status.admission` fully immutable.
+  `validateAdmissionUpdate` accepts a lowered count and its resource usage on an elastic Workload,
+  and nothing else, only when `SparkPartialPreemption` is on. `scaleDownAdmission` comes from the fork
+  for `LowerGrantedCounts`.
+- **Superseded slices are skipped by the planner.** Upstream does not exclude them from preemption
+  candidates, and it charges both slices of a chain until the predecessor's `Finish` lands. The planner
+  never takes from a slice whose replacement is cached, and it plans against the usage the cache
+  charges.
+- **Both classical candidate iterators serve partial preemption.** Upstream added a cache-based
+  iterator (`ClassicalPreemptionCandidateOrderCache`, on by default). It implements `Candidates` and
+  `IsValid` with the same order and validity rules as `Next`.
+- **The Apache integration follows the same model.** It is brought over from the fork's `main`. Its
+  count comes from the operator's `status.executorState`
+  ([Pradeep39/spark-kubernetes-operator#1](https://github.com/Pradeep39/spark-kubernetes-operator/pull/1)),
+  slice names fold in the attempt id and the number of tracked executors, and
+  `ElasticJobsViaWorkloadSlicesForApacheSparkApplication` gates its elastic path, as
+  `ElasticJobsViaWorkloadSlicesForSparkApplication` does for Kubeflow. `RestorePodSetsInfo` restores
+  scheduling gates, which keeps the elastic gate and removes any gate added on admission.
+- **Not brought over:** the fork's slice-chain accounting and its drain-loop eviction fix. Upstream's
+  own slice handling applies, and whole eviction of an elastic Spark application on this base still
+  needs a cluster run to confirm.
 
 # 12. Implementation inventory
 
