@@ -1,0 +1,1155 @@
+# Part 6: default preemption, with a floor of 1 (partial preemption) (run-default-preemption.sh --floor 1), Spark 3.4.3, Apache operator.
+# Queue: cluster-queue-cinco (40 slots, queues-cinco.yaml). Ten low-priority static elastic apps, admitted one at a
+# time in this order, executors 4 2 3 2 3 2 6 2 3 3, floor 1;
+# then the urgent app: static, driver + 11.
+# ---- als-lo1 (admitted 1st)
+---
+{
+  "apiVersion": "spark.apache.org/v1",
+  "kind": "SparkApplication",
+  "metadata": {
+    "name": "als-lo1",
+    "namespace": "batch-ns-dos",
+    "labels": {
+      "kueue.x-k8s.io/queue-name": "batch-queue-cinco",
+      "kueue.x-k8s.io/priority-class": "low"
+    },
+    "annotations": {
+      "kueue.x-k8s.io/elastic-job": "true"
+    }
+  },
+  "spec": {
+    "mainClass": "org.apache.spark.examples.SparkALS",
+    "jars": "local:///opt/spark/examples/jars/spark-examples_2.12-3.4.3.jar",
+    "driverArgs": [
+      "1500",
+      "1500",
+      "12",
+      "100",
+      "200"
+    ],
+    "runtimeVersions": {
+      "sparkVersion": "3.4.3"
+    },
+    "sparkConf": {
+      "spark.kubernetes.container.image": "docker.io/library/spark:3.4.3",
+      "spark.kubernetes.container.image.pullPolicy": "IfNotPresent",
+      "spark.kubernetes.authenticate.driver.serviceAccountName": "spark",
+      "spark.kubernetes.executor.podNamePrefix": "als-lo1",
+      "spark.driver.cores": "1",
+      "spark.kubernetes.driver.request.cores": "1000m",
+      "spark.driver.memory": "512m",
+      "spark.executor.cores": "1",
+      "spark.kubernetes.executor.request.cores": "1000m",
+      "spark.executor.memory": "512m",
+      "spark.executor.instances": "4",
+      "spark.kueue.preemption.minExecutors": "1"
+    },
+    "driverSpec": {
+      "podTemplateSpec": {
+        "metadata": {
+          "labels": {
+            "version": "3.4.3"
+          }
+        },
+        "spec": {
+          "containers": [
+            {
+              "name": "spark-kubernetes-driver",
+              "securityContext": {
+                "capabilities": {
+                  "drop": [
+                    "ALL"
+                  ]
+                },
+                "runAsGroup": 185,
+                "runAsUser": 185,
+                "runAsNonRoot": true,
+                "allowPrivilegeEscalation": false,
+                "seccompProfile": {
+                  "type": "RuntimeDefault"
+                }
+              }
+            }
+          ]
+        }
+      }
+    },
+    "executorSpec": {
+      "podTemplateSpec": {
+        "metadata": {
+          "labels": {
+            "version": "3.4.3"
+          }
+        },
+        "spec": {
+          "containers": [
+            {
+              "name": "spark-kubernetes-executor",
+              "securityContext": {
+                "capabilities": {
+                  "drop": [
+                    "ALL"
+                  ]
+                },
+                "runAsGroup": 185,
+                "runAsUser": 185,
+                "runAsNonRoot": true,
+                "allowPrivilegeEscalation": false,
+                "seccompProfile": {
+                  "type": "RuntimeDefault"
+                }
+              }
+            }
+          ]
+        }
+      }
+    }
+  }
+}
+# ---- als-lo2 (admitted 2nd)
+---
+{
+  "apiVersion": "spark.apache.org/v1",
+  "kind": "SparkApplication",
+  "metadata": {
+    "name": "als-lo2",
+    "namespace": "batch-ns-dos",
+    "labels": {
+      "kueue.x-k8s.io/queue-name": "batch-queue-cinco",
+      "kueue.x-k8s.io/priority-class": "low"
+    },
+    "annotations": {
+      "kueue.x-k8s.io/elastic-job": "true"
+    }
+  },
+  "spec": {
+    "mainClass": "org.apache.spark.examples.SparkALS",
+    "jars": "local:///opt/spark/examples/jars/spark-examples_2.12-3.4.3.jar",
+    "driverArgs": [
+      "1500",
+      "1500",
+      "12",
+      "100",
+      "200"
+    ],
+    "runtimeVersions": {
+      "sparkVersion": "3.4.3"
+    },
+    "sparkConf": {
+      "spark.kubernetes.container.image": "docker.io/library/spark:3.4.3",
+      "spark.kubernetes.container.image.pullPolicy": "IfNotPresent",
+      "spark.kubernetes.authenticate.driver.serviceAccountName": "spark",
+      "spark.kubernetes.executor.podNamePrefix": "als-lo2",
+      "spark.driver.cores": "1",
+      "spark.kubernetes.driver.request.cores": "1000m",
+      "spark.driver.memory": "512m",
+      "spark.executor.cores": "1",
+      "spark.kubernetes.executor.request.cores": "1000m",
+      "spark.executor.memory": "512m",
+      "spark.executor.instances": "2",
+      "spark.kueue.preemption.minExecutors": "1"
+    },
+    "driverSpec": {
+      "podTemplateSpec": {
+        "metadata": {
+          "labels": {
+            "version": "3.4.3"
+          }
+        },
+        "spec": {
+          "containers": [
+            {
+              "name": "spark-kubernetes-driver",
+              "securityContext": {
+                "capabilities": {
+                  "drop": [
+                    "ALL"
+                  ]
+                },
+                "runAsGroup": 185,
+                "runAsUser": 185,
+                "runAsNonRoot": true,
+                "allowPrivilegeEscalation": false,
+                "seccompProfile": {
+                  "type": "RuntimeDefault"
+                }
+              }
+            }
+          ]
+        }
+      }
+    },
+    "executorSpec": {
+      "podTemplateSpec": {
+        "metadata": {
+          "labels": {
+            "version": "3.4.3"
+          }
+        },
+        "spec": {
+          "containers": [
+            {
+              "name": "spark-kubernetes-executor",
+              "securityContext": {
+                "capabilities": {
+                  "drop": [
+                    "ALL"
+                  ]
+                },
+                "runAsGroup": 185,
+                "runAsUser": 185,
+                "runAsNonRoot": true,
+                "allowPrivilegeEscalation": false,
+                "seccompProfile": {
+                  "type": "RuntimeDefault"
+                }
+              }
+            }
+          ]
+        }
+      }
+    }
+  }
+}
+# ---- als-lo3 (admitted 3rd)
+---
+{
+  "apiVersion": "spark.apache.org/v1",
+  "kind": "SparkApplication",
+  "metadata": {
+    "name": "als-lo3",
+    "namespace": "batch-ns-dos",
+    "labels": {
+      "kueue.x-k8s.io/queue-name": "batch-queue-cinco",
+      "kueue.x-k8s.io/priority-class": "low"
+    },
+    "annotations": {
+      "kueue.x-k8s.io/elastic-job": "true"
+    }
+  },
+  "spec": {
+    "mainClass": "org.apache.spark.examples.SparkALS",
+    "jars": "local:///opt/spark/examples/jars/spark-examples_2.12-3.4.3.jar",
+    "driverArgs": [
+      "1500",
+      "1500",
+      "12",
+      "100",
+      "200"
+    ],
+    "runtimeVersions": {
+      "sparkVersion": "3.4.3"
+    },
+    "sparkConf": {
+      "spark.kubernetes.container.image": "docker.io/library/spark:3.4.3",
+      "spark.kubernetes.container.image.pullPolicy": "IfNotPresent",
+      "spark.kubernetes.authenticate.driver.serviceAccountName": "spark",
+      "spark.kubernetes.executor.podNamePrefix": "als-lo3",
+      "spark.driver.cores": "1",
+      "spark.kubernetes.driver.request.cores": "1000m",
+      "spark.driver.memory": "512m",
+      "spark.executor.cores": "1",
+      "spark.kubernetes.executor.request.cores": "1000m",
+      "spark.executor.memory": "512m",
+      "spark.executor.instances": "3",
+      "spark.kueue.preemption.minExecutors": "1"
+    },
+    "driverSpec": {
+      "podTemplateSpec": {
+        "metadata": {
+          "labels": {
+            "version": "3.4.3"
+          }
+        },
+        "spec": {
+          "containers": [
+            {
+              "name": "spark-kubernetes-driver",
+              "securityContext": {
+                "capabilities": {
+                  "drop": [
+                    "ALL"
+                  ]
+                },
+                "runAsGroup": 185,
+                "runAsUser": 185,
+                "runAsNonRoot": true,
+                "allowPrivilegeEscalation": false,
+                "seccompProfile": {
+                  "type": "RuntimeDefault"
+                }
+              }
+            }
+          ]
+        }
+      }
+    },
+    "executorSpec": {
+      "podTemplateSpec": {
+        "metadata": {
+          "labels": {
+            "version": "3.4.3"
+          }
+        },
+        "spec": {
+          "containers": [
+            {
+              "name": "spark-kubernetes-executor",
+              "securityContext": {
+                "capabilities": {
+                  "drop": [
+                    "ALL"
+                  ]
+                },
+                "runAsGroup": 185,
+                "runAsUser": 185,
+                "runAsNonRoot": true,
+                "allowPrivilegeEscalation": false,
+                "seccompProfile": {
+                  "type": "RuntimeDefault"
+                }
+              }
+            }
+          ]
+        }
+      }
+    }
+  }
+}
+# ---- als-lo4 (admitted 4th)
+---
+{
+  "apiVersion": "spark.apache.org/v1",
+  "kind": "SparkApplication",
+  "metadata": {
+    "name": "als-lo4",
+    "namespace": "batch-ns-dos",
+    "labels": {
+      "kueue.x-k8s.io/queue-name": "batch-queue-cinco",
+      "kueue.x-k8s.io/priority-class": "low"
+    },
+    "annotations": {
+      "kueue.x-k8s.io/elastic-job": "true"
+    }
+  },
+  "spec": {
+    "mainClass": "org.apache.spark.examples.SparkALS",
+    "jars": "local:///opt/spark/examples/jars/spark-examples_2.12-3.4.3.jar",
+    "driverArgs": [
+      "1500",
+      "1500",
+      "12",
+      "100",
+      "200"
+    ],
+    "runtimeVersions": {
+      "sparkVersion": "3.4.3"
+    },
+    "sparkConf": {
+      "spark.kubernetes.container.image": "docker.io/library/spark:3.4.3",
+      "spark.kubernetes.container.image.pullPolicy": "IfNotPresent",
+      "spark.kubernetes.authenticate.driver.serviceAccountName": "spark",
+      "spark.kubernetes.executor.podNamePrefix": "als-lo4",
+      "spark.driver.cores": "1",
+      "spark.kubernetes.driver.request.cores": "1000m",
+      "spark.driver.memory": "512m",
+      "spark.executor.cores": "1",
+      "spark.kubernetes.executor.request.cores": "1000m",
+      "spark.executor.memory": "512m",
+      "spark.executor.instances": "2",
+      "spark.kueue.preemption.minExecutors": "1"
+    },
+    "driverSpec": {
+      "podTemplateSpec": {
+        "metadata": {
+          "labels": {
+            "version": "3.4.3"
+          }
+        },
+        "spec": {
+          "containers": [
+            {
+              "name": "spark-kubernetes-driver",
+              "securityContext": {
+                "capabilities": {
+                  "drop": [
+                    "ALL"
+                  ]
+                },
+                "runAsGroup": 185,
+                "runAsUser": 185,
+                "runAsNonRoot": true,
+                "allowPrivilegeEscalation": false,
+                "seccompProfile": {
+                  "type": "RuntimeDefault"
+                }
+              }
+            }
+          ]
+        }
+      }
+    },
+    "executorSpec": {
+      "podTemplateSpec": {
+        "metadata": {
+          "labels": {
+            "version": "3.4.3"
+          }
+        },
+        "spec": {
+          "containers": [
+            {
+              "name": "spark-kubernetes-executor",
+              "securityContext": {
+                "capabilities": {
+                  "drop": [
+                    "ALL"
+                  ]
+                },
+                "runAsGroup": 185,
+                "runAsUser": 185,
+                "runAsNonRoot": true,
+                "allowPrivilegeEscalation": false,
+                "seccompProfile": {
+                  "type": "RuntimeDefault"
+                }
+              }
+            }
+          ]
+        }
+      }
+    }
+  }
+}
+# ---- als-lo5 (admitted 5th)
+---
+{
+  "apiVersion": "spark.apache.org/v1",
+  "kind": "SparkApplication",
+  "metadata": {
+    "name": "als-lo5",
+    "namespace": "batch-ns-dos",
+    "labels": {
+      "kueue.x-k8s.io/queue-name": "batch-queue-cinco",
+      "kueue.x-k8s.io/priority-class": "low"
+    },
+    "annotations": {
+      "kueue.x-k8s.io/elastic-job": "true"
+    }
+  },
+  "spec": {
+    "mainClass": "org.apache.spark.examples.SparkALS",
+    "jars": "local:///opt/spark/examples/jars/spark-examples_2.12-3.4.3.jar",
+    "driverArgs": [
+      "1500",
+      "1500",
+      "12",
+      "100",
+      "200"
+    ],
+    "runtimeVersions": {
+      "sparkVersion": "3.4.3"
+    },
+    "sparkConf": {
+      "spark.kubernetes.container.image": "docker.io/library/spark:3.4.3",
+      "spark.kubernetes.container.image.pullPolicy": "IfNotPresent",
+      "spark.kubernetes.authenticate.driver.serviceAccountName": "spark",
+      "spark.kubernetes.executor.podNamePrefix": "als-lo5",
+      "spark.driver.cores": "1",
+      "spark.kubernetes.driver.request.cores": "1000m",
+      "spark.driver.memory": "512m",
+      "spark.executor.cores": "1",
+      "spark.kubernetes.executor.request.cores": "1000m",
+      "spark.executor.memory": "512m",
+      "spark.executor.instances": "3",
+      "spark.kueue.preemption.minExecutors": "1"
+    },
+    "driverSpec": {
+      "podTemplateSpec": {
+        "metadata": {
+          "labels": {
+            "version": "3.4.3"
+          }
+        },
+        "spec": {
+          "containers": [
+            {
+              "name": "spark-kubernetes-driver",
+              "securityContext": {
+                "capabilities": {
+                  "drop": [
+                    "ALL"
+                  ]
+                },
+                "runAsGroup": 185,
+                "runAsUser": 185,
+                "runAsNonRoot": true,
+                "allowPrivilegeEscalation": false,
+                "seccompProfile": {
+                  "type": "RuntimeDefault"
+                }
+              }
+            }
+          ]
+        }
+      }
+    },
+    "executorSpec": {
+      "podTemplateSpec": {
+        "metadata": {
+          "labels": {
+            "version": "3.4.3"
+          }
+        },
+        "spec": {
+          "containers": [
+            {
+              "name": "spark-kubernetes-executor",
+              "securityContext": {
+                "capabilities": {
+                  "drop": [
+                    "ALL"
+                  ]
+                },
+                "runAsGroup": 185,
+                "runAsUser": 185,
+                "runAsNonRoot": true,
+                "allowPrivilegeEscalation": false,
+                "seccompProfile": {
+                  "type": "RuntimeDefault"
+                }
+              }
+            }
+          ]
+        }
+      }
+    }
+  }
+}
+# ---- als-lo6 (admitted 6th)
+---
+{
+  "apiVersion": "spark.apache.org/v1",
+  "kind": "SparkApplication",
+  "metadata": {
+    "name": "als-lo6",
+    "namespace": "batch-ns-dos",
+    "labels": {
+      "kueue.x-k8s.io/queue-name": "batch-queue-cinco",
+      "kueue.x-k8s.io/priority-class": "low"
+    },
+    "annotations": {
+      "kueue.x-k8s.io/elastic-job": "true"
+    }
+  },
+  "spec": {
+    "mainClass": "org.apache.spark.examples.SparkALS",
+    "jars": "local:///opt/spark/examples/jars/spark-examples_2.12-3.4.3.jar",
+    "driverArgs": [
+      "1500",
+      "1500",
+      "12",
+      "100",
+      "200"
+    ],
+    "runtimeVersions": {
+      "sparkVersion": "3.4.3"
+    },
+    "sparkConf": {
+      "spark.kubernetes.container.image": "docker.io/library/spark:3.4.3",
+      "spark.kubernetes.container.image.pullPolicy": "IfNotPresent",
+      "spark.kubernetes.authenticate.driver.serviceAccountName": "spark",
+      "spark.kubernetes.executor.podNamePrefix": "als-lo6",
+      "spark.driver.cores": "1",
+      "spark.kubernetes.driver.request.cores": "1000m",
+      "spark.driver.memory": "512m",
+      "spark.executor.cores": "1",
+      "spark.kubernetes.executor.request.cores": "1000m",
+      "spark.executor.memory": "512m",
+      "spark.executor.instances": "2",
+      "spark.kueue.preemption.minExecutors": "1"
+    },
+    "driverSpec": {
+      "podTemplateSpec": {
+        "metadata": {
+          "labels": {
+            "version": "3.4.3"
+          }
+        },
+        "spec": {
+          "containers": [
+            {
+              "name": "spark-kubernetes-driver",
+              "securityContext": {
+                "capabilities": {
+                  "drop": [
+                    "ALL"
+                  ]
+                },
+                "runAsGroup": 185,
+                "runAsUser": 185,
+                "runAsNonRoot": true,
+                "allowPrivilegeEscalation": false,
+                "seccompProfile": {
+                  "type": "RuntimeDefault"
+                }
+              }
+            }
+          ]
+        }
+      }
+    },
+    "executorSpec": {
+      "podTemplateSpec": {
+        "metadata": {
+          "labels": {
+            "version": "3.4.3"
+          }
+        },
+        "spec": {
+          "containers": [
+            {
+              "name": "spark-kubernetes-executor",
+              "securityContext": {
+                "capabilities": {
+                  "drop": [
+                    "ALL"
+                  ]
+                },
+                "runAsGroup": 185,
+                "runAsUser": 185,
+                "runAsNonRoot": true,
+                "allowPrivilegeEscalation": false,
+                "seccompProfile": {
+                  "type": "RuntimeDefault"
+                }
+              }
+            }
+          ]
+        }
+      }
+    }
+  }
+}
+# ---- als-lo7 (admitted 7th)
+---
+{
+  "apiVersion": "spark.apache.org/v1",
+  "kind": "SparkApplication",
+  "metadata": {
+    "name": "als-lo7",
+    "namespace": "batch-ns-dos",
+    "labels": {
+      "kueue.x-k8s.io/queue-name": "batch-queue-cinco",
+      "kueue.x-k8s.io/priority-class": "low"
+    },
+    "annotations": {
+      "kueue.x-k8s.io/elastic-job": "true"
+    }
+  },
+  "spec": {
+    "mainClass": "org.apache.spark.examples.SparkALS",
+    "jars": "local:///opt/spark/examples/jars/spark-examples_2.12-3.4.3.jar",
+    "driverArgs": [
+      "1500",
+      "1500",
+      "12",
+      "100",
+      "200"
+    ],
+    "runtimeVersions": {
+      "sparkVersion": "3.4.3"
+    },
+    "sparkConf": {
+      "spark.kubernetes.container.image": "docker.io/library/spark:3.4.3",
+      "spark.kubernetes.container.image.pullPolicy": "IfNotPresent",
+      "spark.kubernetes.authenticate.driver.serviceAccountName": "spark",
+      "spark.kubernetes.executor.podNamePrefix": "als-lo7",
+      "spark.driver.cores": "1",
+      "spark.kubernetes.driver.request.cores": "1000m",
+      "spark.driver.memory": "512m",
+      "spark.executor.cores": "1",
+      "spark.kubernetes.executor.request.cores": "1000m",
+      "spark.executor.memory": "512m",
+      "spark.executor.instances": "6",
+      "spark.kueue.preemption.minExecutors": "1"
+    },
+    "driverSpec": {
+      "podTemplateSpec": {
+        "metadata": {
+          "labels": {
+            "version": "3.4.3"
+          }
+        },
+        "spec": {
+          "containers": [
+            {
+              "name": "spark-kubernetes-driver",
+              "securityContext": {
+                "capabilities": {
+                  "drop": [
+                    "ALL"
+                  ]
+                },
+                "runAsGroup": 185,
+                "runAsUser": 185,
+                "runAsNonRoot": true,
+                "allowPrivilegeEscalation": false,
+                "seccompProfile": {
+                  "type": "RuntimeDefault"
+                }
+              }
+            }
+          ]
+        }
+      }
+    },
+    "executorSpec": {
+      "podTemplateSpec": {
+        "metadata": {
+          "labels": {
+            "version": "3.4.3"
+          }
+        },
+        "spec": {
+          "containers": [
+            {
+              "name": "spark-kubernetes-executor",
+              "securityContext": {
+                "capabilities": {
+                  "drop": [
+                    "ALL"
+                  ]
+                },
+                "runAsGroup": 185,
+                "runAsUser": 185,
+                "runAsNonRoot": true,
+                "allowPrivilegeEscalation": false,
+                "seccompProfile": {
+                  "type": "RuntimeDefault"
+                }
+              }
+            }
+          ]
+        }
+      }
+    }
+  }
+}
+# ---- als-lo8 (admitted 8th)
+---
+{
+  "apiVersion": "spark.apache.org/v1",
+  "kind": "SparkApplication",
+  "metadata": {
+    "name": "als-lo8",
+    "namespace": "batch-ns-dos",
+    "labels": {
+      "kueue.x-k8s.io/queue-name": "batch-queue-cinco",
+      "kueue.x-k8s.io/priority-class": "low"
+    },
+    "annotations": {
+      "kueue.x-k8s.io/elastic-job": "true"
+    }
+  },
+  "spec": {
+    "mainClass": "org.apache.spark.examples.SparkALS",
+    "jars": "local:///opt/spark/examples/jars/spark-examples_2.12-3.4.3.jar",
+    "driverArgs": [
+      "1500",
+      "1500",
+      "12",
+      "100",
+      "200"
+    ],
+    "runtimeVersions": {
+      "sparkVersion": "3.4.3"
+    },
+    "sparkConf": {
+      "spark.kubernetes.container.image": "docker.io/library/spark:3.4.3",
+      "spark.kubernetes.container.image.pullPolicy": "IfNotPresent",
+      "spark.kubernetes.authenticate.driver.serviceAccountName": "spark",
+      "spark.kubernetes.executor.podNamePrefix": "als-lo8",
+      "spark.driver.cores": "1",
+      "spark.kubernetes.driver.request.cores": "1000m",
+      "spark.driver.memory": "512m",
+      "spark.executor.cores": "1",
+      "spark.kubernetes.executor.request.cores": "1000m",
+      "spark.executor.memory": "512m",
+      "spark.executor.instances": "2",
+      "spark.kueue.preemption.minExecutors": "1"
+    },
+    "driverSpec": {
+      "podTemplateSpec": {
+        "metadata": {
+          "labels": {
+            "version": "3.4.3"
+          }
+        },
+        "spec": {
+          "containers": [
+            {
+              "name": "spark-kubernetes-driver",
+              "securityContext": {
+                "capabilities": {
+                  "drop": [
+                    "ALL"
+                  ]
+                },
+                "runAsGroup": 185,
+                "runAsUser": 185,
+                "runAsNonRoot": true,
+                "allowPrivilegeEscalation": false,
+                "seccompProfile": {
+                  "type": "RuntimeDefault"
+                }
+              }
+            }
+          ]
+        }
+      }
+    },
+    "executorSpec": {
+      "podTemplateSpec": {
+        "metadata": {
+          "labels": {
+            "version": "3.4.3"
+          }
+        },
+        "spec": {
+          "containers": [
+            {
+              "name": "spark-kubernetes-executor",
+              "securityContext": {
+                "capabilities": {
+                  "drop": [
+                    "ALL"
+                  ]
+                },
+                "runAsGroup": 185,
+                "runAsUser": 185,
+                "runAsNonRoot": true,
+                "allowPrivilegeEscalation": false,
+                "seccompProfile": {
+                  "type": "RuntimeDefault"
+                }
+              }
+            }
+          ]
+        }
+      }
+    }
+  }
+}
+# ---- als-lo9 (admitted 9th)
+---
+{
+  "apiVersion": "spark.apache.org/v1",
+  "kind": "SparkApplication",
+  "metadata": {
+    "name": "als-lo9",
+    "namespace": "batch-ns-dos",
+    "labels": {
+      "kueue.x-k8s.io/queue-name": "batch-queue-cinco",
+      "kueue.x-k8s.io/priority-class": "low"
+    },
+    "annotations": {
+      "kueue.x-k8s.io/elastic-job": "true"
+    }
+  },
+  "spec": {
+    "mainClass": "org.apache.spark.examples.SparkALS",
+    "jars": "local:///opt/spark/examples/jars/spark-examples_2.12-3.4.3.jar",
+    "driverArgs": [
+      "1500",
+      "1500",
+      "12",
+      "100",
+      "200"
+    ],
+    "runtimeVersions": {
+      "sparkVersion": "3.4.3"
+    },
+    "sparkConf": {
+      "spark.kubernetes.container.image": "docker.io/library/spark:3.4.3",
+      "spark.kubernetes.container.image.pullPolicy": "IfNotPresent",
+      "spark.kubernetes.authenticate.driver.serviceAccountName": "spark",
+      "spark.kubernetes.executor.podNamePrefix": "als-lo9",
+      "spark.driver.cores": "1",
+      "spark.kubernetes.driver.request.cores": "1000m",
+      "spark.driver.memory": "512m",
+      "spark.executor.cores": "1",
+      "spark.kubernetes.executor.request.cores": "1000m",
+      "spark.executor.memory": "512m",
+      "spark.executor.instances": "3",
+      "spark.kueue.preemption.minExecutors": "1"
+    },
+    "driverSpec": {
+      "podTemplateSpec": {
+        "metadata": {
+          "labels": {
+            "version": "3.4.3"
+          }
+        },
+        "spec": {
+          "containers": [
+            {
+              "name": "spark-kubernetes-driver",
+              "securityContext": {
+                "capabilities": {
+                  "drop": [
+                    "ALL"
+                  ]
+                },
+                "runAsGroup": 185,
+                "runAsUser": 185,
+                "runAsNonRoot": true,
+                "allowPrivilegeEscalation": false,
+                "seccompProfile": {
+                  "type": "RuntimeDefault"
+                }
+              }
+            }
+          ]
+        }
+      }
+    },
+    "executorSpec": {
+      "podTemplateSpec": {
+        "metadata": {
+          "labels": {
+            "version": "3.4.3"
+          }
+        },
+        "spec": {
+          "containers": [
+            {
+              "name": "spark-kubernetes-executor",
+              "securityContext": {
+                "capabilities": {
+                  "drop": [
+                    "ALL"
+                  ]
+                },
+                "runAsGroup": 185,
+                "runAsUser": 185,
+                "runAsNonRoot": true,
+                "allowPrivilegeEscalation": false,
+                "seccompProfile": {
+                  "type": "RuntimeDefault"
+                }
+              }
+            }
+          ]
+        }
+      }
+    }
+  }
+}
+# ---- als-lo10 (admitted 10th)
+---
+{
+  "apiVersion": "spark.apache.org/v1",
+  "kind": "SparkApplication",
+  "metadata": {
+    "name": "als-lo10",
+    "namespace": "batch-ns-dos",
+    "labels": {
+      "kueue.x-k8s.io/queue-name": "batch-queue-cinco",
+      "kueue.x-k8s.io/priority-class": "low"
+    },
+    "annotations": {
+      "kueue.x-k8s.io/elastic-job": "true"
+    }
+  },
+  "spec": {
+    "mainClass": "org.apache.spark.examples.SparkALS",
+    "jars": "local:///opt/spark/examples/jars/spark-examples_2.12-3.4.3.jar",
+    "driverArgs": [
+      "1500",
+      "1500",
+      "12",
+      "100",
+      "200"
+    ],
+    "runtimeVersions": {
+      "sparkVersion": "3.4.3"
+    },
+    "sparkConf": {
+      "spark.kubernetes.container.image": "docker.io/library/spark:3.4.3",
+      "spark.kubernetes.container.image.pullPolicy": "IfNotPresent",
+      "spark.kubernetes.authenticate.driver.serviceAccountName": "spark",
+      "spark.kubernetes.executor.podNamePrefix": "als-lo10",
+      "spark.driver.cores": "1",
+      "spark.kubernetes.driver.request.cores": "1000m",
+      "spark.driver.memory": "512m",
+      "spark.executor.cores": "1",
+      "spark.kubernetes.executor.request.cores": "1000m",
+      "spark.executor.memory": "512m",
+      "spark.executor.instances": "3",
+      "spark.kueue.preemption.minExecutors": "1"
+    },
+    "driverSpec": {
+      "podTemplateSpec": {
+        "metadata": {
+          "labels": {
+            "version": "3.4.3"
+          }
+        },
+        "spec": {
+          "containers": [
+            {
+              "name": "spark-kubernetes-driver",
+              "securityContext": {
+                "capabilities": {
+                  "drop": [
+                    "ALL"
+                  ]
+                },
+                "runAsGroup": 185,
+                "runAsUser": 185,
+                "runAsNonRoot": true,
+                "allowPrivilegeEscalation": false,
+                "seccompProfile": {
+                  "type": "RuntimeDefault"
+                }
+              }
+            }
+          ]
+        }
+      }
+    },
+    "executorSpec": {
+      "podTemplateSpec": {
+        "metadata": {
+          "labels": {
+            "version": "3.4.3"
+          }
+        },
+        "spec": {
+          "containers": [
+            {
+              "name": "spark-kubernetes-executor",
+              "securityContext": {
+                "capabilities": {
+                  "drop": [
+                    "ALL"
+                  ]
+                },
+                "runAsGroup": 185,
+                "runAsUser": 185,
+                "runAsNonRoot": true,
+                "allowPrivilegeEscalation": false,
+                "seccompProfile": {
+                  "type": "RuntimeDefault"
+                }
+              }
+            }
+          ]
+        }
+      }
+    }
+  }
+}
+# ---- the urgent app
+---
+{
+  "apiVersion": "spark.apache.org/v1",
+  "kind": "SparkApplication",
+  "metadata": {
+    "name": "als-hi",
+    "namespace": "batch-ns-dos",
+    "labels": {
+      "kueue.x-k8s.io/queue-name": "batch-queue-cinco",
+      "kueue.x-k8s.io/priority-class": "high"
+    }
+  },
+  "spec": {
+    "mainClass": "org.apache.spark.examples.SparkALS",
+    "jars": "local:///opt/spark/examples/jars/spark-examples_2.12-3.4.3.jar",
+    "driverArgs": [
+      "1500",
+      "1500",
+      "12",
+      "4",
+      "200"
+    ],
+    "runtimeVersions": {
+      "sparkVersion": "3.4.3"
+    },
+    "sparkConf": {
+      "spark.kubernetes.container.image": "docker.io/library/spark:3.4.3",
+      "spark.kubernetes.container.image.pullPolicy": "IfNotPresent",
+      "spark.kubernetes.authenticate.driver.serviceAccountName": "spark",
+      "spark.kubernetes.executor.podNamePrefix": "als-hi",
+      "spark.driver.cores": "1",
+      "spark.kubernetes.driver.request.cores": "1000m",
+      "spark.driver.memory": "512m",
+      "spark.executor.cores": "1",
+      "spark.kubernetes.executor.request.cores": "1000m",
+      "spark.executor.memory": "512m",
+      "spark.executor.instances": "11"
+    },
+    "driverSpec": {
+      "podTemplateSpec": {
+        "metadata": {
+          "labels": {
+            "version": "3.4.3"
+          }
+        },
+        "spec": {
+          "containers": [
+            {
+              "name": "spark-kubernetes-driver",
+              "securityContext": {
+                "capabilities": {
+                  "drop": [
+                    "ALL"
+                  ]
+                },
+                "runAsGroup": 185,
+                "runAsUser": 185,
+                "runAsNonRoot": true,
+                "allowPrivilegeEscalation": false,
+                "seccompProfile": {
+                  "type": "RuntimeDefault"
+                }
+              }
+            }
+          ]
+        }
+      }
+    },
+    "executorSpec": {
+      "podTemplateSpec": {
+        "metadata": {
+          "labels": {
+            "version": "3.4.3"
+          }
+        },
+        "spec": {
+          "containers": [
+            {
+              "name": "spark-kubernetes-executor",
+              "securityContext": {
+                "capabilities": {
+                  "drop": [
+                    "ALL"
+                  ]
+                },
+                "runAsGroup": 185,
+                "runAsUser": 185,
+                "runAsNonRoot": true,
+                "allowPrivilegeEscalation": false,
+                "seccompProfile": {
+                  "type": "RuntimeDefault"
+                }
+              }
+            }
+          ]
+        }
+      }
+    }
+  }
+}
