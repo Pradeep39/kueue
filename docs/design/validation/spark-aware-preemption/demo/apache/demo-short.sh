@@ -65,7 +65,7 @@ preflight() {
   kubectl get nodes --no-headers 2>/dev/null | awk '$2!="Ready"{print "  ⚠️  node "$1" is "$2}'
   if [ -z "$(demo_apps)$(other_apps)" ]; then echo "  ✅ $NS has no SparkApplications"
   else echo "  ⚠️  $NS has SparkApplications: $(demo_apps; other_apps | tr '\n' ' ')"; fi
-  for s in run-whole-workload-preemption.sh run-partial-preemption-spread.sh run-shuffle-resiliency.sh shuffle-view.py spread-view.py run-configurable-preemption.sh run-default-preemption.sh gen-apache-apps.py demo-table.py; do
+  for s in run-whole-workload-preemption.sh run-partial-preemption-spread.sh run-shuffle-resiliency.sh shuffle-view.py spread-view.py run-configurable-preemption.sh run-default-preemption.sh applied-yaml.sh gen-apache-apps.py demo-table.py; do
     [ -e "$SCRIPTS/$s" ] || { echo "  ❌ $SCRIPTS/$s missing"; ok=0; }
   done
   echo "  Spark image for the demo apps: docker.io/library/spark:$SPARK_VERSION"
@@ -80,9 +80,9 @@ part_1() { say "Part 1 of 6: whole-workload preemption, today's behaviour (Spark
 part_2() { say "Part 2 of 6: shuffle resiliency (Spark $SPARK_VERSION)"; wait_clean
   PART=part2 THRESH=${THRESH:-40} "$SCRIPTS/run-shuffle-resiliency.sh"; }
 part_3() { say "Part 3 of 6: spread the loss (Spark $SPARK_VERSION)"; wait_clean
-  PART=part3 CAPTURE=0 "$SCRIPTS/run-partial-preemption-spread.sh" p10s; }
+  PART=part3 "$SCRIPTS/run-partial-preemption-spread.sh" p10s; }
 part_4() { say "Part 4 of 6: round-robin, then grow-back (Spark $SPARK_VERSION)"; wait_clean
-  PART=part4 CAPTURE=0 "$SCRIPTS/run-partial-preemption-spread.sh" p11s; }
+  PART=part4 "$SCRIPTS/run-partial-preemption-spread.sh" p11s; }
 part_5() { say "Part 5 of 6: configurable preemption picks the victims (Spark $SPARK_VERSION)"; wait_clean
   PART=part5 "$SCRIPTS/run-configurable-preemption.sh"; }
 part_6() { say "Part 6 of 6: $([ "${1:-}" = --floor ] && echo "the same apps with a floor of ${2:-}: partial preemption" || echo "default preemption, greedy candidate selection") (Spark $SPARK_VERSION)"; wait_clean

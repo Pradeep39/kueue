@@ -9,11 +9,10 @@
 #   p10s  6 victims x (driver + 2); urgent needs 6: exactly 1 from each (18-slot queue)
 #   p11s  5 victims x (driver + 3); urgent needs 8: 1 from each, then a second from 3 (20-slot queue)
 #
-#   [AUTO=1] [FORCE=1] [CAPTURE=0] [GROWBACK=0] run-partial-preemption-spread.sh [p10|p11|p10s|p11s]
+#   [AUTO=1] [FORCE=1] [GROWBACK=0] run-partial-preemption-spread.sh [p10|p11|p10s|p11s]
 #   VICTIMS=N EXECS=N URGENT_EXECS=N run-partial-preemption-spread.sh   any other shape (victims x (EXECS+1) <= 36)
 #     AUTO=1        submit the urgent app as soon as every victim executor runs (no Enter prompt)
 #     FORCE=1       delete other SparkApplications in batch-ns-dos before starting (otherwise refuse)
-#     CAPTURE=0     skip the background capture (then no report at the end)
 #     GROWBACK=0    stop once the urgent app runs, instead of waiting for the victims to grow back
 #     VICTIM_ITERS / URGENT_ITERS   SparkALS iterations (default 10 / 4: ~4 min / ~1 min jobs)
 #     REFRESH=N     seconds between screen refreshes (default 10)
@@ -21,8 +20,7 @@
 #   run-partial-preemption-spread.sh watch      the live table only, e.g. on a second screen
 #
 # Needs: Kueue with SparkPartialPreemption=true, cluster-queue-tres (../queues-setup.yaml) and
-# batch-queue-tres in batch-ns-dos (queues-apache.yaml). The capture and report (CAPTURE=1) are
-# not supported for Apache apps: the analyzers read the Kubeflow resources.
+# batch-queue-tres in batch-ns-dos (queues-apache.yaml).
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 . "$HERE/applied-yaml.sh"   # record_apply: saves each applied manifest
@@ -157,7 +155,6 @@ echo "  $CQ: $(kubectl get clusterqueue $CQ -o jsonpath='{.spec.resourceGroups[0
 mkdir -p "$HERE/runs"
 LOCK="$HERE/runs/.partial-preemption-spread.lock"
 mkdir "$LOCK" 2>/dev/null || { echo "  refusing to start: another run-partial-preemption-spread.sh is in progress (remove $LOCK if not)" >&2; exit 3; }
-CAP=""
 # set_quota SLOTS: one slot = 1 CPU + 896Mi
 set_quota() {
   kubectl patch clusterqueue $CQ --type=json -p "[
@@ -165,7 +162,6 @@ set_quota() {
     {\"op\":\"replace\",\"path\":\"/spec/resourceGroups/0/flavors/0/resources/1/nominalQuota\",\"value\":\"$(( $1 * 896 ))Mi\"}]" >/dev/null
 }
 cleanup() {
-  [ -n "$CAP" ] && kill "$CAP" 2>/dev/null
   [ "${QUOTA_SET:-0}" = 1 ] && set_quota 36
   rmdir "$LOCK" 2>/dev/null
 }
@@ -180,13 +176,6 @@ say "Cleaning $NS"
 kubectl -n $NS delete $SA --all --wait=true >/dev/null 2>&1
 for _ in $(seq 1 60); do [ "$(kubectl -n $NS get workloads,pods --no-headers 2>/dev/null | wc -l | tr -d ' ')" = 0 ] && break; sleep 3; done
 
-OUT="$HERE/runs/$SCENARIO-DEMO-$(date +%m%d-%H%M)"
-if [ "${CAPTURE:-0}" = 1 ]; then
-  OUT_DIR="$OUT" "$HERE/capture.sh" -n $NS -q $CQ -d 900 > "$OUT.capture.log" 2>&1 &
-  CAP=$!
-  echo "  capturing to $OUT (15 minutes)"
-  sleep 10
-fi
 
 victims=$(python3 -c "print(','.join(f'als-lo{i}:low' for i in range(1, $VICTIMS + 1)))")
 say "$SCENARIO: submitting $VICTIMS low-priority apps, driver + $EXECS executors each, floor $FLOOR (the queue is sized to $QUOTA slots)"
@@ -210,21 +199,8 @@ if [ "${GROWBACK:-1}" = 1 ]; then
   GROWN_AT=$(date +%s)
   clear; date +%H:%M:%S; table   # end on the grown-back state
   echo; echo "  ✅ als-hi finished and the victims grew back to $EXECS executors each, with no restart."
-  [ -n "$CAP" ] && touch "$OUT/.stop"   # end the capture now rather than at its 15-minute limit
 fi
 
-if [ -n "$CAP" ]; then
-  say "Watching until the capture ends (Ctrl-C to stop early; the report commands are below)"
-  echo "  python3 -I $HERE/req-check.py $OUT --slots $QUOTA --preemption"
-  echo "  python3 -I $HERE/pp-analyze.py --floor $FLOOR --expect-whole 0 $OUT"
-  sleep 5
-  live '! kill -0 $CAP 2>/dev/null'
-  wait "$CAP" 2>/dev/null; CAP=""
-  "$HERE/analyze.sh" "$OUT" >/dev/null 2>&1
-  say "Report"
-  python3 -I "$HERE/req-check.py" "$OUT" --slots $QUOTA --preemption | grep -E 'SC-1|SC-2|capture'
-  python3 -I "$HERE/pp-analyze.py" --floor $FLOOR --expect-whole 0 "$OUT"
-fi
 summary
 if [ "${KEEP:-0}" != 1 ]; then
   kubectl -n $NS get $SA -o name 2>/dev/null | grep -E '/als-(lo[0-9]+|hi)$' | xargs -r kubectl -n $NS delete --wait=false >/dev/null 2>&1

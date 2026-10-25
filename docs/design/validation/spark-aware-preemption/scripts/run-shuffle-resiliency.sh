@@ -12,13 +12,45 @@
 #   Press Enter to submit the urgent app (any time; the hint says when the data is there), and again
 #   to end early. Logs stay in runs/SHUF-DEMO-<stamp>/ (exec-logs/, driver.log) for demo-short.sh logs.
 #
-# Runs on cluster-queue-uno (the 12-slot cohort with cluster-queue-dos). The victim is the one from
-# run-shuffle-migration.sh (its --yaml mode), so the two stay identical.
+# Runs on cluster-queue-uno (the 12-slot cohort with cluster-queue-dos).
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 . "$HERE/applied-yaml.sh"   # record_apply: saves each applied manifest
 NS=batch-ns-uno; SA=sparkapplications.sparkoperator.k8s.io
 VICTIM=pr-victim; THRESH=${THRESH:-40}; REFRESH=${REFRESH:-10}
+EXECS=10; FLOOR=2
+# Long enough that the victim is still running well after the reclaim completes. PageRank never
+# truncates its lineage, so each iteration deepens the RDD chain: 120 iterations overflowed the
+# driver's default thread stack (StackOverflowError), so the stack is raised below and the default
+# kept at 100.
+ITERS=${ITERS:-100}
+GEN='awk "BEGIN{srand(42); for(i=0;i<2000000;i++) print int(rand()*200000), int(rand()*200000)}" > /data/edges.txt'
+
+# victim_yaml: the SparkPageRank victim, opted in with a floor of FLOOR, on its own generated graph.
+# EXTRA_CONF=key=value,... adds sparkConf entries.
+victim_yaml() {
+  python3 -I "$HERE/gen-apps.py" "$VICTIM:low" --static-elastic $EXECS --floor $FLOOR \
+    --main org.apache.spark.examples.SparkPageRank --als-args "file:///data/edges.txt $ITERS" | python3 -I -c '
+import sys, re
+y = sys.stdin.read()
+gen = sys.argv[1]
+y = y.replace("    \"spark.kubernetes.executor.podNamePrefix\"",
+  "    \"spark.kubernetes.executor.terminationGracePeriodSeconds\": \"30s\"\n"
+  "    \"spark.sql.files.maxPartitionBytes\": \"2m\"\n"
+  "    \"spark.default.parallelism\": \"40\"\n"
+  "    \"spark.driver.extraJavaOptions\": \"-Xss64m\"\n"
+  "    \"spark.executor.extraJavaOptions\": \"-Xss64m\"\n"
+  + "".join("    \"%s\": \"%s\"\n" % tuple(kv.split("=", 1)) for kv in sys.argv[2].split(",") if kv)
+  + "    \"spark.kubernetes.executor.podNamePrefix\"", 1)
+init = ("    initContainers:\n    - name: gen-edges\n      image: docker.io/library/spark:4.0.1\n"
+        "      command: [\"sh\", \"-c\", %r]\n      volumeMounts: [{name: data, mountPath: /data}]\n"
+        "      securityContext: {runAsUser: 185, runAsNonRoot: true, allowPrivilegeEscalation: false, "
+        "capabilities: {drop: [ALL]}, seccompProfile: {type: RuntimeDefault}}\n"
+        "    volumeMounts: [{name: data, mountPath: /data}]\n") % gen
+y = y.replace("  driver:\n", "  volumes: [{name: data, emptyDir: {}}]\n  driver:\n" + init, 1)
+y = y.replace("  executor:\n", "  executor:\n" + init, 1)
+print(y)' "$GEN" "${EXTRA_CONF:-}"
+}
 
 say() { printf '\n\033[1;36m▶ %s\033[0m\n' "$*"; }
 case "${1:-}" in -h|--help) sed -n 2,16p "$0" | sed 's/^# \{0,1\}//'; exit 0 ;; "") ;; *) echo "unknown argument '$1' (try --help)" >&2; exit 2 ;; esac
@@ -47,7 +79,7 @@ kubectl -n $NS delete $SA --all --wait=true >/dev/null 2>&1
 for _ in $(seq 1 60); do [ "$(kubectl -n $NS get workloads,pods --no-headers 2>/dev/null | wc -l | tr -d ' ')" = 0 ] && break; sleep 3; done
 
 say "Submitting $VICTIM: SparkPageRank, 10 executors, opted in to partial preemption with a floor of 2"
-"$HERE/run-shuffle-migration.sh" --yaml > "$OUT/victim.yaml"
+victim_yaml > "$OUT/victim.yaml"
 record_apply victim < "$OUT/victim.yaml" || exit 1
 
 # Stream the driver's and every executor's log from start to exit, so a reclaimed executor's hand-off

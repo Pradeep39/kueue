@@ -18,7 +18,7 @@
 #                  iterations (default 10)
 #   cluster-queue-tres is sized to 12 slots for the run and put back to 36 on exit.
 #
-# Run it before run-shuffle-migration.sh to show the same kind of work being thrown away, then kept.
+# Run it before run-shuffle-resiliency.sh to show the same kind of work being thrown away, then kept.
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 . "$HERE/applied-yaml.sh"   # record_apply: saves each applied manifest
