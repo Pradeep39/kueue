@@ -21,6 +21,7 @@
 # Run it before run-shuffle-migration.sh to show the same kind of work being thrown away, then kept.
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
+. "$HERE/applied-yaml.sh"   # record_apply: saves each applied manifest
 # setup_file NAME: the setup YAML NAME, in this script's directory or the nearest parent that has it
 # (directly, or in its setup/ directory), so it is found in the ~/kueue-gated-repro and the repo layouts.
 setup_file() { local d=$HERE n c; for n in 0 1 2 3 4; do for c in "$d/$1" "$d/setup/$1"; do [ -f "$c" ] && { echo "$c"; return; }; done; d=$(dirname "$d"); done; echo "$HERE/$1"; }
@@ -207,7 +208,7 @@ set_quota $QUOTA
 
 START=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 say "Submitting two low-priority SparkPageRank apps (driver + $EXECS executors each), NOT opted in to partial preemption"
-for v in $VICTIMS; do victim_yaml $v | kubectl apply -f - >/dev/null; done
+for v in $VICTIMS; do victim_yaml $v | record_apply "victim-$v"; done
 live victims_running
 
 # Keep refreshing (shuffle data growing) until Enter; the apps finish after ~2.5 minutes on their own.
@@ -223,7 +224,7 @@ if [ "${AUTO:-0}" = 1 ]; then
 else
   live building stoppable "⏸  Both apps are building shuffle data. Press Enter to submit the high-priority app (Dynamic Allocation)"
 fi
-python3 -I "$HERE/gen-apps.py" urgent:high --queue $LQ --partial --cap 2 --idle 5s --als-args "$URGENT_ARGS" | kubectl apply -f - >/dev/null
+python3 -I "$HERE/gen-apps.py" urgent:high --queue $LQ --partial --cap 2 --idle 5s --als-args "$URGENT_ARGS" | record_apply urgent
 DEADLINE=$(( $(date +%s) + ${DURATION:-240} ))
 # From here on, Ctrl-C ends the demo with the summary rather than leaving the apps running.
 trap 'trap - INT; echo; summary; exit 0' INT

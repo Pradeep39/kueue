@@ -16,6 +16,7 @@
 # run-shuffle-migration.sh (its --yaml mode), so the two stay identical.
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
+. "$HERE/applied-yaml.sh"   # record_apply: saves each applied manifest
 NS=batch-ns-uno; SA=sparkapplications.sparkoperator.k8s.io
 VICTIM=pr-victim; THRESH=${THRESH:-40}; REFRESH=${REFRESH:-10}
 
@@ -47,7 +48,7 @@ for _ in $(seq 1 60); do [ "$(kubectl -n $NS get workloads,pods --no-headers 2>/
 
 say "Submitting $VICTIM: SparkPageRank, 10 executors, opted in to partial preemption with a floor of 2"
 "$HERE/run-shuffle-migration.sh" --yaml > "$OUT/victim.yaml"
-kubectl apply -f "$OUT/victim.yaml" >/dev/null || exit 1
+record_apply victim < "$OUT/victim.yaml" || exit 1
 
 # Stream the driver's and every executor's log from start to exit, so a reclaimed executor's hand-off
 # is on disk after its Pod is gone. A log file's existence marks a Pod as followed (bash 3.2: no maps).
@@ -117,7 +118,7 @@ while true; do
 done
 
 TRIGGER=$(date -u +%Y-%m-%dT%H:%M:%SZ); TRIGGER_AT=$(date +%s)
-python3 -I "$HERE/gen-apps.py" urgent:high --partial --cap 2 --idle 5s | kubectl apply -f - >/dev/null
+python3 -I "$HERE/gen-apps.py" urgent:high --partial --cap 2 --idle 5s | record_apply urgent
 
 # Phase 2: the reclaim and the hand-off, until the victim finishes (Enter ends early).
 while true; do

@@ -27,6 +27,7 @@
 # (applied here if cluster-queue-quatro is missing).
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
+. "$HERE/applied-yaml.sh"   # record_apply: saves each applied manifest
 # setup_file NAME: the setup YAML NAME, in this script's directory or the nearest parent that has it
 # (directly, or in its setup/ directory), so it is found in the ~/kueue-gated-repro and the repo layouts.
 setup_file() { local d=$HERE n c; for n in 0 1 2 3 4; do for c in "$d/$1" "$d/setup/$1"; do [ -f "$c" ] && { echo "$c"; return; }; done; d=$(dirname "$d"); done; echo "$HERE/$1"; }
@@ -186,15 +187,15 @@ kubectl -n $NS delete $SA --all --wait=true >/dev/null 2>&1
 for _ in $(seq 1 60); do [ "$(kubectl -n $NS get workloads,pods --no-headers 2>/dev/null | wc -l | tr -d ' ')" = 0 ] && break; sleep 3; done
 
 say "Submitting 4 pool apps (preemption-pool=batch, default priority) and 2 low-priority apps outside the pool, driver + $EXECS executors each, floor $FLOOR ($QUOTA of $QUOTA slots)"
-gen "$(echo $POOL | sed 's/ /:default,/g'):default" --queue $LQ --static-elastic $EXECS --floor $FLOOR --als-args "$VICTIM_ARGS" --label preemption-pool=batch | kubectl apply -f - >/dev/null
-gen "$(echo $OUTSIDE | sed 's/ /:low,/g'):low" --queue $LQ --static-elastic $EXECS --floor $FLOOR --als-args "$VICTIM_ARGS" | kubectl apply -f - >/dev/null
+gen "$(echo $POOL | sed 's/ /:default,/g'):default" --queue $LQ --static-elastic $EXECS --floor $FLOOR --als-args "$VICTIM_ARGS" --label preemption-pool=batch | record_apply victims-pool
+gen "$(echo $OUTSIDE | sed 's/ /:low,/g'):low" --queue $LQ --static-elastic $EXECS --floor $FLOOR --als-args "$VICTIM_ARGS" | record_apply victims-outside-pool
 live all_victims_running
 [ -t 0 ] || AUTO=1
 
 if [ "${CONTROL:-1}" = 1 ]; then
   [ "${AUTO:-0}" = 1 ] && sleep 5 || live "" "⏸  Queue is full. Press Enter to submit a high-priority app WITHOUT the preemption-role=urgent label"
   CONTROL_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ); CONTROL_UNTIL=$(( $(date +%s) + ${CONTROL_WAIT:-40} ))
-  gen plain-hi:high --queue $LQ --static $URGENT_EXECS --als-args "$URGENT_ARGS" | kubectl apply -f - >/dev/null
+  gen plain-hi:high --queue $LQ --static $URGENT_EXECS --als-args "$URGENT_ARGS" | record_apply control-unlabelled-urgent
   live control_waited
   read -r w p <<<"$(preemptions "$CONTROL_AT")"
   if plain_hi_pending && [ "$w" = 0 ] && [ "$p" = 0 ]; then
@@ -209,7 +210,7 @@ fi
 
 [ "${AUTO:-0}" = 1 ] && sleep 3 || live "" "⏸  Press Enter to submit the urgent app: high priority, preemption-role=urgent (needs $((URGENT_EXECS + 1)) slots)"
 TRIGGER=$(date -u +%Y-%m-%dT%H:%M:%SZ); TRIGGER_AT=$(date +%s)
-gen als-hi:high --queue $LQ --static $URGENT_EXECS --als-args "$URGENT_ARGS" --label preemption-role=urgent | kubectl apply -f - >/dev/null
+gen als-hi:high --queue $LQ --static $URGENT_EXECS --als-args "$URGENT_ARGS" --label preemption-role=urgent | record_apply urgent
 live urgent_running
 URGENT_UP=$(date +%s)
 echo; echo "  ✅ als-hi is running all $URGENT_EXECS executors; every app kept its driver."

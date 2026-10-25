@@ -17,6 +17,7 @@
 #   6 [--floor N]         default preemption and its greedy candidate selection; with --floor N the
 #                         same apps get partial preemption and the loss is spread
 #   all                   parts 1 to 6 (6 without, then with --floor 1), pausing between them
+#   yaml N [--list]       the YAML the latest run of part N applied (--list: all its runs)
 #   reset | clear-events | logs
 #   help                  this text and the chosen kit's full help
 set -uo pipefail

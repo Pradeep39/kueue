@@ -26,6 +26,7 @@
 #   cluster-queue-cinco is sized to exactly what the apps fill; it is created if missing.
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
+. "$HERE/applied-yaml.sh"   # record_apply: saves each applied manifest
 # setup_file NAME: the setup YAML NAME, in this script's directory or the nearest parent that has it
 # (directly, or in its setup/ directory), so it is found in the ~/kueue-gated-repro and the repo layouts.
 setup_file() { local d=$HERE n c; for n in 0 1 2 3 4; do for c in "$d/$1" "$d/setup/$1"; do [ -f "$c" ] && { echo "$c"; return; }; done; d=$(dirname "$d"); done; echo "$HERE/$1"; }
@@ -190,7 +191,7 @@ for _ in $(seq 1 60); do [ "$(kubectl -n $NS get workloads,pods --no-headers 2>/
 
 say "Admitting $VICTIMS low-priority static apps one at a time (executors: ${SIZES[*]}), $([ -n "$FLOOR" ] && echo "floor $FLOOR" || echo "no floor") ($QUOTA of $QUOTA slots)"
 for i in $(seq 1 $VICTIMS); do
-  gen als-lo$i:low --queue $LQ --static-elastic "${SIZES[$((i - 1))]}" ${FLOOR:+--floor $FLOOR} $ARGS_FLAG "$VICTIM_ARGS" | kubectl apply -f - >/dev/null
+  gen als-lo$i:low --queue $LQ --static-elastic "${SIZES[$((i - 1))]}" ${FLOOR:+--floor $FLOOR} $ARGS_FLAG "$VICTIM_ARGS" | record_apply "victim-als-lo$i"
   for _ in $(seq 1 60); do admitted als-lo$i && break; sleep 1; done
   echo "  als-lo$i admitted ($(date +%H:%M:%S)), ${SIZES[$((i - 1))]} executor(s)"
   sleep 2   # admission times one second apart at least, so "newest first" is unambiguous
@@ -199,7 +200,7 @@ live all_full
 [ -t 0 ] || AUTO=1
 [ "${AUTO:-0}" = 1 ] && sleep 5 || live "" "⏸  Queue is full. Press Enter to submit the high-priority app (static, needs $((URGENT_EXECS + 1)) slots)"
 TRIGGER=$(date -u +%Y-%m-%dT%H:%M:%SZ); TRIGGER_AT=$(date +%s)
-gen als-hi:high --queue $LQ --static $URGENT_EXECS $ARGS_FLAG "$URGENT_ARGS" | kubectl apply -f - >/dev/null
+gen als-hi:high --queue $LQ --static $URGENT_EXECS $ARGS_FLAG "$URGENT_ARGS" | record_apply urgent
 DEADLINE=$(( $(date +%s) + 300 ))
 live 'urgent_running || [ "$(date +%s)" -ge "$DEADLINE" ]'
 urgent_running && URGENT_UP=$(date +%s)

@@ -24,6 +24,7 @@
 # (queues-setup.yaml), and gen-apps.py / capture.sh / req-check.py / pp-analyze.py beside it.
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
+. "$HERE/applied-yaml.sh"   # record_apply: saves each applied manifest
 # setup_file NAME: the setup YAML NAME, in this script's directory or the nearest parent that has it
 # (directly, or in its setup/ directory), so it is found in the ~/kueue-gated-repro and the repo layouts.
 setup_file() { local d=$HERE n c; for n in 0 1 2 3 4; do for c in "$d/$1" "$d/setup/$1"; do [ -f "$c" ] && { echo "$c"; return; }; done; d=$(dirname "$d"); done; echo "$HERE/$1"; }
@@ -185,14 +186,14 @@ fi
 victims=$(python3 -c "print(','.join(f'als-lo{i}:low' for i in range(1, $VICTIMS + 1)))")
 say "$SCENARIO: submitting $VICTIMS low-priority apps, driver + $EXECS executors each, floor $FLOOR (the queue is sized to $QUOTA slots)"
 set_quota $QUOTA; QUOTA_SET=1
-python3 -I "$HERE/gen-apps.py" "$victims" --queue $LQ --static-elastic $EXECS --floor $FLOOR --als-args "$VICTIM_ARGS" | kubectl apply -f - >/dev/null
+python3 -I "$HERE/gen-apps.py" "$victims" --queue $LQ --static-elastic $EXECS --floor $FLOOR --als-args "$VICTIM_ARGS" | record_apply victims
 live all_victims_running
 [ -t 0 ] || AUTO=1
 if [ "${AUTO:-0}" = 1 ]; then sleep 5; else
   live "" "⏸  Queue is full ($QUOTA of $QUOTA slots). Press Enter to submit the high-priority app (needs $((URGENT_EXECS + 1)) slots)"
 fi
 TRIGGER=$(date -u +%Y-%m-%dT%H:%M:%SZ); TRIGGER_AT=$(date +%s)
-python3 -I "$HERE/gen-apps.py" als-hi:high --queue $LQ --static $URGENT_EXECS --als-args "$URGENT_ARGS" | kubectl apply -f - >/dev/null
+python3 -I "$HERE/gen-apps.py" als-hi:high --queue $LQ --static $URGENT_EXECS --als-args "$URGENT_ARGS" | record_apply urgent
 live urgent_running
 URGENT_UP=$(date +%s)
 echo; echo "  ✅ als-hi is running all $URGENT_EXECS executors; every victim kept its driver."

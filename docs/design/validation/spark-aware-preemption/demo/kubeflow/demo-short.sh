@@ -20,6 +20,7 @@
 #                                  between them (~20 min of cluster time)
 #   ./demo-short.sh reset          delete this demo's apps and put cluster-queue-tres back to 36 slots
 #   ./demo-short.sh clear-events   delete the preemption and partial-preemption events from earlier runs
+#   ./demo-short.sh yaml N [--list]  the YAML the latest run of part N applied (--list: all its runs)
 #   ./demo-short.sh logs           the reclaimed executors' decommission logs from the latest part-2 run
 #                                  (add a runs/SHUF-<stamp> path only to look at an older run)
 #
@@ -78,17 +79,39 @@ preflight() {
 }
 
 part_1() { say "Part 1 of 6: whole-workload preemption, today's behaviour (Spark $SPARK_VERSION)"; wait_clean
-  EVICTIONS=${EVICTIONS:-3} "$SCRIPTS/run-whole-workload-preemption.sh"; }
+  PART=part1 EVICTIONS=${EVICTIONS:-3} "$SCRIPTS/run-whole-workload-preemption.sh"; }
 part_2() { say "Part 2 of 6: shuffle resiliency (Spark $SPARK_VERSION)"; wait_clean
-  THRESH=${THRESH:-40} "$SCRIPTS/run-shuffle-resiliency.sh"; }
+  PART=part2 THRESH=${THRESH:-40} "$SCRIPTS/run-shuffle-resiliency.sh"; }
 part_3() { say "Part 3 of 6: spread the loss (Spark $SPARK_VERSION)"; wait_clean
-  CAPTURE=0 "$SCRIPTS/run-partial-preemption-spread.sh" p10s; }
+  PART=part3 CAPTURE=0 "$SCRIPTS/run-partial-preemption-spread.sh" p10s; }
 part_4() { say "Part 4 of 6: round-robin, then grow-back (Spark $SPARK_VERSION)"; wait_clean
-  CAPTURE=0 "$SCRIPTS/run-partial-preemption-spread.sh" p11s; }
+  PART=part4 CAPTURE=0 "$SCRIPTS/run-partial-preemption-spread.sh" p11s; }
 part_5() { say "Part 5 of 6: configurable preemption picks the victims (Spark $SPARK_VERSION)"; wait_clean
-  "$SCRIPTS/run-configurable-preemption.sh"; }
+  PART=part5 "$SCRIPTS/run-configurable-preemption.sh"; }
 part_6() { say "Part 6 of 6: $([ "${1:-}" = --floor ] && echo "the same apps with a floor of ${2:-}: partial preemption" || echo "default preemption, greedy candidate selection") (Spark $SPARK_VERSION)"; wait_clean
-  "$SCRIPTS/run-default-preemption.sh" "$@"; }
+  local floor=""; case "${1:-}" in --floor) floor=${2:-} ;; --floor=*) floor=${1#--floor=} ;; esac
+  PART=part6${floor:+-floor$floor} "$SCRIPTS/run-default-preemption.sh" "$@"; }
+
+# show_yaml N [--list]: the YAML the latest run of part N applied, file by file in the order it was
+# applied (each runner saves it under runs/applied/, see applied-yaml.sh). --list: every run of part N,
+# newest first, with its files.
+show_yaml() {
+  local n=${1:-} dirs d f
+  case "$n" in [1-6]) ;; *) echo "usage: ./demo-short.sh yaml N [--list]   (N = 1 to 6)" >&2; return 2 ;; esac
+  dirs=$(ls -1dt "$SCRIPTS/runs/applied/part$n-"* 2>/dev/null)
+  [ -n "$dirs" ] || { echo "  no run of part $n has applied anything yet (looked in $SCRIPTS/runs/applied)" >&2; return 1; }
+  if [ "${2:-}" = --list ]; then
+    for d in $dirs; do echo "$d"; for f in "$d"/*.yaml; do [ -f "$f" ] && echo "  $(basename "$f")"; done; done
+    return 0
+  fi
+  d=$(head -1 <<<"$dirs")
+  echo "# Part $n, latest run: $d"
+  for f in "$d"/*.yaml; do
+    [ -f "$f" ] || continue
+    printf '\n# ==> %s\n' "$(basename "$f")"
+    cat "$f"
+  done
+}
 
 run_all() {
   part_1; pause "Next: part 2, shuffle resiliency"
@@ -175,6 +198,7 @@ PY
 case "${1:-}" in
   clear-events) clear_events ;;
   logs) show_logs "${2:-}" ;;
+  yaml) shift; show_yaml "$@" ;;
   preflight) preflight "${2:-}" ;;
   1) part_1 ;;
   2) part_2 ;;
