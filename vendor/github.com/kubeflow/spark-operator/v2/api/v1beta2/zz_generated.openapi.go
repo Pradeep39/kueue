@@ -2581,6 +2581,20 @@ func schema_spark_operator_v2_api_v1beta2_SparkApplicationStatus(ref common.Refe
 							},
 						},
 					},
+					"activeExecutors": {
+						SchemaProps: spec.SchemaProps{
+							Description: "ActiveExecutors is the number of executor pods which are pending, including those held by a scheduling gate, or running, including those being deleted. It is counted from the pods, so it stays exact beyond MaxTrackedExecutorPerApp.",
+							Type:        []string{"integer"},
+							Format:      "int32",
+						},
+					},
+					"maxExecutorId": {
+						SchemaProps: spec.SchemaProps{
+							Description: "MaxExecutorID is the highest executor ID seen so far. It never decreases until the status is reset for a new attempt, so it changes with every scale-up.",
+							Type:        []string{"integer"},
+							Format:      "int64",
+						},
+					},
 					"executionAttempts": {
 						SchemaProps: spec.SchemaProps{
 							Description: "ExecutionAttempts is the total number of attempts to run a submitted application to completion. Incremented upon each attempted run of the application and reset upon invalidation.",

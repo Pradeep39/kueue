@@ -178,3 +178,7 @@ require (
 	sigs.k8s.io/scheduler-plugins v0.35.4-devel // indirect
 	volcano.sh/apis v1.14.0 // indirect
 )
+
+// v2.5.2 plus status.activeExecutors and status.maxExecutorId, which the
+// SparkApplication integration sizes and names elastic workload slices by.
+replace github.com/kubeflow/spark-operator/v2 => github.com/Pradeep39/spark-operator/v2 v2.5.3-0.20261029053733-34f213d18324
