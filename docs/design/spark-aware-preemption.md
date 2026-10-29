@@ -885,6 +885,15 @@ is unchanged; these are the differences from the fork base it was written agains
   grow-back of §5.5 works as described. Pods are listed only to evict them and to count the
   pod-deletion-cost marks. For the Kubeflow integration, Dynamic Allocation is read from
   `spec.dynamicAllocation`, as #17127 reads it.
+- **The count and the slice name prefer `status.activeExecutors` and `status.maxExecutorId`.** Both
+  operators cap `status.executorState` (`maxTrackedExecutorPerApp`, default 1000), so beyond the cap
+  its size stops growing and its PENDING and RUNNING entries undercount, and the Apache operator can
+  turn the executor states off altogether. Where the operator records them, the executor PodSet is
+  sized from `activeExecutors`, which it counts from the executor Pods, and slice names fold in
+  `maxExecutorId`, which grows with every executor added and never on a scale-down, so a scale-up
+  always mints a new name. An operator which records neither falls back to `status.executorState`.
+  For Kubeflow, the fields come from `Pradeep39/spark-operator` branch `v2.5.2-active-executors`
+  (v2.5.2 plus only their API), through a `go.mod` replace.
 - **`PartialPreemptionMarkedPods` takes the reconcile's context and client.** #17127's Kubeflow
   `SparkApplication` is the CRD type itself, with no per-reconcile cache for `PodSets()` to leave a
   count in.
@@ -902,7 +911,7 @@ is unchanged; these are the differences from the fork base it was written agains
 - **The Apache integration follows the same model.** It is brought over from the fork's `main`. Its
   count comes from the operator's `status.executorState`
   ([Pradeep39/spark-kubernetes-operator#1](https://github.com/Pradeep39/spark-kubernetes-operator/pull/1)),
-  slice names fold in the attempt id and the number of tracked executors, and
+  slice names fold in the attempt id and the highest executor ID (above), and
   `ElasticJobsViaWorkloadSlicesForApacheSparkApplication` gates its elastic path, as
   `ElasticJobsViaWorkloadSlicesForSparkApplication` does for Kubeflow. `RestorePodSetsInfo` restores
   scheduling gates, which keeps the elastic gate and removes any gate added on admission.

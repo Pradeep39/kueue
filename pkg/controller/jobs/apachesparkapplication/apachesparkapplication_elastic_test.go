@@ -81,10 +81,38 @@ func TestNumExecutors(t *testing.T) {
 		spec       sparkv1.ApplicationSpec
 		state      sparkv1.ApplicationStateSummary
 		executors  map[string]sparkv1.ExecutorState
+		active     *int32
 		notElastic bool
 		gateOff    bool
 		want       int32
 	}{
+		// The operator stops tracking executors beyond its cap, while it counts activeExecutors
+		// from the pods.
+		"activeExecutors wins over the tracked executors": {
+			spec:      daSpec(nil),
+			state:     sparkv1.RunningHealthy,
+			executors: executors(running),
+			active:    new(int32(5)),
+			want:      5,
+		},
+		"activeExecutors with the executor states off": {
+			spec:   daSpec(nil),
+			state:  sparkv1.RunningHealthy,
+			active: new(int32(4)),
+			want:   4,
+		},
+		"activeExecutors above maxExecutors is capped": {
+			spec:   daSpec(map[string]string{"spark.dynamicAllocation.maxExecutors": "2"}),
+			state:  sparkv1.RunningHealthy,
+			active: new(int32(6)),
+			want:   2,
+		},
+		"activeExecutors of a driver not started is ignored": {
+			spec:   daSpec(map[string]string{"spark.dynamicAllocation.initialExecutors": "5"}),
+			state:  sparkv1.Submitted,
+			active: new(int32(6)),
+			want:   5,
+		},
 		"dynamic allocation off ignores executorState entirely": {
 			spec:      sparkv1.ApplicationSpec{SparkConf: map[string]string{"spark.executor.instances": "3"}},
 			state:     sparkv1.RunningHealthy,
@@ -282,6 +310,7 @@ func TestNumExecutors(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			features.SetFeatureGateDuringTest(t, features.ElasticJobsViaWorkloadSlicesForApacheSparkApplication, !tc.gateOff)
 			job := elasticAppWithState(tc.spec, tc.state, tc.executors)
+			job.Status.ActiveExecutors = tc.active
 			if tc.notElastic {
 				job.Annotations = nil
 			}
@@ -312,8 +341,15 @@ func TestGetWorkloadNameExtraPart(t *testing.T) {
 	if got, want := job.GetWorkloadNameExtraPart(), "2_0_3"; got != want {
 		t.Errorf("three tracked executors: GetWorkloadNameExtraPart() = %q, want %q", got, want)
 	}
+	// maxExecutorId keeps growing past the operator's tracking cap, and with the executor states
+	// off, so it wins over the tracked executors.
+	job.Status.MaxExecutorID = new(int64(1200))
+	if got, want := job.GetWorkloadNameExtraPart(), "2_0_1200"; got != want {
+		t.Errorf("maxExecutorId set: GetWorkloadNameExtraPart() = %q, want %q", got, want)
+	}
 	job.Status.CurrentAttemptSummary.AttemptInfo.ID = 1
 	job.Status.ExecutorState = nil
+	job.Status.MaxExecutorID = nil
 	if got, want := job.GetWorkloadNameExtraPart(), "2_1_0"; got != want {
 		t.Errorf("second attempt: GetWorkloadNameExtraPart() = %q, want %q", got, want)
 	}

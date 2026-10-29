@@ -354,11 +354,12 @@ func (j *SparkApplication) PodsReady(ctx context.Context, _ client.Client) bool 
 // numExecutors returns the executor count to request quota for. With dynamic
 // allocation, an elastic job follows the executors the driver keeps (pending or
 // running), so terminating executors hold quota until they stop.
+// See numActiveExecutors for where that count comes from.
 func (j *SparkApplication) numExecutors() int32 {
 	if !isAnElasticJob(j) || !ptr.Deref(j.Spec.DynamicAllocation, sparkv1beta2.DynamicAllocation{}).Enabled {
 		return j.numInitialExecutors()
 	}
-	if !j.driverStarted() || len(j.Status.ExecutorState) == 0 {
+	if !j.driverStarted() || !j.hasExecutors() {
 		minExecutors := ptr.Deref(j.Spec.DynamicAllocation.MinExecutors, 0)
 		return max(j.numInitialExecutors(), minExecutors)
 	}
@@ -373,9 +374,21 @@ func (j *SparkApplication) numExecutors() int32 {
 	return count
 }
 
+// hasExecutors reports whether the operator recorded any executor of the
+// current submission.
+func (j *SparkApplication) hasExecutors() bool {
+	return j.Status.ActiveExecutors != nil || len(j.Status.ExecutorState) > 0
+}
+
 // numActiveExecutors returns the number of executors the driver keeps, pending
-// or running.
+// or running. It is status.activeExecutors, which the operator counts from the
+// executor pods, so it stays exact when status.executorState stops tracking
+// executors beyond its size cap. An operator which does not record it falls
+// back to counting status.executorState.
 func (j *SparkApplication) numActiveExecutors() int32 {
+	if j.Status.ActiveExecutors != nil {
+		return *j.Status.ActiveExecutors
+	}
 	var count int32
 	for _, st := range j.Status.ExecutorState {
 		if st == sparkv1beta2.ExecutorStatePending || st == sparkv1beta2.ExecutorStateRunning {
@@ -399,19 +412,31 @@ func (j *SparkApplication) driverStarted() bool {
 	return false
 }
 
-// GetWorkloadNameExtraPart folds the submission attempt and the number of
-// tracked executors into the elastic workload-slice name. The Spark driver
-// scales executors without bumping metadata.generation; without this the slice
-// name would key on that generation alone, so a second scale-up would recompute
-// an already-existing slice name and fail to mint its replacement. The operator
-// only adds entries to status.executorState within a submission attempt, so the
-// count grows with every scale-up.
+// GetWorkloadNameExtraPart folds the submission attempt and the highest
+// executor ID into the elastic workload-slice name. The Spark driver scales
+// executors without bumping metadata.generation; without this the slice name
+// would key on that generation alone, so a second scale-up would recompute an
+// already-existing slice name and fail to mint its replacement. Spark never
+// reuses an executor ID within a submission, so status.maxExecutorId grows with
+// every scale-up and not on a scale-down, and unlike the size of
+// status.executorState it keeps growing beyond the operator's tracking cap. An
+// operator which does not record it falls back to that size, which also only
+// grows within a submission.
 func (j *SparkApplication) GetWorkloadNameExtraPart() string {
 	extra := strconv.FormatInt(j.Generation, 10)
 	if j.Status.SubmissionAttempts > 0 {
-		extra += fmt.Sprintf("_%d_%d", j.Status.SubmissionAttempts, len(j.Status.ExecutorState))
+		extra += fmt.Sprintf("_%d_%d", j.Status.SubmissionAttempts, j.executorSequence())
 	}
 	return extra
+}
+
+// executorSequence returns status.maxExecutorId, or the number of tracked
+// executors from an operator which does not record it.
+func (j *SparkApplication) executorSequence() int64 {
+	if j.Status.MaxExecutorID != nil {
+		return *j.Status.MaxExecutorID
+	}
+	return int64(len(j.Status.ExecutorState))
 }
 
 func SetupIndexes(ctx context.Context, indexer client.FieldIndexer) error {

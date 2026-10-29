@@ -144,18 +144,29 @@ var (
 	_ jobframework.ElasticWorkloadNameProvider = (*SparkApplication)(nil)
 )
 
-// GetWorkloadNameExtraPart folds the attempt and the number of tracked executors into the
-// elastic workload-slice name. The Spark driver scales executors without bumping
-// metadata.generation; without this the slice name would key on that generation alone, so a
-// second scale-up would recompute an already-existing slice name and fail to mint its
-// replacement. The operator only adds entries to status.executorState within an attempt, so
-// the count grows with every scale-up.
+// GetWorkloadNameExtraPart folds the attempt and the highest executor ID into the elastic
+// workload-slice name. The Spark driver scales executors without bumping metadata.generation;
+// without this the slice name would key on that generation alone, so a second scale-up would
+// recompute an already-existing slice name and fail to mint its replacement. Spark never reuses
+// an executor ID within an attempt, so status.maxExecutorId grows with every scale-up and not on
+// a scale-down, and unlike the size of status.executorState it keeps growing beyond the
+// operator's tracking cap and with the executor states off. An operator which does not record
+// it falls back to that size, which also only grows within an attempt.
 func (j *SparkApplication) GetWorkloadNameExtraPart() string {
 	extra := strconv.FormatInt(j.GetGeneration(), 10)
 	if a := j.Status.CurrentAttemptSummary; a != nil && a.AttemptInfo != nil {
-		extra += fmt.Sprintf("_%d_%d", a.AttemptInfo.ID, len(j.Status.ExecutorState))
+		extra += fmt.Sprintf("_%d_%d", a.AttemptInfo.ID, j.executorSequence())
 	}
 	return extra
+}
+
+// executorSequence returns status.maxExecutorId, or the number of tracked executors from an
+// operator which does not record it.
+func (j *SparkApplication) executorSequence() int64 {
+	if j.Status.MaxExecutorID != nil {
+		return *j.Status.MaxExecutorID
+	}
+	return int64(len(j.Status.ExecutorState))
 }
 
 func (j *SparkApplication) Object() client.Object {

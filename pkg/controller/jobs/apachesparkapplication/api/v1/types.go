@@ -198,6 +198,16 @@ type ApplicationStatus struct {
 	// name. The operator starts it empty with each attempt and when the application is
 	// suspended, and only adds entries within an attempt.
 	ExecutorState map[string]ExecutorState `json:"executorState,omitempty"`
+
+	// ActiveExecutors is the number of executor pods of the current attempt which are pending,
+	// including those held by a scheduling gate, or running, including those being deleted. The
+	// operator counts it from the pods, so it stays exact when status.executorState stops
+	// tracking executors beyond its size cap, and records it even with the executor states off.
+	ActiveExecutors *int32 `json:"activeExecutors,omitempty"`
+
+	// MaxExecutorID is the highest executor ID of the current attempt so far. Spark never reuses
+	// an executor ID within an attempt, so it grows with every executor added.
+	MaxExecutorID *int64 `json:"maxExecutorId,omitempty"`
 }
 
 // ApplicationAttemptSummary is the partial summary of an application attempt.
@@ -269,6 +279,12 @@ func (in *ApplicationStatus) DeepCopyInto(out *ApplicationStatus) {
 		for k, v := range in.ExecutorState {
 			out.ExecutorState[k] = v
 		}
+	}
+	if in.ActiveExecutors != nil {
+		out.ActiveExecutors = new(*in.ActiveExecutors)
+	}
+	if in.MaxExecutorID != nil {
+		out.MaxExecutorID = new(*in.MaxExecutorID)
 	}
 }
 

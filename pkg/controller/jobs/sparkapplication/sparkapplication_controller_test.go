@@ -403,6 +403,37 @@ func TestPodSetsExecutorCount(t *testing.T) {
 				Obj(),
 			wantCount: 3,
 		},
+		"elastic, running: activeExecutors wins over the tracked executors": {
+			// The operator stops tracking executors beyond its cap, while it
+			// counts activeExecutors from the pods.
+			sparkApp: dynamicSparkApp.Clone().
+				AppState(sparkappv1beta2.ApplicationStateRunning).
+				ExecutorState("exec-1", sparkappv1beta2.ExecutorStateRunning).
+				ActiveExecutors(3).
+				Obj(),
+			wantCount: 3,
+		},
+		"elastic, running: activeExecutors without executor states": {
+			sparkApp: dynamicSparkApp.Clone().
+				AppState(sparkappv1beta2.ApplicationStateRunning).
+				ActiveExecutors(3).
+				Obj(),
+			wantCount: 3,
+		},
+		"elastic, running: activeExecutors above maxExecutors is capped": {
+			sparkApp: dynamicSparkApp.Clone().
+				AppState(sparkappv1beta2.ApplicationStateRunning).
+				ActiveExecutors(9).
+				Obj(),
+			wantCount: 4,
+		},
+		"elastic, driver not started: activeExecutors ignored": {
+			sparkApp: dynamicSparkApp.Clone().
+				AppState(sparkappv1beta2.ApplicationStateSubmitted).
+				ActiveExecutors(3).
+				Obj(),
+			wantCount: 2,
+		},
 		"elastic, completed: count stays at minExecutors": {
 			sparkApp: elasticSparkApp.Clone().
 				DynamicAllocation(&sparkappv1beta2.DynamicAllocation{Enabled: true, MinExecutors: new(int32(1))}).
@@ -434,6 +465,7 @@ func TestGetWorkloadNameExtraPart(t *testing.T) {
 		generation         int64
 		submissionAttempts int32
 		executors          map[string]sparkappv1beta2.ExecutorState
+		maxExecutorID      *int64
 		want               string
 	}{
 		"not submitted: generation only": {
@@ -454,6 +486,15 @@ func TestGetWorkloadNameExtraPart(t *testing.T) {
 			},
 			want: "1_1_2",
 		},
+		"maxExecutorId wins over the tracked executors": {
+			generation:         1,
+			submissionAttempts: 1,
+			executors: map[string]sparkappv1beta2.ExecutorState{
+				"exec-1": sparkappv1beta2.ExecutorStateRunning,
+			},
+			maxExecutorID: new(int64(7)),
+			want:          "1_1_7",
+		},
 		"rerun starts a new attempt": {
 			generation:         1,
 			submissionAttempts: 2,
@@ -466,6 +507,7 @@ func TestGetWorkloadNameExtraPart(t *testing.T) {
 			sparkApp.Generation = tc.generation
 			sparkApp.Status.SubmissionAttempts = tc.submissionAttempts
 			sparkApp.Status.ExecutorState = tc.executors
+			sparkApp.Status.MaxExecutorID = tc.maxExecutorID
 			if got := (*SparkApplication)(sparkApp).GetWorkloadNameExtraPart(); got != tc.want {
 				t.Errorf("GetWorkloadNameExtraPart() = %q, want %q", got, tc.want)
 			}
