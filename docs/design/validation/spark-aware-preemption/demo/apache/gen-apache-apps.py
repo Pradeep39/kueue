@@ -27,6 +27,8 @@ ap.add_argument("--args", default="1500 1500 12 30 200", help="driverArgs (Spark
 ap.add_argument("--static", type=int, metavar="N", help="no Dynamic Allocation, spark.executor.instances N, not elastic")
 ap.add_argument("--static-elastic", type=int, metavar="N", help="no Dynamic Allocation, spark.executor.instances N, elastic")
 ap.add_argument("--floor", type=int, metavar="N", help="spark.kueue.preemption.minExecutors N")
+ap.add_argument("--min-executors", type=int, default=3, help="spark.dynamicAllocation.minExecutors (default 3)")
+ap.add_argument("--max-executors", type=int, default=30, help="spark.dynamicAllocation.maxExecutors (default 30)")
 ap.add_argument("--no-decom", action="store_true", help="explicitly disable Spark decommissioning")
 ap.add_argument("--pagerank-graph", action="store_true",
                 help="SparkPageRank input: an init container writes a 2M-edge graph to /data/edges.txt in every Pod")
@@ -86,8 +88,8 @@ for entry in a.apps.split(","):
         conf.update({
             "spark.dynamicAllocation.enabled": "true",
             "spark.dynamicAllocation.shuffleTracking.enabled": "true",
-            "spark.dynamicAllocation.minExecutors": "3",
-            "spark.dynamicAllocation.maxExecutors": "30",
+            "spark.dynamicAllocation.minExecutors": str(a.min_executors),
+            "spark.dynamicAllocation.maxExecutors": str(a.max_executors),
             "spark.dynamicAllocation.schedulerBacklogTimeout": a.backlog,
             "spark.dynamicAllocation.executorIdleTimeout": a.idle,
         })

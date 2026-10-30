@@ -90,6 +90,8 @@ ap.add_argument("--static", type=int, metavar="N", help="no Dynamic Allocation: 
 ap.add_argument("--static-elastic", type=int, metavar="N", help="no Dynamic Allocation: spark.executor.instances N, but keep the elastic opt-in")
 ap.add_argument("--floor", type=int, metavar="N", help="spark.kueue.preemption.minExecutors N (partial-preemption floor)")
 ap.add_argument("--no-decom", action="store_true", help="explicitly disable Spark decommissioning")
+ap.add_argument("--min-executors", type=int, default=3, help="spec.dynamicAllocation.minExecutors (default 3)")
+ap.add_argument("--max-executors", type=int, default=30, help="spec.dynamicAllocation.maxExecutors (default 30)")
 a = ap.parse_args()
 # SPARK_VERSION picks the official spark image tag. The 4.x images ship spark-examples.jar; the 3.x
 # images name it after the Scala build (spark-examples_2.12-<version>.jar).
@@ -122,4 +124,8 @@ if a.static:
     out = make_static(out, a.static)
     out = "\n".join(l for l in out.split("\n") if "kueue.x-k8s.io/elastic-job" not in l)
     out = out.replace("  annotations:\n  labels:", "  labels:")
+if a.min_executors != 3 or a.max_executors != 30:
+    # Only the Dynamic Allocation block carries these lines; a static application dropped it above.
+    out = out.replace("    minExecutors: 3\n", f"    minExecutors: {a.min_executors}\n")
+    out = out.replace("    maxExecutors: 30\n", f"    maxExecutors: {a.max_executors}\n")
 print(out, end="")
