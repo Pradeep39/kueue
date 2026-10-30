@@ -17,71 +17,44 @@ limitations under the License.
 package sparkapplication
 
 import (
+	"cmp"
 	"strconv"
 	"strings"
 
-	sparkv1beta2 "github.com/kubeflow/spark-operator/v2/api/v1beta2"
 	sparkcommon "github.com/kubeflow/spark-operator/v2/pkg/common"
 )
 
-// dynamicAllocation is the Dynamic Allocation configuration Spark runs an application with.
-//
-// The Spark Operator passes spec.sparkConf to spark-submit as --conf, followed by
-// spec.executor.instances when it is set, and by the spec.dynamicAllocation fields that are
-// set, but only when spec.dynamicAllocation.enabled is true. The last value of a key wins, so a
-// typed field takes precedence over the same key in spec.sparkConf, and spec.sparkConf alone
-// configures Dynamic Allocation when the typed fields are not emitted, including when
-// spec.dynamicAllocation.enabled is false.
+// dynamicAllocation is the Dynamic Allocation Spark runs with. The Spark Operator passes
+// spec.sparkConf to spark-submit first, then spec.executor.instances and, only when
+// spec.dynamicAllocation.enabled is true, the spec.dynamicAllocation fields that are set.
 type dynamicAllocation struct {
-	enabled bool
-	// The executor bounds, nil when unset.
+	enabled                                      bool
 	minExecutors, maxExecutors, initialExecutors *int32
 }
 
-// dynamicAllocation resolves Dynamic Allocation from spec.dynamicAllocation and spec.sparkConf.
 func (j *SparkApplication) dynamicAllocation() dynamicAllocation {
-	typed := j.Spec.DynamicAllocation
-	emitted := typed != nil && typed.Enabled
-	resolve := func(typedValue *int32, key string) *int32 {
-		if emitted && typedValue != nil {
-			return typedValue
-		}
-		return j.sparkConfInt32(key)
+	da := dynamicAllocation{
+		enabled:          strings.EqualFold(strings.TrimSpace(j.Spec.SparkConf[sparkcommon.SparkDynamicAllocationEnabled]), "true"),
+		minExecutors:     j.sparkConfInt32(sparkcommon.SparkDynamicAllocationMinExecutors),
+		maxExecutors:     j.sparkConfInt32(sparkcommon.SparkDynamicAllocationMaxExecutors),
+		initialExecutors: j.sparkConfInt32(sparkcommon.SparkDynamicAllocationInitialExecutors),
 	}
-	var da dynamicAllocation
-	da.enabled = emitted || j.sparkConfBool(sparkcommon.SparkDynamicAllocationEnabled)
-	if typed == nil {
-		typed = &sparkv1beta2.DynamicAllocation{}
+	if t := j.Spec.DynamicAllocation; t != nil && t.Enabled {
+		da.enabled = true
+		da.minExecutors = cmp.Or(t.MinExecutors, da.minExecutors)
+		da.maxExecutors = cmp.Or(t.MaxExecutors, da.maxExecutors)
+		da.initialExecutors = cmp.Or(t.InitialExecutors, da.initialExecutors)
 	}
-	da.minExecutors = resolve(typed.MinExecutors, sparkcommon.SparkDynamicAllocationMinExecutors)
-	da.maxExecutors = resolve(typed.MaxExecutors, sparkcommon.SparkDynamicAllocationMaxExecutors)
-	da.initialExecutors = resolve(typed.InitialExecutors, sparkcommon.SparkDynamicAllocationInitialExecutors)
 	return da
 }
 
-// executorInstances returns the executor count Spark starts with, spec.executor.instances or
-// else spark.executor.instances in spec.sparkConf, or nil when neither is set.
 func (j *SparkApplication) executorInstances() *int32 {
-	if j.Spec.Executor.Instances != nil {
-		return j.Spec.Executor.Instances
-	}
-	return j.sparkConfInt32(sparkcommon.SparkExecutorInstances)
+	return cmp.Or(j.Spec.Executor.Instances, j.sparkConfInt32(sparkcommon.SparkExecutorInstances))
 }
 
-// sparkConfBool reads a boolean property the way Spark does: "true" in any case. Anything else,
-// including an unset property, is false.
-func (j *SparkApplication) sparkConfBool(key string) bool {
-	return strings.EqualFold(strings.TrimSpace(j.Spec.SparkConf[key]), "true")
-}
-
-// sparkConfInt32 reads an integer property, or nil when it is unset or not a non-negative
-// integer. Spark rejects a malformed value when the application is submitted.
+// sparkConfInt32 returns a non-negative integer property, or nil if it is unset or malformed.
 func (j *SparkApplication) sparkConfInt32(key string) *int32 {
-	raw, ok := j.Spec.SparkConf[key]
-	if !ok {
-		return nil
-	}
-	n, err := strconv.ParseInt(strings.TrimSpace(raw), 10, 32)
+	n, err := strconv.ParseInt(strings.TrimSpace(j.Spec.SparkConf[key]), 10, 32)
 	if err != nil || n < 0 {
 		return nil
 	}
