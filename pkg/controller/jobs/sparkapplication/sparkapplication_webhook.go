@@ -142,7 +142,7 @@ func isCreateRequest(ctx context.Context) bool {
 func (j *SparkApplication) reclaimable() bool {
 	floor := j.resolvedPartialPreemptionFloor()
 	if j.dynamicAllocationEnabled() {
-		maxExecutors := j.Spec.DynamicAllocation.MaxExecutors
+		maxExecutors := j.dynamicAllocation().maxExecutors
 		return maxExecutors == nil || floor < *maxExecutors
 	}
 	return floor < j.numInitialExecutors()

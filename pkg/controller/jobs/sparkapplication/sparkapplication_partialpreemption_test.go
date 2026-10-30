@@ -161,6 +161,14 @@ func TestPartialPreemptionFloor(t *testing.T) {
 			wantFloor: 1,
 			wantOK:    true,
 		},
+		"Dynamic Allocation minExecutors from sparkConf": {
+			app: withRunningExecutors(withSparkConf(elasticApp().Obj(), map[string]string{
+				"spark.dynamicAllocation.enabled":      "true",
+				"spark.dynamicAllocation.minExecutors": "3",
+			}), 6),
+			wantFloor: 3,
+			wantOK:    true,
+		},
 		"Dynamic Allocation minExecutors 3": {
 			app:       withRunningExecutors(elasticApp().DynamicAllocation(da(new(int32(3)))).Obj(), 6),
 			wantFloor: 3,

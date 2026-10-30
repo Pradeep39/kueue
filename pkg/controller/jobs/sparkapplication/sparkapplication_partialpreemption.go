@@ -24,7 +24,6 @@ import (
 	"strconv"
 	"time"
 
-	sparkv1beta2 "github.com/kubeflow/spark-operator/v2/api/v1beta2"
 	sparkcommon "github.com/kubeflow/spark-operator/v2/pkg/common"
 	corev1 "k8s.io/api/core/v1"
 	policyv1 "k8s.io/api/policy/v1"
@@ -73,10 +72,10 @@ func partialPreemptionEnabled(j *SparkApplication) bool {
 	return features.Enabled(features.SparkPartialPreemption) && isAnElasticJob(j)
 }
 
-// dynamicAllocationEnabled reports whether the application uses Dynamic Allocation, read from
-// spec.dynamicAllocation the same way numExecutors reads it.
+// dynamicAllocationEnabled reports whether the application uses Dynamic Allocation, from
+// spec.dynamicAllocation or spec.sparkConf, the same way numExecutors reads it.
 func (j *SparkApplication) dynamicAllocationEnabled() bool {
-	return ptr.Deref(j.Spec.DynamicAllocation, sparkv1beta2.DynamicAllocation{}).Enabled
+	return j.dynamicAllocation().enabled
 }
 
 // sparkConfPreemptionMinExecutorsValue reads spark.kueue.preemption.minExecutors. A
@@ -98,14 +97,14 @@ func (j *SparkApplication) sparkConfPreemptionMinExecutorsValue() (int32, bool, 
 
 // resolvedPartialPreemptionFloor resolves the executor floor before capping (§5.2):
 // spark.kueue.preemption.minExecutors if set and valid; else, with Dynamic Allocation,
-// spec.dynamicAllocation.minExecutors raised to at least 1; else the static executor count.
+// its minExecutors raised to at least 1; else the static executor count.
 // A malformed property is treated as unset; the webhook rejects it at create time.
 func (j *SparkApplication) resolvedPartialPreemptionFloor() int32 {
 	if n, ok, err := j.sparkConfPreemptionMinExecutorsValue(); err == nil && ok {
 		return n
 	}
 	if j.dynamicAllocationEnabled() {
-		return max(ptr.Deref(j.Spec.DynamicAllocation.MinExecutors, 0), 1)
+		return max(ptr.Deref(j.dynamicAllocation().minExecutors, 0), 1)
 	}
 	return j.numInitialExecutors()
 }

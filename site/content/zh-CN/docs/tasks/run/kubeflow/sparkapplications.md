@@ -108,11 +108,13 @@ Kueue 通过将 SparkApplication 作为[弹性工作负载](/zh-cn/docs/concepts
 
 - Kueue 会在 Executor 的 Pod 模板中添加 `kueue.x-k8s.io/elastic-job` 调度门控，
   因此 Driver 创建的 Executor 会保持门控状态，直到包含它们的 Workload 切片被接纳。Webhook 会拒绝移除该门控的 SparkApplication。
-- 在 Driver 启动之前，Workload 请求 Driver 和 `spec.executor.instances`
-  与 `spec.dynamicAllocation.minExecutors` 中较大者个 Executor。
+- Kueue 按 Spark Operator 传递给 Spark 的方式读取动态分配设置：当 `spec.dynamicAllocation` 启用时从中读取，
+  否则从 `spec.sparkConf` 中的 `spark.dynamicAllocation.*` 属性读取。`spec.dynamicAllocation` 中设置的字段优先于同名属性，
+  `spec.executor.instances` 优先于 `spark.executor.instances`。
+- 在 Driver 启动之前，Workload 请求 Driver 以及 Executor 实例数、`minExecutors` 与 `initialExecutors`
+  中最大者个 Executor，即 Spark 启动时的 Executor 数量。
   Driver 运行后，Executor 数量跟随 Spark Operator 在 `status.executorState` 中报告为 `PENDING`
-  或 `RUNNING` 的 Executor，并保持在 `spec.dynamicAllocation.minExecutors`
-  与 `spec.dynamicAllocation.maxExecutors` 之间。
+  或 `RUNNING` 的 Executor，并保持在 `minExecutors` 与 `maxExecutors` 之间。
 - 当 Driver 添加 Executor 时，Kueue 会为更大的数量创建新的 Workload 切片，
   并在该切片被接纳后移除新 Executor 的调度门控。
   当 Driver 移除 Executor 时，Kueue 会在这些 Executor 停止后降低已接纳 Workload 的数量并释放它们的配额，
@@ -121,13 +123,10 @@ Kueue 通过将 SparkApplication 作为[弹性工作负载](/zh-cn/docs/concepts
 
 在 Kueue 中使用动态分配有以下限制：
 
-- 首次接纳不考虑 `spec.dynamicAllocation.initialExecutors`。当它更大时，
-  多出的 Executor 会保持门控状态，直到下一个 Workload 切片被接纳。
 - Spark Operator 对每个应用最多跟踪 `--max-tracked-executor-per-app` 个 Executor（默认 1000）。
   超出该限制的 Executor 不会被计数，因此会保持门控状态。
 - Driver 可能会删除并重新创建处于门控状态超过 `spark.kubernetes.allocation.executor.timeout` 的 Executor。
   新的 Executor 同样带有门控。
-- Kueue 仅从 `spec.dynamicAllocation` 读取动态分配设置，而不是从 `spec.sparkConf` 读取。
 
 ## SparkApplication 示例
 

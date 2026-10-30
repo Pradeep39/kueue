@@ -403,6 +403,50 @@ func TestPodSetsExecutorCount(t *testing.T) {
 				Obj(),
 			wantCount: 3,
 		},
+		"elastic, sparkConf DA before the driver starts: largest of instances, min and initial": {
+			sparkApp: elasticSparkApp.Clone().
+				SparkConf("spark.dynamicAllocation.enabled", "true").
+				SparkConf("spark.dynamicAllocation.minExecutors", "2").
+				SparkConf("spark.dynamicAllocation.initialExecutors", "3").
+				SparkConf("spark.dynamicAllocation.maxExecutors", "6").
+				Obj(),
+			wantCount: 3,
+		},
+		"elastic, sparkConf DA running: follows activeExecutors": {
+			sparkApp: elasticSparkApp.Clone().
+				SparkConf("spark.dynamicAllocation.enabled", "true").
+				SparkConf("spark.dynamicAllocation.maxExecutors", "6").
+				AppState(sparkappv1beta2.ApplicationStateRunning).
+				ActiveExecutors(5).
+				Obj(),
+			wantCount: 5,
+		},
+		"elastic, sparkConf DA running: capped at its maxExecutors": {
+			sparkApp: elasticSparkApp.Clone().
+				SparkConf("spark.dynamicAllocation.enabled", "true").
+				SparkConf("spark.dynamicAllocation.maxExecutors", "6").
+				AppState(sparkappv1beta2.ApplicationStateRunning).
+				ActiveExecutors(9).
+				Obj(),
+			wantCount: 6,
+		},
+		"elastic, typed DA: initialExecutors raises the first slice": {
+			sparkApp: dynamicSparkApp.Clone().
+				DynamicAllocation(&sparkappv1beta2.DynamicAllocation{Enabled: true, InitialExecutors: new(int32(3)), MaxExecutors: new(int32(4))}).
+				Obj(),
+			wantCount: 3,
+		},
+		"static, spark.executor.instances in sparkConf": {
+			sparkApp: func() *sparkappv1beta2.SparkApplication {
+				app := sparkapplicationtesting.MakeSparkApplication("sparkapp", "ns").
+					Annotation(workloadslicing.EnabledAnnotationKey, workloadslicing.EnabledAnnotationValue).
+					SparkConf("spark.executor.instances", "4").
+					Obj()
+				app.Spec.Executor.Instances = nil
+				return app
+			}(),
+			wantCount: 4,
+		},
 		"elastic, running: activeExecutors wins over the tracked executors": {
 			// The operator stops tracking executors beyond its cap, while it
 			// counts activeExecutors from the pods.

@@ -330,13 +330,13 @@ func (j *SparkApplication) PodsReady(ctx context.Context, _ client.Client) bool 
 	// AppState.State alone goes to Running as soon as the driver starts even if
 	// executors are stuck (e.g. unschedulable), which would let the
 	// waitForPodsReady timeout never fire on heterogeneous resource shortages.
-	expected := int(ptr.Deref(j.Spec.Executor.Instances, 0))
+	expected := int(j.numInitialExecutors())
 	// When dynamic allocation is enabled, the actual number of executors can
 	// fluctuate between minExecutors and maxExecutors. Use minExecutors as the
-	// expected count since it's the guaranteed minimum. If neither the CRD
-	// field nor sparkConf is set, use Spec.Executor.Instances as default.
-	if j.Spec.DynamicAllocation != nil && j.Spec.DynamicAllocation.Enabled {
-		expected = int(ptr.Deref(j.Spec.DynamicAllocation.MinExecutors, int32(expected)))
+	// expected count since it's the guaranteed minimum. If it is set neither in
+	// spec.dynamicAllocation nor in spec.sparkConf, use the executor instances.
+	if da := j.dynamicAllocation(); da.enabled {
+		expected = int(ptr.Deref(da.minExecutors, int32(expected)))
 	}
 	if expected == 0 {
 		return true
@@ -356,20 +356,22 @@ func (j *SparkApplication) PodsReady(ctx context.Context, _ client.Client) bool 
 // running), so terminating executors hold quota until they stop.
 // See numActiveExecutors for where that count comes from.
 func (j *SparkApplication) numExecutors() int32 {
-	if !isAnElasticJob(j) || !ptr.Deref(j.Spec.DynamicAllocation, sparkv1beta2.DynamicAllocation{}).Enabled {
+	da := j.dynamicAllocation()
+	if !isAnElasticJob(j) || !da.enabled {
 		return j.numInitialExecutors()
 	}
 	if !j.driverStarted() || !j.hasExecutors() {
-		minExecutors := ptr.Deref(j.Spec.DynamicAllocation.MinExecutors, 0)
-		return max(j.numInitialExecutors(), minExecutors)
+		// Spark starts with the largest of the executor instances, minExecutors
+		// and initialExecutors.
+		return max(j.numInitialExecutors(), ptr.Deref(da.minExecutors, 0), ptr.Deref(da.initialExecutors, 0))
 	}
 	count := j.numActiveExecutors()
 	// cap the upper and lower bounds
-	if minExecutors := j.Spec.DynamicAllocation.MinExecutors; minExecutors != nil {
-		count = max(count, *minExecutors)
+	if da.minExecutors != nil {
+		count = max(count, *da.minExecutors)
 	}
-	if maxExecutors := j.Spec.DynamicAllocation.MaxExecutors; maxExecutors != nil {
-		count = min(count, *maxExecutors)
+	if da.maxExecutors != nil {
+		count = min(count, *da.maxExecutors)
 	}
 	return count
 }

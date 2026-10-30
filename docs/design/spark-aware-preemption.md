@@ -894,6 +894,17 @@ is unchanged; these are the differences from the fork base it was written agains
   always mints a new name. An operator which records neither falls back to `status.executorState`.
   For Kubeflow, the fields come from `Pradeep39/spark-operator` branch `v2.5.2-active-executors`
   (v2.5.2 plus only their API), through a `go.mod` replace.
+- **Dynamic Allocation is read from `spec.sparkConf` too.** #17127 reads only `spec.dynamicAllocation`
+  and `spec.executor.instances`, so an elastic application configuring Dynamic Allocation the
+  spark-submit way kept its first slice and left every added executor gated. The Kubeflow integration
+  now resolves it the way the Spark Operator hands it to spark-submit: `sparkConf` first, then
+  `spec.executor.instances` and, only when `spec.dynamicAllocation.enabled` is true, its fields that are
+  set, the last value winning. The first slice is the largest of the executor instances, `minExecutors`
+  and `initialExecutors`, Spark's initial target, which also lifts #17127's `initialExecutors`
+  limitation. This does not depend on the Spark Operator's own defaulting, which sets
+  `spec.executor.instances` to 1 for such an application because it looks up
+  `spark.dynamicallocation.enabled` in lowercase: the largest-of rule gives the same first slice with
+  or without that default.
 - **`PartialPreemptionMarkedPods` takes the reconcile's context and client.** #17127's Kubeflow
   `SparkApplication` is the CRD type itself, with no per-reconcile cache for `PodSets()` to leave a
   count in.

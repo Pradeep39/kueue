@@ -251,6 +251,15 @@ func (w *SparkApplicationWrapper) ExecutorState(name string, state sparkappv1bet
 	return w
 }
 
+// SparkConf sets a spark-submit property in spec.sparkConf.
+func (w *SparkApplicationWrapper) SparkConf(key, value string) *SparkApplicationWrapper {
+	if w.Spec.SparkConf == nil {
+		w.Spec.SparkConf = make(map[string]string)
+	}
+	w.Spec.SparkConf[key] = value
+	return w
+}
+
 // ActiveExecutors sets status.activeExecutors.
 func (w *SparkApplicationWrapper) ActiveExecutors(n int32) *SparkApplicationWrapper {
 	w.Status.ActiveExecutors = &n
