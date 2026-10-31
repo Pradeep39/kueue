@@ -339,6 +339,9 @@ func validateAdmission(obj, oldObj *kueue.Workload, path *field.Path) field.Erro
 		if !names.Has(ps.Name) {
 			allErrs = append(allErrs, field.NotFound(psaPath.Child("name"), ps.Name))
 		}
+		if ps.ReclaimTargetCount != nil && ps.Count != nil && *ps.ReclaimTargetCount > *ps.Count {
+			allErrs = append(allErrs, field.Invalid(psaPath.Child("reclaimTargetCount"), *ps.ReclaimTargetCount, fmt.Sprintf("must not be greater than count (%d)", *ps.Count)))
+		}
 		if count := ptr.Deref(ps.Count, 0); count > 0 {
 			for k, v := range ps.ResourceUsage {
 				if resources.AmountFromQuantity(k, v).RemInt64(int64(count)).Sign() != 0 {
@@ -406,7 +409,7 @@ func ValidateWorkloadUpdate(newObj, oldObj *kueue.Workload) field.ErrorList {
 	if workload.HasQuotaReservation(newObj) && workload.HasQuotaReservation(oldObj) {
 		allErrs = append(allErrs, validateReclaimablePodsUpdate(newObj, oldObj, field.NewPath("status", "reclaimablePods"))...)
 	}
-	allErrs = append(allErrs, validateAdmissionUpdate(newObj.Status.Admission, oldObj.Status.Admission, field.NewPath("status", "admission"))...)
+	allErrs = append(allErrs, validateAdmissionUpdate(newObj.Status.Admission, oldObj.Status.Admission, field.NewPath("status", "admission"), workloadslicing.Enabled(newObj))...)
 	allErrs = append(allErrs, validateImmutablePodSetUpdates(newObj, oldObj, statusPath.Child("admissionChecks"))...)
 	allErrs = append(allErrs, validateClusterNameUpdate(newObj, oldObj, statusPath)...)
 
@@ -419,7 +422,12 @@ func ValidateWorkloadUpdate(newObj, oldObj *kueue.Workload) field.ErrorList {
 
 // validateAdmissionUpdate validates that admission can be set or unset, but the
 // fields within can't change.
-func validateAdmissionUpdate(new, old *kueue.Admission, path *field.Path) field.ErrorList {
+//
+// With SparkPartialPreemption, an elastic workload is an exception: a partial preemption
+// lowers its granted PodSetAssignment Count/ResourceUsage (and TopologyAssignment) to give
+// back the quota of the Pods it reclaimed (docs/design/spark-aware-preemption.md §5.4).
+// Only decreases are accepted. Non-elastic workloads keep a fully immutable admission.
+func validateAdmissionUpdate(new, old *kueue.Admission, path *field.Path, elastic bool) field.ErrorList {
 	if old == nil || new == nil {
 		return nil
 	}
@@ -431,6 +439,33 @@ func validateAdmissionUpdate(new, old *kueue.Admission, path *field.Path) field.
 		for i := range new.PodSetAssignments {
 			old.PodSetAssignments[i].TopologyAssignment = new.PodSetAssignments[i].TopologyAssignment
 			old.PodSetAssignments[i].DelayedTopologyRequest = new.PodSetAssignments[i].DelayedTopologyRequest
+		}
+	}
+	// KEP-975: Kueue publishes an outstanding partial preemption's target on the admission, and
+	// clears it when the reclaim ends, so reclaimTargetCount may change on an admitted Workload.
+	if features.Enabled(features.SparkPartialPreemption) {
+		if len(new.PodSetAssignments) != len(old.PodSetAssignments) {
+			return apivalidation.ValidateImmutableField(new, old, path)
+		}
+		for i := range new.PodSetAssignments {
+			old.PodSetAssignments[i].ReclaimTargetCount = new.PodSetAssignments[i].ReclaimTargetCount
+		}
+	}
+	if elastic && features.Enabled(features.ElasticJobsViaWorkloadSlices) && features.Enabled(features.SparkPartialPreemption) {
+		if len(new.PodSetAssignments) != len(old.PodSetAssignments) {
+			return apivalidation.ValidateImmutableField(new, old, path)
+		}
+		for i := range new.PodSetAssignments {
+			newPSA, oldPSA := &new.PodSetAssignments[i], &old.PodSetAssignments[i]
+			if newPSA.Count == nil || oldPSA.Count == nil || *newPSA.Count >= *oldPSA.Count {
+				continue
+			}
+			// A partial preemption lowers the grant (workloadslicing.LowerGrantedCounts):
+			// accept the lowered count and the resource usage that goes with it by copying
+			// them onto the old value before the immutability check. Anything else that
+			// differs is still rejected.
+			oldPSA.Count = newPSA.Count
+			oldPSA.ResourceUsage = newPSA.ResourceUsage
 		}
 	}
 	return apivalidation.ValidateImmutableField(new, old, path)

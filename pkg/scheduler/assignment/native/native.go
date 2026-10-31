@@ -53,7 +53,7 @@ type nativePlanner struct {
 
 // Plan builds an assignment plan using kueue-native algorithms.
 // As of right now, this implementation is expected to never return an Error-Plan.
-func (p *nativePlanner) Plan(ctx context.Context, asgn *flavorassigner.Assignment, _ ...assignment.PlannerOption) assignment.Plan {
+func (p *nativePlanner) Plan(ctx context.Context, asgn *flavorassigner.Assignment, opts ...assignment.PlannerOption) assignment.Plan {
 	log := log.FromContext(ctx)
 	cq := p.snapshot.ClusterQueue(p.wl.ClusterQueue)
 
@@ -63,8 +63,11 @@ func (p *nativePlanner) Plan(ctx context.Context, asgn *flavorassigner.Assignmen
 
 	arm := asgn.RepresentativeMode()
 
-	if arm == flavorassigner.Preempt {
-		strategies := p.preemptor.GetPreemptionStrategyIterator(ctx, *p.wl, p.snapshot, *asgn)
+	mode := assignment.PreemptionMode(opts...)
+	// A TAS placement is simulated with every target removed whole, which would overstate
+	// what a partial reclaim frees, so in v1 partial preemption never makes room for one.
+	if arm == flavorassigner.Preempt && (mode != preemption.PartialOnly || !p.needsTASForPreemption(cq)) {
+		strategies := p.preemptor.GetPreemptionStrategyIteratorWithMode(ctx, *p.wl, p.snapshot, *asgn, mode)
 		faPreemptionTargets := p.preemptor.GetTargetsWithStrategy(ctx, strategies)
 		if len(faPreemptionTargets) > 0 {
 			p.updateAssignmentForTAS(ctx, cq, asgn, faPreemptionTargets)
@@ -84,8 +87,7 @@ func (p *nativePlanner) updateAssignmentForTAS(
 ) {
 	log := log.FromContext(ctx)
 
-	if features.Enabled(features.TopologyAwareScheduling) && asgn.RepresentativeMode() == flavorassigner.Preempt &&
-		(workload.IsExplicitlyRequestingTAS(p.wl.Obj.Spec.PodSets...) || cq.IsTASOnly()) && !workload.HasTopologyAssignmentWithUnhealthyNode(p.wl.Obj) {
+	if asgn.RepresentativeMode() == flavorassigner.Preempt && p.needsTASForPreemption(cq) {
 		tasRequests := asgn.WorkloadsTopologyRequests(log, p.wl, cq)
 		var tasResult schdcache.TASAssignmentsResult
 		log = log.WithValues("workload", klog.KRef(p.wl.Obj.Namespace, p.wl.Obj.Name))
@@ -122,4 +124,12 @@ func (p *nativePlanner) updateAssignmentForTAS(
 		}
 		asgn.UpdateForTASResult(log, cq, p.wl, tasResult)
 	}
+}
+
+// needsTASForPreemption reports whether a preempting assignment for the workload is
+// placed by topology-aware scheduling, with its victims simulated away.
+func (p *nativePlanner) needsTASForPreemption(cq *schdcache.ClusterQueueSnapshot) bool {
+	return features.Enabled(features.TopologyAwareScheduling) &&
+		(workload.IsExplicitlyRequestingTAS(p.wl.Obj.Spec.PodSets...) || cq.IsTASOnly()) &&
+		!workload.HasTopologyAssignmentWithUnhealthyNode(p.wl.Obj)
 }

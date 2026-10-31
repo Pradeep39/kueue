@@ -1,0 +1,21 @@
+# LocalQueues in batch-ns-dos for the Apache Spark Operator demo (apache/demo-short.sh). The
+# ClusterQueues themselves come from ../queues-setup.yaml: cluster-queue-dos (cohort-uno, parts 2)
+# and cluster-queue-tres (parts 1, 3 and 4, resized per part and put back to 36 slots).
+---
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: LocalQueue
+metadata:
+  name: batch-queue-dos
+  namespace: batch-ns-dos
+spec:
+  clusterQueue: cluster-queue-dos
+  stopPolicy: None
+---
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: LocalQueue
+metadata:
+  name: batch-queue-tres
+  namespace: batch-ns-dos
+spec:
+  clusterQueue: cluster-queue-tres
+  stopPolicy: None
