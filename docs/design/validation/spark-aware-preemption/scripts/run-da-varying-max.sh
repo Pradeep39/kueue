@@ -37,7 +37,8 @@ table() {
   local tmp; tmp=$(mktemp -d)
   kubectl -n $NS get pods -l spark-role -o json > "$tmp/pods.json" 2>/dev/null
   kubectl -n $NS get workloads -o json > "$tmp/wls.json" 2>/dev/null
-  VIEW_APP_LABEL=$APP_LABEL VIEW_STATE=$STATE python3 -I "$HERE/da-view.py" "$tmp/pods.json" "$tmp/wls.json" "$QUOTA" "$MAXES"
+  kubectl get clusterqueue $CQ -o json > "$tmp/cq.json" 2>/dev/null
+  VIEW_APP_LABEL=$APP_LABEL VIEW_STATE=$STATE python3 -I "$HERE/da-view.py" "$tmp/pods.json" "$tmp/wls.json" "$tmp/cq.json" "$QUOTA" "$MAXES"
   rm -rf "$tmp"
 }
 
@@ -74,8 +75,13 @@ for a, mx in maxes.items():
     p = state.get("peak_running", {}).get(a, 0)
     w = "waited for quota" if state.get("waited", {}).get(a) else "never waited for quota"
     print(f"  {a:8} max {mx:>2}: peaked at {p} running executor{'s' * (p != 1)}, {n[a]} Workload slice{'s' * (n[a] != 1)}, {w}")
-print(f"  queue: at most {state.get('peak_granted', 0)} of {quota} slots granted at once"
-      + (f"; {state['over_quota_samples']} redraws saw more than the quota" if state.get("over_quota_samples") else ", never above the quota"))
+held, res = state.get("peak_held", 0), state.get("peak_reserved", 0)
+print(f"  queue: the Pods held at most {held} of {quota} slots"
+      + (f", above the quota in {state['held_over_quota']} redraws" if state.get("held_over_quota") else ", never above the quota"))
+print(f"  Kueue's reservation peaked at {res:g} CPU"
+      + (f", above the quota in {state['reserved_over_quota']} redraws: while it replaces an app's Workload slice with the next,"
+         " Kueue briefly counts both slices; the Pods never used that quota" if state.get("reserved_over_quota") and not state.get("held_over_quota") else "")
+      + (f", above the quota in {state['reserved_over_quota']} redraws" if state.get("reserved_over_quota") and state.get("held_over_quota") else ""))
 PY
 }
 

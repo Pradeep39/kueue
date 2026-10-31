@@ -3,9 +3,13 @@
 with its maximum, its driver, a dot per executor (running, starting, waiting for quota, stopping), how many
 Workload slices Kueue created as it resized, and what it is doing now.
 
-  da-view.py PODS_JSON WORKLOADS_JSON QUOTA MAXES
+  da-view.py PODS_JSON WORKLOADS_JSON CLUSTERQUEUE_JSON QUOTA MAXES
 
 MAXES is "app=n,app=n...": each app's spark.dynamicAllocation.maxExecutors, in display order.
+The headline shows the slots the apps' Pods hold (drivers and executors that are neither gated nor
+finished, including those still terminating), and the CPU Kueue has reserved in the ClusterQueue
+(status.flavorsReservation; 1 slot = 1 CPU). While Kueue replaces one Workload slice of an app with the
+next, its reservation briefly counts both slices, so it can read above the quota although the Pods don't.
 Optional environment: VIEW_APP_LABEL, the Pod label naming the app (default the Kubeflow Spark Operator's
 sparkoperator.k8s.io/app-name); VIEW_STATE, a JSON file in which the peaks seen so far are kept for the
 summary. NO_COLOR (any value) turns colours off.
@@ -15,7 +19,7 @@ import json
 import os
 import sys
 
-pods_json, wls_json, quota, maxes = sys.argv[1:5]
+pods_json, wls_json, cq_json, quota, maxes = sys.argv[1:6]
 quota = int(quota)
 maxes = {k: int(v) for k, v in (t.split("=", 1) for t in maxes.split(",") if "=" in t)}
 APP_LABEL = os.environ.get("VIEW_APP_LABEL") or "sparkoperator.k8s.io/app-name"
@@ -38,20 +42,23 @@ for p in items(pods_json):
     phase = p["status"].get("phase")
     if labels.get("spark-role") == "driver":
         c[app]["driver"] += 1 if phase == "Running" else 0
+        c[app]["held"] += 1 if phase not in ("Succeeded", "Failed") else 0
         c[app]["driver_done"] += 1 if phase == "Succeeded" else 0
         continue
     if phase in ("Succeeded", "Failed"):
         continue
+    gated = any(g["name"].startswith("kueue.x-k8s.io/") for g in p["spec"].get("schedulingGates") or [])
+    c[app]["held"] += 0 if gated else 1
     if p["metadata"].get("deletionTimestamp"):
         c[app]["stopping"] += 1
-    elif any(g["name"].startswith("kueue.x-k8s.io/") for g in p["spec"].get("schedulingGates") or []):
+    elif gated:
         c[app]["waiting"] += 1
     elif phase == "Running":
         c[app]["running"] += 1
     else:
         c[app]["starting"] += 1
 
-granted, slices, finished, active = 0, collections.Counter(), set(), set()
+slices, finished, active = collections.Counter(), set(), set()
 for w in items(wls_json):
     owner = next((o["name"] for o in w["metadata"].get("ownerReferences", []) if o.get("controller")), "")
     slices[owner] += 1
@@ -61,9 +68,17 @@ for w in items(wls_json):
         finished.add(owner)
         continue
     active.add(owner)
-    if st.get("admission") and conds.get("Admitted") == "True":
-        for ps in st["admission"].get("podSetAssignments", []):
-            granted += ps.get("count") or 0
+
+held = sum(c[a]["held"] for a in maxes)
+reserved = 0.0
+try:
+    for f in json.load(open(cq_json)).get("status", {}).get("flavorsReservation") or []:
+        for r in f.get("resources", []):
+            if r["name"] == "cpu":
+                q = str(r.get("total", "0"))
+                reserved += float(q[:-1]) / 1000 if q.endswith("m") else float(q)
+except (OSError, ValueError):
+    pass
 
 state = {}
 if STATE:
@@ -73,12 +88,15 @@ if STATE:
         state = {}
 peak = state.setdefault("peak_running", {})
 waited = state.setdefault("waited", {})
-state["peak_granted"] = max(state.get("peak_granted", 0), granted)
-if granted > quota:
-    state["over_quota_samples"] = state.get("over_quota_samples", 0) + 1
+state["peak_held"] = max(state.get("peak_held", 0), held)
+state["peak_reserved"] = max(state.get("peak_reserved", 0), reserved)
+if held > quota:
+    state["held_over_quota"] = state.get("held_over_quota", 0) + 1
+if reserved > quota:
+    state["reserved_over_quota"] = state.get("reserved_over_quota", 0) + 1
 
-print(f"  {len(maxes)} apps with Dynamic Allocation sharing one queue: {granted} of {quota} slots granted"
-      f"  (1 slot = driver or executor)")
+print(f"  {len(maxes)} apps with Dynamic Allocation sharing one queue: Pods hold {held} of {quota} slots,"
+      f" Kueue reserved {reserved:g}  (1 slot = driver or executor = 1 CPU)")
 print()
 print(f"  {'app':8} {'max':>3}  {'driver':6}  {'executors':{W}} {'slices':>6}  status")
 for a, mx in maxes.items():
