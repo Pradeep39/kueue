@@ -2410,7 +2410,7 @@ func generatePodsReadyCondition(ctx context.Context, c client.Client, job Generi
 	}
 
 	podsReadyCond := apimeta.FindStatusCondition(wl.Status.Conditions, kueue.WorkloadPodsReady)
-	podsReady := job.PodsReady(ctx, c)
+	podsReady := podsReadyForWorkload(ctx, c, job, wl)
 	log.V(3).Info("Generating PodsReady condition",
 		"Current PodsReady condition", podsReadyCond,
 		"Pods are ready", podsReady)
@@ -2445,6 +2445,15 @@ func generatePodsReadyCondition(ctx context.Context, c client.Client, job Generi
 	default:
 		return waitForSchedulingOrStartPodsReadyCondition(wl, clock, podsScheduledTracking)
 	}
+}
+
+// podsReadyForWorkload asks the job whether its Pods are ready, against the counts wl grants when
+// the job implements JobWithGrantAwarePodsReady.
+func podsReadyForWorkload(ctx context.Context, c client.Client, job GenericJob, wl *kueue.Workload) bool {
+	if gj, ok := job.(JobWithGrantAwarePodsReady); ok {
+		return gj.PodsReadyForWorkload(ctx, c, wl)
+	}
+	return job.PodsReady(ctx, c)
 }
 
 func waitForSchedulingOrStartPodsReadyCondition(wl *kueue.Workload, clock clock.Clock, podsScheduledTracking bool) metav1.Condition {

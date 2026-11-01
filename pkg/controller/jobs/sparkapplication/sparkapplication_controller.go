@@ -37,6 +37,7 @@ import (
 	"sigs.k8s.io/kueue/pkg/controller/jobframework"
 	"sigs.k8s.io/kueue/pkg/features"
 	"sigs.k8s.io/kueue/pkg/podset"
+	"sigs.k8s.io/kueue/pkg/workload"
 )
 
 var (
@@ -322,6 +323,22 @@ func (j *SparkApplication) Finished(ctx context.Context) (message string, succes
 }
 
 func (j *SparkApplication) PodsReady(ctx context.Context, _ client.Client) bool {
+	return j.podsReady(nil)
+}
+
+// PodsReadyForWorkload implements jobframework.JobWithGrantAwarePodsReady: the application is
+// ready once the executors Kueue grants it are, even if that is fewer than it would otherwise
+// expect, e.g. after a partial preemption lowered the grant below its executor instances.
+func (j *SparkApplication) PodsReadyForWorkload(_ context.Context, _ client.Client, wl *kueue.Workload) bool {
+	if granted, ok := workload.GrantedCount(wl, executorPodSetName); ok {
+		return j.podsReady(&granted)
+	}
+	return j.podsReady(nil)
+}
+
+// podsReady reports whether the driver runs and enough executors have reported Running or
+// Completed. granted, when known, caps the expected count at the executors Kueue grants.
+func (j *SparkApplication) podsReady(granted *int32) bool {
 	// Driver must be running.
 	if j.Status.AppState.State != sparkv1beta2.ApplicationStateRunning {
 		return false
@@ -337,6 +354,9 @@ func (j *SparkApplication) PodsReady(ctx context.Context, _ client.Client) bool 
 	// spec.dynamicAllocation nor in spec.sparkConf, use the executor instances.
 	if da := j.dynamicAllocation(); da.enabled {
 		expected = int(ptr.Deref(da.minExecutors, int32(expected)))
+	}
+	if granted != nil {
+		expected = min(expected, int(*granted))
 	}
 	if expected == 0 {
 		return true

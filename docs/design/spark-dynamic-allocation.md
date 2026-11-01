@@ -94,6 +94,14 @@ malformed or negative count is treated as unset.
 - **CRD schemas.** The SparkApplication CRDs must include these fields, or the API server prunes
   them.
 
+## Readiness
+
+`PodsReady` is measured against the executors Kueue grants: the application is ready once the
+driver runs and every granted executor, up to `minExecutors` (or the executor instances without
+Dynamic Allocation), is running. For the Apache operator, whose threshold is
+`instanceConfig.minExecutors`, an application Dynamic Allocation shrinks below that threshold is
+still ready when every granted executor runs.
+
 ## Validation
 
 - An elastic application must keep the `kueue.x-k8s.io/elastic-job` scheduling gate in its

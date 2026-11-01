@@ -235,6 +235,17 @@ type JobWithCustomAnnotations interface {
 	GetCustomAnnotations(ctx context.Context, c client.Client) (map[string]string, error)
 }
 
+// JobWithGrantAwarePodsReady is an optional interface for jobs whose readiness depends on how
+// many Pods Kueue grants them. Kueue may grant a PodSet fewer Pods than the job's full size, for
+// example after a partial preemption lowers the grant; such a job is ready once the Pods it is
+// granted are, so that waitForPodsReady does not evict it for running at the size Kueue chose.
+// When a job implements it, it is used instead of PodsReady while the job is admitted.
+type JobWithGrantAwarePodsReady interface {
+	// PodsReadyForWorkload reports whether the job's Pods are ready, given wl, the job's admitted
+	// Workload, whose status.admission carries the granted counts.
+	PodsReadyForWorkload(ctx context.Context, c client.Client, wl *kueue.Workload) bool
+}
+
 // ElasticWorkloadNameProvider is an optional interface that provides additional
 // information for building workload names for elastic jobs.
 type ElasticWorkloadNameProvider interface {

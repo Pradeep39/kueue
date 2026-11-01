@@ -139,6 +139,21 @@ A victim that is evicted, finishes or loses its admission mid-reclaim has the re
 - **Timeout:** the ClusterQueue's `kueue.x-k8s.io/partial-preemption-timeout`, or else the grace
   period plus 30s.
 
+## Readiness
+
+A reclaim must not make the application look unready, or `waitForPodsReady`'s recovery timeout
+(which defaults to its `timeout`) would evict it whole. Both integrations therefore measure
+`PodsReady` against the executors Kueue currently grants, through the job framework's optional
+`JobWithGrantAwarePodsReady` interface:
+
+- **Kubeflow:** the driver runs and at least `min(expected, granted)` executors are running or
+  completed, where `expected` is `minExecutors` with Dynamic Allocation and the executor instances
+  otherwise.
+- **Apache:** the operator reports `RunningHealthy` or `RunningWithPartialCapacity`; or, in its
+  below-threshold states, every executor Kueue grants is running.
+
+At the full grant this is as strict as before, so executors stuck above it are still caught.
+
 ## ClusterQueue settings
 
 Partial preemption applies to every ClusterQueue while the gate is on. These ClusterQueue

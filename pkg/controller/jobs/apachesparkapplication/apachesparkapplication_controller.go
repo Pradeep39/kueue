@@ -36,6 +36,8 @@ import (
 	sparkv1 "sigs.k8s.io/kueue/pkg/controller/jobs/apachesparkapplication/api/v1"
 	"sigs.k8s.io/kueue/pkg/features"
 	"sigs.k8s.io/kueue/pkg/podset"
+	utilpod "sigs.k8s.io/kueue/pkg/util/pod"
+	"sigs.k8s.io/kueue/pkg/workload"
 )
 
 var (
@@ -71,6 +73,14 @@ var (
 	healthyStates = []sparkv1.ApplicationStateSummary{
 		sparkv1.RunningHealthy,
 		sparkv1.RunningWithPartialCapacity,
+	}
+
+	// belowThresholdStates are the states in which the driver runs with fewer ready executors
+	// than the operator's threshold, instanceConfig.minExecutors: still starting up, or after
+	// losing executors.
+	belowThresholdStates = []sparkv1.ApplicationStateSummary{
+		sparkv1.InitializedBelowThresholdExecutors,
+		sparkv1.RunningWithBelowThresholdExecutors,
 	}
 
 	// releaseStates are terminal states the operator enters from both success and
@@ -238,6 +248,37 @@ func (j *SparkApplication) terminalOutcome() sparkv1.ApplicationStateSummary {
 // minExecutors are ready, so the state machine is a sufficient signal here.
 func (j *SparkApplication) PodsReady(context.Context, client.Client) bool {
 	return slices.Contains(healthyStates, j.Status.CurrentState.CurrentStateSummary)
+}
+
+// PodsReadyForWorkload implements jobframework.JobWithGrantAwarePodsReady. The operator's
+// threshold is instanceConfig.minExecutors, but Kueue may grant fewer executors: Dynamic
+// Allocation's own minExecutors can be lower, and so can a grant lowered by partial preemption.
+// Below the threshold the operator reports a below-threshold state, so in those states the
+// application is also ready once every executor Kueue grants is running.
+func (j *SparkApplication) PodsReadyForWorkload(ctx context.Context, c client.Client, wl *kueue.Workload) bool {
+	if j.PodsReady(ctx, c) {
+		return true
+	}
+	if c == nil || !slices.Contains(belowThresholdStates, j.Status.CurrentState.CurrentStateSummary) {
+		return false
+	}
+	granted, ok := workload.GrantedCount(wl, executorPodSetName)
+	if !ok {
+		return false
+	}
+	pods, err := j.listExecutorPods(ctx, c)
+	if err != nil {
+		ctrl.LoggerFrom(ctx).V(2).Info("Cannot list executor Pods to check readiness", "error", err.Error())
+		return false
+	}
+	var running int32
+	for i := range pods {
+		p := &pods[i]
+		if p.Status.Phase == corev1.PodRunning && p.DeletionTimestamp == nil && !utilpod.HasGate(p, kueue.ElasticJobSchedulingGate) {
+			running++
+		}
+	}
+	return running >= granted
 }
 
 func (j *SparkApplication) PodLabelSelector() string {
