@@ -1,3 +1,7 @@
+> **Superseded.** The current design is in [spark-dynamic-allocation.md](spark-dynamic-allocation.md) and
+> [spark-partial-preemption.md](spark-partial-preemption.md). This document is kept because code comments cite its
+> sections (§5.x); it also records the earlier design and its validation.
+
 ---
 title: "Spark-Aware Partial Preemption in Kueue"
 subtitle: "Reclaim executors, not applications"
