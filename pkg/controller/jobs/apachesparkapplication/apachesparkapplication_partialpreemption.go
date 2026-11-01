@@ -43,7 +43,7 @@ import (
 
 // sparkConfPreemptionMinExecutors is the sparkConf key an application sets to choose the
 // executor count partial preemption must never reclaim below (docs/design/
-// spark-aware-preemption.md §5.2). Kueue reads it but never writes it. It is the same key the
+// spark-partial-preemption.md "Declaration"). Kueue reads it but never writes it. It is the same key the
 // Kubeflow SparkApplication integration reads, so an application moves between operators as is.
 const sparkConfPreemptionMinExecutors = "spark.kueue.preemption.minExecutors"
 
@@ -56,7 +56,7 @@ const sparkConfExecutorTerminationGracePeriod = "spark.kubernetes.executor.termi
 
 // decommissionSparkConfDefaults are the Spark properties the webhook defaults to "true" for a
 // reclaimable application, so deleting an executor Pod triggers graceful decommissioning and
-// block migration rather than a plain loss (§5.4). They exist since Spark 3.1.
+// block migration rather than a plain loss (spark-partial-preemption.md "Reclaim"). They exist since Spark 3.1.
 var decommissionSparkConfDefaults = []string{
 	"spark.decommission.enabled",
 	"spark.storage.decommission.enabled",
@@ -69,7 +69,7 @@ var _ jobframework.JobWithPartialPreemption = (*SparkApplication)(nil)
 // partialPreemptionEnabled reports whether j may declare a reclaimable executor PodSet: the gate
 // is on and the application is on the elastic path. Static elastic applications are included,
 // since the elastic path is keyed off the annotation, not Dynamic Allocation
-// (docs/design/spark-aware-preemption.md §5.1).
+// (docs/design/spark-partial-preemption.md "Summary").
 func partialPreemptionEnabled(j *SparkApplication) bool {
 	return features.Enabled(features.SparkPartialPreemption) && isAnElasticJob(j.SparkApplication)
 }
@@ -91,7 +91,7 @@ func (j *SparkApplication) preemptionMinExecutors() (int32, bool, error) {
 	return int32(n), true, nil
 }
 
-// resolvedPartialPreemptionFloor resolves the executor floor before capping (§5.2), as the
+// resolvedPartialPreemptionFloor resolves the executor floor before capping (spark-partial-preemption.md "Declaration"), as the
 // Kubeflow integration does: spark.kueue.preemption.minExecutors if set and valid; else, with
 // Dynamic Allocation, minExecutors (sparkConf first, then instanceConfig) raised to at least 1;
 // else the static executor count. A malformed property is treated as unset; the webhook rejects
@@ -161,7 +161,7 @@ func (j *SparkApplication) PartialPreemptionFloor() (kueue.PodSetReference, int3
 // PartialPreemptionTerminationGracePeriod implements jobframework.JobWithPartialPreemption: the
 // executor grace period the application sets, from the executor Pod template or, failing that,
 // spark.kubernetes.executor.terminationGracePeriodSeconds. It bounds Spark's decommission
-// hand-off (§5.4).
+// hand-off (spark-partial-preemption.md "Reclaim").
 func (j *SparkApplication) PartialPreemptionTerminationGracePeriod() (time.Duration, bool) {
 	if t := templateSpec(j.SparkApplication, roleExecutor); t != nil && t.Spec.TerminationGracePeriodSeconds != nil {
 		return time.Duration(*t.Spec.TerminationGracePeriodSeconds) * time.Second, true
@@ -229,7 +229,7 @@ func podDeletionCost(pod *corev1.Pod) int64 {
 	return n
 }
 
-// compareReclaimOrder orders Pods the way partial preemption deletes them (§5.4): ascending
+// compareReclaimOrder orders Pods the way partial preemption deletes them (spark-partial-preemption.md "Reclaim"): ascending
 // pod-deletion-cost, then unbound before bound, then newest first, then by name.
 func compareReclaimOrder(a, b *corev1.Pod) int {
 	if c := cmp.Compare(podDeletionCost(a), podDeletionCost(b)); c != 0 {

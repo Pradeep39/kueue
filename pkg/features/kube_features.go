@@ -40,7 +40,7 @@ const (
 	ElasticJobsViaWorkloadSlicesWithPartialReplicaScaleUp featuregate.Feature = "ElasticJobsViaWorkloadSlicesWithPartialReplicaScaleUp"
 
 	// owner: @pradeep-reddy
-	// design: docs/design/spark-aware-preemption.md
+	// design: docs/design/spark-partial-preemption.md
 	//
 	// Enables partial preemption of elastic Spark applications: reclaiming executors above a
 	// protected floor instead of evicting the whole application.

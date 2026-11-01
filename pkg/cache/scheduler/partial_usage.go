@@ -27,7 +27,7 @@ import (
 // PartialPodSetUsage returns the quota usage that n Pods of wl's podSet account for: the
 // PodSet's usage at its current count minus its usage once scaled down by n with
 // PodSetResources.ScaledTo, which is what the cache charges after the grant is lowered
-// (docs/design/spark-aware-preemption.md §5.6, SC-1).
+// (docs/design/spark-partial-preemption.md "Reclaim", SC-1).
 //
 // The result is empty for a PodSet that wl does not have, that has a topology request (TAS
 // PodSets are never partially preempted, and ScaledTo does not scale their assignment), or

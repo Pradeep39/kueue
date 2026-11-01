@@ -244,7 +244,7 @@ type ElasticWorkloadNameProvider interface {
 }
 
 // JobWithPartialPreemption is an optional interface for elastic jobs whose elastic PodSet can
-// be partially preempted (docs/design/spark-aware-preemption.md).
+// be partially preempted (docs/design/spark-partial-preemption.md).
 type JobWithPartialPreemption interface {
 	// PartialPreemptionFloor returns the PodSet partial preemption may reduce and the count
 	// it must never go below. ok is false when the job is not partially preemptible.

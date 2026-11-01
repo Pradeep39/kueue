@@ -425,7 +425,7 @@ func ValidateWorkloadUpdate(newObj, oldObj *kueue.Workload) field.ErrorList {
 //
 // With SparkPartialPreemption, an elastic workload is an exception: a partial preemption
 // lowers its granted PodSetAssignment Count/ResourceUsage (and TopologyAssignment) to give
-// back the quota of the Pods it reclaimed (docs/design/spark-aware-preemption.md §5.4).
+// back the quota of the Pods it reclaimed (docs/design/spark-partial-preemption.md "Reclaim").
 // Only decreases are accepted. Non-elastic workloads keep a fully immutable admission.
 func validateAdmissionUpdate(new, old *kueue.Admission, path *field.Path, elastic bool) field.ErrorList {
 	if old == nil || new == nil {

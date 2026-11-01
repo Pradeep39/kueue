@@ -67,7 +67,7 @@ type partialVictim struct {
 
 func (v *partialVictim) taken() int32 { return v.target.Reclaim.Count }
 
-// partialPlanner plans one partial-preemption attempt (docs/design/spark-aware-preemption.md §5.3).
+// partialPlanner plans one partial-preemption attempt (docs/design/spark-partial-preemption.md "Choosing victims").
 type partialPlanner struct {
 	pCtx           *preemptionCtx
 	candidates     classicalCandidateSource
@@ -91,12 +91,12 @@ func (pp *partialPlanner) setTaken(v *partialVictim, n int32) {
 	v.target.Reclaim.Count = n
 }
 
-// partialPreemptionStrategyIterator yields the partial-preemption strategy (§5.3): one per
+// partialPreemptionStrategyIterator yields the partial-preemption strategy (spark-partial-preemption.md "Choosing victims"): one per
 // borrowing option the classical strategy would try, over the same candidates.
 func (p *Preemptor) partialPreemptionStrategyIterator(ctx context.Context, pCtx *preemptionCtx) iter.Seq[PreemptionStrategy] {
 	if !features.Enabled(features.SparkPartialPreemption) || pCtx.preemptorCQ == nil ||
 		!pCtx.preemptorCQ.PartialPreemption.Enabled || p.enableFairSharing {
-		// Fair-sharing preemption keeps whole eviction in v1 (§5.3).
+		// Fair-sharing preemption keeps whole eviction in v1 (spark-partial-preemption.md "Choosing victims").
 		return func(func(PreemptionStrategy) bool) {}
 	}
 	candidates, attemptPossibleOpts := newClassicalCandidates(ctx, p, pCtx)
@@ -210,7 +210,7 @@ func (pp *partialPlanner) collect(ctx context.Context) {
 	}
 }
 
-// iterate takes Pods one at a time, in the order of §5.3, yielding the victim's target after
+// iterate takes Pods one at a time, in the order of spark-partial-preemption.md "Choosing victims", yielding the victim's target after
 // each. getTargets stops it as soon as the preemptor fits.
 func (pp *partialPlanner) iterate(ctx context.Context) iter.Seq[*Target] {
 	return func(yield func(*Target) bool) {
@@ -345,7 +345,7 @@ func (pp *partialPlanner) fillBack(ctx context.Context, targets []*Target) []*Ta
 }
 
 // reclaimablePodSet reports whether partial preemption may reduce wl's podSet: it exists and
-// has no topology request (§3, PNG-3).
+// has no topology request (spark-partial-preemption.md "Declaration").
 func reclaimablePodSet(wl *workload.Info, podSet kueue.PodSetReference) bool {
 	found := false
 	for i := range wl.TotalRequests {

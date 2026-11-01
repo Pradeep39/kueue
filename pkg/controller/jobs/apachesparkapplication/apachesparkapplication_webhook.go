@@ -136,7 +136,7 @@ func isCreateRequest(ctx context.Context) bool {
 
 // applyDecommissionDefaults turns on Spark's graceful decommissioning for a reclaimable
 // application, so deleting an executor Pod migrates its blocks rather than losing them
-// (docs/design/spark-aware-preemption.md §5.4). Values the application sets explicitly,
+// (docs/design/spark-partial-preemption.md "Reclaim"). Values the application sets explicitly,
 // including "false", are left alone. Executors inherit the settings from sparkConf: the operator
 // passes sparkConf to spark-submit and the driver builds each executor from it.
 func applyDecommissionDefaults(job *SparkApplication) {

@@ -573,9 +573,9 @@ var errLowerGrantNotElastic = errors.New("only an elastic workload's grant can b
 
 // LowerGrantedCounts lowers wl's granted PodSetAssignment counts to counts in place, through
 // scaleDownAdmission, WITHOUT changing spec.podSets. It is how a partial preemption gives back
-// the quota of the Pods it reclaimed (docs/design/spark-aware-preemption.md §5.4 step 3); the
+// the quota of the Pods it reclaimed (docs/design/spark-partial-preemption.md "Reclaim" step 3); the
 // job's request stays where it was, so the job reconciler then sees spec > grant and creates a
-// scale-up slice for the difference, which is the grow-back (§5.5).
+// scale-up slice for the difference, which is the grow-back (spark-partial-preemption.md "Grow-back").
 //
 // Only decreases are applied, which is all validateAdmissionUpdate's elastic exception accepts.
 // mutate, when not nil, is applied in the same status write (e.g. to resolve a condition), and

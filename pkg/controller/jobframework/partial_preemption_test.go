@@ -602,7 +602,7 @@ func TestPartialPreemptionSC2AcrossReconciles(t *testing.T) {
 	}
 }
 
-// TestPartialPreemptionGrowBack pins §5.5: once the grant is lowered, the next reconcile sees
+// TestPartialPreemptionGrowBack pins spark-partial-preemption.md "Grow-back": once the grant is lowered, the next reconcile sees
 // request > grant and creates a scale-up slice, carrying the restore count, both for a job whose
 // count follows its live Pods and for one with a fixed count.
 func TestPartialPreemptionGrowBack(t *testing.T) {

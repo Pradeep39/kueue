@@ -45,7 +45,7 @@ const PartialPreemptionFieldOwner = client.FieldOwner(constants.KueueName + "-pa
 
 var errNotPartiallyPreemptable = errors.New("workload can no longer be partially preempted")
 
-// issuePartialPreemption writes a partial preemption onto the victim (§5.4): the target, the
+// issuePartialPreemption writes a partial preemption onto the victim (spark-partial-preemption.md "Reclaim"): the target, the
 // deadline and, unless one is already recorded, the restore count as annotations, then the
 // PartiallyPreempted condition. The victim's job reconciler carries it out. If another
 // partial preemption is found outstanding when patching, that one is left alone.

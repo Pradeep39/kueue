@@ -150,7 +150,7 @@ func (j *SparkApplication) reclaimable() bool {
 
 // applyDecommissionDefaults turns on Spark's graceful decommissioning for a reclaimable
 // application, so deleting an executor Pod migrates its blocks rather than losing them
-// (docs/design/spark-aware-preemption.md §5.4). Values the application sets explicitly,
+// (docs/design/spark-partial-preemption.md "Reclaim"). Values the application sets explicitly,
 // including "false", are left alone.
 func applyDecommissionDefaults(job *SparkApplication) {
 	for _, key := range decommissionSparkConfDefaults {

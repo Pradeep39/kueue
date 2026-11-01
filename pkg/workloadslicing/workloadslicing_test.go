@@ -2395,7 +2395,7 @@ func TestFindLatestActiveWorkload(t *testing.T) {
 }
 
 // TestLowerGrantedCounts pins the grant lowering a partial preemption ends with
-// (spark-aware-preemption §5.4 step 3): the grant and its resource usage go down to the target,
+// (spark-partial-preemption.md "Reclaim" step 3): the grant and its resource usage go down to the target,
 // spec.podSets does not, and only decreases are applied.
 func TestLowerGrantedCounts(t *testing.T) {
 	const executor kueue.PodSetReference = "executor"

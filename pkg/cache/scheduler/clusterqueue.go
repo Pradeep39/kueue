@@ -242,7 +242,7 @@ func (c *clusterQueue) updateClusterQueue(
 }
 
 // PartialPreemptionSettings are a ClusterQueue's partial-preemption settings
-// (docs/design/spark-aware-preemption.md §6).
+// (docs/design/spark-partial-preemption.md "ClusterQueue settings").
 type PartialPreemptionSettings struct {
 	// Enabled is true when the SparkPartialPreemption feature gate is on.
 	Enabled bool

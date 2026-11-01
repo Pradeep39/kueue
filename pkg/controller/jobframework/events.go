@@ -32,7 +32,7 @@ const (
 
 	ReasonWorkloadPriorityClassNotFound = "WorkloadPriorityClassNotFound"
 
-	// Partial preemption (docs/design/spark-aware-preemption.md §5.4).
+	// Partial preemption (docs/design/spark-partial-preemption.md "Reclaim").
 	ReasonPartialPreemptionComplete  = "PartialPreemptionComplete"
 	ReasonPartialPreemptionTimedOut  = "PartialPreemptionTimedOut"
 	ReasonPartialPreemptionAbandoned = "PartialPreemptionAbandoned"

@@ -40,6 +40,9 @@ Each reclaimable application's Workload carries, maintained by the job reconcile
   Below that threshold the operator reports the application unhealthy.
 - **Both:** the floor is capped at the executor count currently granted.
 
+**Topology.** An executor PodSet with a topology request (Topology Aware Scheduling) is never
+reduced. Such an application can only be preempted whole.
+
 **Webhook defaults.** For a reclaimable application, the webhook defaults these to `true`:
 
 - `spark.decommission.enabled`
@@ -135,6 +138,17 @@ A victim that is evicted, finishes or loses its admission mid-reclaim has the re
   `kueue.x-k8s.io/partial-preemption-termination-grace-period`. Otherwise 30s.
 - **Timeout:** the ClusterQueue's `kueue.x-k8s.io/partial-preemption-timeout`, or else the grace
   period plus 30s.
+
+## ClusterQueue settings
+
+Partial preemption applies to every ClusterQueue while the gate is on. These ClusterQueue
+annotations tune it:
+
+| Annotation | Default | Meaning |
+|---|---|---|
+| `kueue.x-k8s.io/partial-preemption-fallback` | `Evict` | What happens when partial reclaim can't fit the preemptor: `Evict` falls back to whole-workload preemption, `Wait` leaves the preemptor pending. |
+| `kueue.x-k8s.io/partial-preemption-termination-grace-period` | 30s | Grace period for reclaimed Pods when their job sets none. |
+| `kueue.x-k8s.io/partial-preemption-timeout` | grace period + 30s | How long a reclaim waits for its Pods to stop before lowering the grant anyway. |
 
 ## Grow-back
 

@@ -200,7 +200,7 @@ func (p *Preemptor) getPreemptionStrategyIterator(ctx context.Context, preemptio
 }
 
 // Mode selects which kinds of preemption targets a set of strategies may produce
-// (docs/design/spark-aware-preemption.md §5.3).
+// (docs/design/spark-partial-preemption.md "Choosing victims").
 type Mode int
 
 const (
@@ -210,11 +210,11 @@ const (
 	// declare partial preemption, above their floors. It never evicts a whole workload.
 	PartialOnly
 	// NoPreemption produces no targets at all: the workload may only be admitted into free
-	// quota. Used for grow-back slices (§5.5).
+	// quota. Used for grow-back slices (spark-partial-preemption.md "Grow-back").
 	NoPreemption
 	// WholeOnlyUndeclared is WholeOnly restricted to victims that do not declare partial
 	// preemption. A scale-up slice uses it as its fallback: a workload that opted into partial
-	// preemption is never evicted whole so that another can grow (§5.3), while workloads that
+	// preemption is never evicted whole so that another can grow (spark-partial-preemption.md "Choosing victims"), while workloads that
 	// did not opt in are preempted exactly as before.
 	WholeOnlyUndeclared
 )

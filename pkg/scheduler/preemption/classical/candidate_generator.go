@@ -42,7 +42,7 @@ type CandidateIterator interface {
 	Reset()
 	Next(borrow bool) (*workload.Info, string)
 	// Candidates and IsValid let partial preemption take from the same candidates in its
-	// own order (docs/design/spark-aware-preemption.md §5.3).
+	// own order (docs/design/spark-partial-preemption.md "Choosing victims").
 	Candidates() []Candidate
 	IsValid(candidate Candidate, borrow bool) bool
 }
@@ -201,7 +201,7 @@ func (c *candidateIterator) Reset() {
 
 // Candidate is one preemption candidate of the classical algorithm with the reason it may
 // be preempted for. It is used by partial preemption, which takes from the same candidates
-// in its own order (docs/design/spark-aware-preemption.md §5.3).
+// in its own order (docs/design/spark-partial-preemption.md "Choosing victims").
 type Candidate struct {
 	WorkloadInfo *workload.Info
 	Reason       string

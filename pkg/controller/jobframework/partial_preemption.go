@@ -42,7 +42,7 @@ import (
 )
 
 // partialPreemptionPollInterval bounds how long an outstanding reclaim waits between checks
-// that its Pods have stopped (docs/design/spark-aware-preemption.md §5.4 step 2).
+// that its Pods have stopped (docs/design/spark-partial-preemption.md "Reclaim" step 2).
 const partialPreemptionPollInterval = 5 * time.Second
 
 // partialPreemptionFieldOwner is the field manager of the PartiallyPreempted condition. The
@@ -84,7 +84,7 @@ func int32String(n int32) *string {
 	return &s
 }
 
-// applyPartialPreemptionDeclaration writes the job's partial-preemption declaration (§5.2)
+// applyPartialPreemptionDeclaration writes the job's partial-preemption declaration (spark-partial-preemption.md "Declaration")
 // onto wl in memory, and reports whether anything changed. A job that declares no floor has
 // the declaration removed. A marked-Pods count the job has not observed leaves the last one
 // in place rather than dropping it. marked is the count PartialPreemptionMarkedPods observed,
@@ -124,7 +124,7 @@ func observedMarkedPods(ctx context.Context, c client.Client, pp JobWithPartialP
 	return &marked, nil
 }
 
-// applyRestoreCountHygiene maintains wl's restore count (§5.5) in memory: it is dropped from an
+// applyRestoreCountHygiene maintains wl's restore count (spark-partial-preemption.md "Grow-back") in memory: it is dropped from an
 // admitted Workload whose grant has grown back to it, and carried onto a pending replacement of
 // predecessor that lacks it. It is left alone while a partial preemption is outstanding, since
 // the grant has not been lowered yet.
@@ -152,7 +152,7 @@ func applyRestoreCountHygiene(wl, predecessor *kueue.Workload) bool {
 }
 
 // carryRestoreCount copies predecessor's restore count onto its replacement slice wl, so the
-// grow-back slice is known to be grow-back (§5.5).
+// grow-back slice is known to be grow-back (spark-partial-preemption.md "Grow-back").
 func carryRestoreCount(wl, predecessor *kueue.Workload) bool {
 	if !features.Enabled(features.SparkPartialPreemption) {
 		return false
@@ -203,7 +203,7 @@ func (r *JobReconciler) syncPartialPreemptionAnnotations(ctx context.Context, jo
 }
 
 // reconcilePartialPreemption runs the victim side of an outstanding partial preemption
-// (docs/design/spark-aware-preemption.md §5.4) for each of the job's Workloads that carries a
+// (docs/design/spark-partial-preemption.md "Reclaim") for each of the job's Workloads that carries a
 // target. It runs before any slice scaling, and stop reports that the caller must return
 // result and err without going on to EnsureWorkloadSlices: while the reclaimed Pods are still
 // stopping, a scale-down there would lower the grant early, handing their quota to the

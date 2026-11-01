@@ -2114,7 +2114,7 @@ func prepareWorkloadSlice(ctx context.Context, clnt client.Client, job GenericJo
 		}
 		metav1.SetMetaDataAnnotation(&wl.ObjectMeta, kueue.WorkloadSliceNameAnnotation, originName)
 		// A replacement of a partially preempted slice is grow-back up to the count the
-		// predecessor had before it was reclaimed (spark-aware-preemption §5.5).
+		// predecessor had before it was reclaimed (spark-partial-preemption.md "Grow-back").
 		carryRestoreCount(wl, &oldSlice)
 		return nil
 	default:

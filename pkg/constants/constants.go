@@ -100,7 +100,7 @@ const (
 	ElasticJobScaleUpStrategyAtomic  = "atomic"
 	ElasticJobScaleUpStrategyPartial = "partial"
 
-	// Partial preemption (docs/design/spark-aware-preemption.md). These live here, rather than
+	// Partial preemption (docs/design/spark-partial-preemption.md). These live here, rather than
 	// in the job framework, because the scheduler cache and the preemption planner read them.
 
 	// PartialPreemptionPodSetAnnotation, on a Workload, names the PodSet that partial

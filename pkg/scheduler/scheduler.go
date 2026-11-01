@@ -965,7 +965,7 @@ func (s *Scheduler) updateAssignmentIfNeeded(
 func fits(snapshot *schdcache.Snapshot, cq *schdcache.ClusterQueueSnapshot, usage *workload.Usage, preemptedWorkloads preemption.PreemptedTargets,
 	newTargets []*preemption.Target) schdcache.FitsCheck {
 	merged := preemptedWorkloads.MergeWithTargets(newTargets)
-	// A partial target frees only its reclaimed Pods, not the victim's whole usage (§5.6, SC-1).
+	// A partial target frees only its reclaimed Pods, not the victim's whole usage (spark-partial-preemption.md "Reclaim", SC-1).
 	revertUsage := merged.SimulateUsageRemoval(snapshot)
 	defer revertUsage()
 	return cq.Fits(*usage)
@@ -1682,7 +1682,7 @@ type planAttempt struct {
 }
 
 // attemptLadder is the ordered list of plan attempts for a workload, stopping at
-// the first that fits (docs/design/spark-aware-preemption.md §5.3, §5.5).
+// the first that fits (docs/design/spark-partial-preemption.md "Choosing victims", spark-partial-preemption.md "Grow-back").
 type attemptLadder struct {
 	attempts []planAttempt
 	// growBack, waitFallback and reclaimInFlight only shape the message when nothing fits.
@@ -1829,7 +1829,7 @@ func allPartialTargets(targets []*preemption.Target) bool {
 }
 
 // pendingPartialPreemptionPredecessor returns the slice wl replaces when a
-// partial preemption is still outstanding on it (§5.4 "Races"). Admitting wl
+// partial preemption is still outstanding on it (spark-partial-preemption.md "Reclaim" "Races"). Admitting wl
 // then would land the replacement mid-reclaim, so it waits for the reclaim to
 // clear; its count is re-derived from the lowered grant.
 func pendingPartialPreemptionPredecessor(wl *workload.Info, snap *schdcache.Snapshot) *workload.Info {

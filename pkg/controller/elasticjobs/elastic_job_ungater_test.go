@@ -143,7 +143,7 @@ func TestReconcile(t *testing.T) {
 			},
 		},
 		"a pod being deleted still counts as ungated": {
-			// spark-aware-preemption §5.4 step 2: while a partial preemption waits for its
+			// spark-partial-preemption.md "Reclaim" step 2: while a partial preemption waits for its
 			// reclaimed Pods to stop, the grant is still the old one. Those Pods are being
 			// deleted but still hold node resources, so they must keep counting against the
 			// grant; otherwise room = granted - ungated rises mid-reclaim and a gated

@@ -70,7 +70,7 @@ type PreemptedTarget struct {
 
 // PreemptedTargets is PreemptedWorkloads made aware of partial preemption. Where
 // PreemptedWorkloads would credit a partial victim's whole usage, it credits only the Pods
-// the partial preemption takes (docs/design/spark-aware-preemption.md §5.6, SC-1).
+// the partial preemption takes (docs/design/spark-partial-preemption.md "Reclaim", SC-1).
 type PreemptedTargets map[workload.Reference]PreemptedTarget
 
 func (p PreemptedTargets) HasAny(newTargets []*Target) bool {
