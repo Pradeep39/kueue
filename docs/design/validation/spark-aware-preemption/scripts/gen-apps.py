@@ -1,0 +1,131 @@
+#!/usr/bin/env python3
+"""Generate SparkApplication manifests for the edge-case matrix.
+
+  gen-apps.py NAME:PRIORITY[,NAME:PRIORITY...] [--partial] [--cap N] [--idle 5s] [--backlog 2s]
+
+PRIORITY is a WorkloadPriorityClass name (low/default/high) or "-" for none. Same SparkALS
+workload as apps.yaml, so runs stay comparable.
+
+Executor counts and Dynamic Allocation go in the structured spec.executor.instances and
+spec.dynamicAllocation fields, which is where Kueue's elastic SparkApplication integration
+(kubernetes-sigs/kueue#17127) reads them. Kueue does not read spark.executor.instances or
+spark.dynamicAllocation.{enabled,minExecutors,maxExecutors} from sparkConf.
+"""
+import argparse
+import json
+import os
+
+TEMPLATE = '''apiVersion: sparkoperator.k8s.io/v1beta2
+kind: SparkApplication
+metadata:
+  name: {name}
+  namespace: batch-ns-uno
+  annotations:
+    kueue.x-k8s.io/elastic-job: "true"{partial}
+  labels:
+    kueue.x-k8s.io/queue-name: {queue}{priority}
+spec:
+  type: Scala
+  mode: cluster
+  image: docker.io/library/spark:{spark_version}
+  imagePullPolicy: IfNotPresent
+  mainClass: {main_class}
+  mainApplicationFile: local:///opt/spark/examples/jars/{examples_jar}
+  arguments: {als_args}
+  sparkVersion: {spark_version}
+  dynamicAllocation:
+    enabled: true
+    minExecutors: 3
+    maxExecutors: 30
+    shuffleTrackingEnabled: true
+  sparkConf:
+    "spark.kubernetes.executor.podNamePrefix": "{name}"
+    "spark.dynamicAllocation.schedulerBacklogTimeout": "{backlog}"
+    "spark.dynamicAllocation.executorIdleTimeout": "{idle}"{cap}
+  driver:
+    cores: 1
+    memory: 512m
+    serviceAccount: spark-operator-spark
+    securityContext: &sc
+      capabilities:
+        drop: [ALL]
+      runAsGroup: 185
+      runAsUser: 185
+      runAsNonRoot: true
+      allowPrivilegeEscalation: false
+      seccompProfile:
+        type: RuntimeDefault
+  executor:
+    cores: 1
+    memory: 512m
+    securityContext: *sc
+'''
+
+# The spec.dynamicAllocation block above, dropped for a static application.
+DA_BLOCK = """  dynamicAllocation:
+    enabled: true
+    minExecutors: 3
+    maxExecutors: 30
+    shuffleTrackingEnabled: true
+"""
+
+
+def make_static(out, instances):
+    """Drops Dynamic Allocation and declares a fixed executor count in spec.executor.instances."""
+    out = out.replace(DA_BLOCK, "")
+    out = "\n".join(l for l in out.split("\n") if "spark.dynamicAllocation" not in l)
+    return out.replace("    memory: 512m\n    securityContext: *sc\n",
+                       f"    memory: 512m\n    instances: {instances}\n    securityContext: *sc\n")
+
+ap = argparse.ArgumentParser()
+ap.add_argument("apps")
+ap.add_argument("--partial", action="store_true")
+ap.add_argument("--cap", type=int)
+ap.add_argument("--idle", default="5s")
+ap.add_argument("--als-args", default="1500 1500 12 15 200", help="the example's arguments (SparkALS: M U F iterations slices)")
+ap.add_argument("--main", default="org.apache.spark.examples.SparkALS", help="example main class, e.g. org.apache.spark.examples.GroupByTest")
+ap.add_argument("--backlog", default="2s")
+ap.add_argument("--queue", default="batch-queue-uno", help="LocalQueue name")
+ap.add_argument("--static", type=int, metavar="N", help="no Dynamic Allocation: spark.executor.instances N, not elastic")
+ap.add_argument("--static-elastic", type=int, metavar="N", help="no Dynamic Allocation: spark.executor.instances N, but keep the elastic opt-in")
+ap.add_argument("--floor", type=int, metavar="N", help="spark.kueue.preemption.minExecutors N (partial-preemption floor)")
+ap.add_argument("--no-decom", action="store_true", help="explicitly disable Spark decommissioning")
+ap.add_argument("--min-executors", type=int, default=3, help="spec.dynamicAllocation.minExecutors (default 3)")
+ap.add_argument("--max-executors", type=int, default=30, help="spec.dynamicAllocation.maxExecutors (default 30)")
+a = ap.parse_args()
+# SPARK_VERSION picks the official spark image tag. The 4.x images ship spark-examples.jar; the 3.x
+# images name it after the Scala build (spark-examples_2.12-<version>.jar).
+spark_version = os.environ.get("SPARK_VERSION", "4.0.1")
+examples_jar = "spark-examples.jar" if spark_version.startswith("4.") else f"spark-examples_2.12-{spark_version}.jar"
+
+docs = []
+for spec in a.apps.split(","):
+    name, prio = spec.split(":")
+    docs.append(TEMPLATE.format(
+        name=name, queue=a.queue, spark_version=spark_version, examples_jar=examples_jar, idle=a.idle, backlog=a.backlog, als_args=json.dumps(a.als_args.split()), main_class=a.main,
+        partial='\n    kueue.x-k8s.io/elastic-job-scale-up-strategy: "partial"' if a.partial else "",
+        priority=f"\n    kueue.x-k8s.io/priority-class: {prio}" if prio != "-" else "",
+        cap=f'\n    "spark.kubernetes.allocation.maxPendingPods": "{a.cap}"' if a.cap else "",
+    ))
+out = "---\n".join(docs)
+extra = []
+if a.floor is not None:
+    extra.append(f'"spark.kueue.preemption.minExecutors": "{a.floor}"')
+if a.no_decom:
+    extra.append('"spark.decommission.enabled": "false"')
+if extra:
+    out = out.replace('"spark.kubernetes.executor.podNamePrefix"', "\n    ".join(extra) + '\n    "spark.kubernetes.executor.podNamePrefix"')
+if a.static_elastic:
+    # A static application on the elastic path: drop Dynamic Allocation only, keep the opt-in.
+    out = make_static(out, a.static_elastic)
+    out = "\n".join(l for l in out.split("\n") if "elastic-job-scale-up-strategy" not in l)
+if a.static:
+    # A static application: drop Dynamic Allocation and the elastic opt-in, declare a fixed count.
+    out = make_static(out, a.static)
+    out = "\n".join(l for l in out.split("\n") if "kueue.x-k8s.io/elastic-job" not in l)
+    out = out.replace("  annotations:\n  labels:", "  labels:")
+if a.min_executors != 3 or a.max_executors != 30:
+    # Only the Dynamic Allocation block carries these lines; a static application dropped it above.
+    out = out.replace("    minExecutors: 3\n", f"    minExecutors: {a.min_executors}\n")
+    out = out.replace("    maxExecutors: 30\n", f"    maxExecutors: {a.max_executors}\n")
+print(out, end="")

@@ -37,6 +37,16 @@ type Target struct {
 	// ConfigurablePreemptionReasonData stores data which resulted in eviction.
 	// Specified only when eviction is due to configurable preemption.
 	ConfigurablePreemptionReasonData *ConfigurablePreemptionReasonData
+
+	// Reclaim, when non-nil, makes this a partial preemption: the target's Reclaim.PodSet is
+	// reduced by Reclaim.Count instead of the whole workload being evicted.
+	Reclaim *PartialReclaim
+}
+
+// PartialReclaim is the part of a workload a partial preemption takes.
+type PartialReclaim struct {
+	PodSet kueue.PodSetReference
+	Count  int32
 }
 
 type ConfigurablePreemptionReasonData struct {

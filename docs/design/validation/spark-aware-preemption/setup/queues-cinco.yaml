@@ -1,0 +1,45 @@
+# Demo part 6 (default preemption vs. a floor): a standalone 40-slot ClusterQueue (one slot = 1 CPU +
+# 896Mi), the exact size of part 6's ten victim apps (4 2 3 2 3 2 6 2 3 3 executors, plus a driver
+# each). Classic preemption is on (withinClusterQueue: LowerPriority), the default the part demonstrates.
+# demo-short.sh preflight (ensure-demo-env.sh) creates it if it is missing.
+---
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: ClusterQueue
+metadata:
+  name: cluster-queue-cinco
+spec:
+  namespaceSelector: {}
+  preemption:
+    withinClusterQueue: LowerPriority
+    reclaimWithinCohort: Never
+    borrowWithinCohort:
+      policy: Never
+  queueingStrategy: BestEffortFIFO
+  resourceGroups:
+  - coveredResources: [cpu, memory]
+    flavors:
+    - name: default-flavor
+      resources:
+      - name: cpu
+        nominalQuota: "40"
+      - name: memory
+        nominalQuota: 35840Mi
+  stopPolicy: None
+---
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: LocalQueue
+metadata:
+  name: batch-queue-cinco
+  namespace: batch-ns-uno
+spec:
+  clusterQueue: cluster-queue-cinco
+  stopPolicy: None
+---
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: LocalQueue
+metadata:
+  name: batch-queue-cinco
+  namespace: batch-ns-dos
+spec:
+  clusterQueue: cluster-queue-cinco
+  stopPolicy: None

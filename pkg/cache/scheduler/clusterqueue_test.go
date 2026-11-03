@@ -18,12 +18,14 @@ package scheduler
 
 import (
 	"testing"
+	"time"
 
 	"github.com/google/go-cmp/cmp"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	kueue "sigs.k8s.io/kueue/apis/kueue/v1beta2"
+	"sigs.k8s.io/kueue/pkg/constants"
 	tasindexer "sigs.k8s.io/kueue/pkg/controller/tas/indexer"
 	"sigs.k8s.io/kueue/pkg/features"
 	"sigs.k8s.io/kueue/pkg/metrics"
@@ -843,4 +845,43 @@ func TestClusterQueueLabels(t *testing.T) {
 			t.Errorf("Expected snapshot labels to be nil when feature gate is disabled, got %v", snapDisabled.ClusterQueue(cqName).Labels)
 		}
 	})
+}
+
+func TestParsePartialPreemptionSettings(t *testing.T) {
+	cases := map[string]struct {
+		annotations map[string]string
+		want        PartialPreemptionSettings
+	}{
+		"nothing set: timeout derived, no queue grace period": {
+			want: PartialPreemptionSettings{Enabled: true},
+		},
+		"all set": {
+			annotations: map[string]string{
+				constants.PartialPreemptionFallbackAnnotation:               constants.PartialPreemptionFallbackWait,
+				constants.PartialPreemptionTimeoutAnnotation:                "90s",
+				constants.PartialPreemptionTerminationGracePeriodAnnotation: "2m",
+			},
+			want: PartialPreemptionSettings{Enabled: true, FallbackWait: true, Timeout: 90 * time.Second, TerminationGracePeriod: new(2 * time.Minute)},
+		},
+		"zero grace period is kept": {
+			annotations: map[string]string{constants.PartialPreemptionTerminationGracePeriodAnnotation: "0s"},
+			want:        PartialPreemptionSettings{Enabled: true, TerminationGracePeriod: new(time.Duration(0))},
+		},
+		"malformed or negative values are ignored": {
+			annotations: map[string]string{
+				constants.PartialPreemptionTimeoutAnnotation:                "-5s",
+				constants.PartialPreemptionTerminationGracePeriodAnnotation: "30",
+			},
+			want: PartialPreemptionSettings{Enabled: true},
+		},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			cq := utiltestingapi.MakeClusterQueue("cq").Obj()
+			cq.Annotations = tc.annotations
+			if diff := cmp.Diff(tc.want, parsePartialPreemptionSettings(cq)); diff != "" {
+				t.Errorf("parsePartialPreemptionSettings() (-want,+got):\n%s", diff)
+			}
+		})
+	}
 }

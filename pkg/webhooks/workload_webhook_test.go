@@ -1680,6 +1680,71 @@ func TestValidateWorkloadUpdate(t *testing.T) {
 					Obj()).
 				Obj(),
 		},
+		"lowered grant: an elastic workload's grant may decrease with SparkPartialPreemption": {
+			featureGates: map[featuregate.Feature]bool{features.SparkPartialPreemption: true, features.ElasticJobsViaWorkloadSlices: true},
+			before:       grantedWorkload(now, true, 8),
+			after:        grantedWorkload(now, true, 5),
+		},
+		"lowered grant: an elastic workload's grant may not increase": {
+			featureGates: map[featuregate.Feature]bool{features.SparkPartialPreemption: true, features.ElasticJobsViaWorkloadSlices: true},
+			before:       grantedWorkload(now, true, 5),
+			after:        grantedWorkload(now, true, 8),
+			wantErr: field.ErrorList{
+				&field.Error{Type: field.ErrorTypeInvalid, Field: "status.admission"},
+			}.ToAggregate(),
+		},
+		"lowered grant: a non-elastic workload's admission stays immutable": {
+			featureGates: map[featuregate.Feature]bool{features.SparkPartialPreemption: true, features.ElasticJobsViaWorkloadSlices: true},
+			before:       grantedWorkload(now, false, 8),
+			after:        grantedWorkload(now, false, 5),
+			wantErr: field.ErrorList{
+				&field.Error{Type: field.ErrorTypeInvalid, Field: "status.admission"},
+			}.ToAggregate(),
+		},
+		"lowered grant: SparkPartialPreemption off keeps an elastic admission immutable": {
+			featureGates: map[featuregate.Feature]bool{features.SparkPartialPreemption: false, features.ElasticJobsViaWorkloadSlices: true},
+			before:       grantedWorkload(now, true, 8),
+			after:        grantedWorkload(now, true, 5),
+			wantErr: field.ErrorList{
+				&field.Error{Type: field.ErrorTypeInvalid, Field: "status.admission"},
+			}.ToAggregate(),
+		},
+		"reclaimTargetCount: gate on, set on an admitted workload": {
+			featureGates: map[featuregate.Feature]bool{features.SparkPartialPreemption: true, features.ElasticJobsViaWorkloadSlices: true},
+			before:       reclaimTargetWorkload(now, true, nil),
+			after:        reclaimTargetWorkload(now, true, new(int32(5))),
+		},
+		"reclaimTargetCount: gate on, changed": {
+			featureGates: map[featuregate.Feature]bool{features.SparkPartialPreemption: true, features.ElasticJobsViaWorkloadSlices: true},
+			before:       reclaimTargetWorkload(now, true, new(int32(5))),
+			after:        reclaimTargetWorkload(now, true, new(int32(3))),
+		},
+		"reclaimTargetCount: gate on, cleared": {
+			featureGates: map[featuregate.Feature]bool{features.SparkPartialPreemption: true, features.ElasticJobsViaWorkloadSlices: true},
+			before:       reclaimTargetWorkload(now, true, new(int32(5))),
+			after:        reclaimTargetWorkload(now, true, nil),
+		},
+		"reclaimTargetCount: gate on, a non-elastic workload may carry it too": {
+			featureGates: map[featuregate.Feature]bool{features.SparkPartialPreemption: true},
+			before:       reclaimTargetWorkload(now, false, nil),
+			after:        reclaimTargetWorkload(now, false, new(int32(5))),
+		},
+		"reclaimTargetCount: above count is rejected": {
+			featureGates: map[featuregate.Feature]bool{features.SparkPartialPreemption: true, features.ElasticJobsViaWorkloadSlices: true},
+			before:       reclaimTargetWorkload(now, true, nil),
+			after:        reclaimTargetWorkload(now, true, new(int32(9))),
+			wantErr: field.ErrorList{
+				&field.Error{Type: field.ErrorTypeInvalid, Field: "status.admission.podSetAssignments[0].reclaimTargetCount"},
+			}.ToAggregate(),
+		},
+		"reclaimTargetCount: gate off, the admission stays immutable": {
+			featureGates: map[featuregate.Feature]bool{features.SparkPartialPreemption: false, features.ElasticJobsViaWorkloadSlices: true},
+			before:       reclaimTargetWorkload(now, true, nil),
+			after:        reclaimTargetWorkload(now, true, new(int32(5))),
+			wantErr: field.ErrorList{
+				&field.Error{Type: field.ErrorTypeInvalid, Field: "status.admission"},
+			}.ToAggregate(),
+		},
 	}
 	for name, tc := range testCases {
 		t.Run(name, func(t *testing.T) {
@@ -1766,4 +1831,40 @@ func TestWorkloadWebhookDefault(t *testing.T) {
 			}
 		})
 	}
+}
+
+// grantedWorkload is an admitted workload whose PodSet ps1 asks for 8 Pods of 1 CPU and is
+// granted count of them, elastic or not.
+func grantedWorkload(now time.Time, elastic bool, count int32) *kueue.Workload {
+	w := utiltestingapi.MakeWorkload(testWorkloadName, testWorkloadNamespace)
+	if elastic {
+		w = w.Annotation(workloadslicing.EnabledAnnotationKey, workloadslicing.EnabledAnnotationValue)
+	}
+	return w.PodSets(*utiltestingapi.MakePodSet("ps1", 8).Request(corev1.ResourceCPU, "1").Obj()).
+		ReserveQuotaAt(
+			utiltestingapi.MakeAdmission("cluster-queue").
+				PodSets(kueue.PodSetAssignment{
+					Name:          "ps1",
+					Count:         new(count),
+					ResourceUsage: corev1.ResourceList{corev1.ResourceCPU: *resource.NewQuantity(int64(count), resource.DecimalSI)},
+				}).
+				Obj(), now,
+		).
+		Obj()
+}
+
+// reclaimTargetWorkload is an admitted workload whose PodSet ps1 is granted 8 Pods, with
+// reclaimTargetCount set to target (KEP-975), elastic or not.
+func reclaimTargetWorkload(now time.Time, elastic bool, target *int32) *kueue.Workload {
+	w := utiltestingapi.MakeWorkload(testWorkloadName, testWorkloadNamespace)
+	if elastic {
+		w = w.Annotation(workloadslicing.EnabledAnnotationKey, workloadslicing.EnabledAnnotationValue)
+	}
+	return w.PodSets(*utiltestingapi.MakePodSet("ps1", 8).Obj()).
+		ReserveQuotaAt(
+			utiltestingapi.MakeAdmission("cluster-queue").
+				PodSets(kueue.PodSetAssignment{Name: "ps1", Count: new(int32(8)), ReclaimTargetCount: target}).
+				Obj(), now,
+		).
+		Obj()
 }

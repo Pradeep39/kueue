@@ -1,0 +1,152 @@
+# The demo's baseline queues, for a clean deploy: the default-flavor ResourceFlavor, the low/default/high
+# WorkloadPriorityClasses, cohort-uno with cluster-queue-uno and cluster-queue-dos, cluster-queue-tres,
+# and their LocalQueues. Exported from the live cluster on 2026-10-14. Namespaces batch-ns-uno and
+# batch-ns-dos must exist. demo-short.sh preflight (ensure-demo-env.sh) creates whatever is missing.
+#
+# cluster-queue-uno / -dos: share cohort-uno (12 slots in the cohort, one slot = 1 CPU + 896Mi).
+#   Quotas here are the validation suites' 12-slot setting; the suites patch them per scenario.
+# cluster-queue-tres: standalone 36-slot queue for the many-victims scenarios (P10, P11, demo parts 1,
+#   3 and 4). P12 sets its preemption policy to Never and attaches a PreemptionConfig at run time, then
+#   restores this.
+---
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: ResourceFlavor
+metadata:
+  name: default-flavor
+---
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: WorkloadPriorityClass
+metadata:
+  name: low
+value: 500
+description: Low priority
+---
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: WorkloadPriorityClass
+metadata:
+  name: default
+value: 1000
+description: Default priority
+---
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: WorkloadPriorityClass
+metadata:
+  name: high
+value: 1500
+description: High priority
+---
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: Cohort
+metadata:
+  name: cohort-uno
+---
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: ClusterQueue
+metadata:
+  name: cluster-queue-uno
+spec:
+  cohortName: cohort-uno
+  flavorFungibility:
+    whenCanBorrow: MayStopSearch
+    whenCanPreempt: TryNextFlavor
+  namespaceSelector: {}
+  preemption:
+    borrowWithinCohort:
+      policy: Never
+    reclaimWithinCohort: Any
+    withinClusterQueue: LowerPriority
+  queueingStrategy: BestEffortFIFO
+  resourceGroups:
+  - coveredResources: [cpu, memory]
+    flavors:
+    - name: default-flavor
+      resources:
+      - name: cpu
+        nominalQuota: "6"
+        borrowingLimit: "6"
+      - name: memory
+        nominalQuota: 5376Mi
+        borrowingLimit: 5376Mi
+  stopPolicy: None
+---
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: LocalQueue
+metadata:
+  name: batch-queue-uno
+  namespace: batch-ns-uno
+spec:
+  clusterQueue: cluster-queue-uno
+  stopPolicy: None
+---
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: ClusterQueue
+metadata:
+  name: cluster-queue-dos
+spec:
+  cohortName: cohort-uno
+  flavorFungibility:
+    whenCanBorrow: MayStopSearch
+    whenCanPreempt: TryNextFlavor
+  namespaceSelector: {}
+  preemption:
+    borrowWithinCohort:
+      policy: Never
+    reclaimWithinCohort: Any
+    withinClusterQueue: LowerPriority
+  queueingStrategy: BestEffortFIFO
+  resourceGroups:
+  - coveredResources: [cpu, memory]
+    flavors:
+    - name: default-flavor
+      resources:
+      - name: cpu
+        nominalQuota: "6"
+        borrowingLimit: "6"
+      - name: memory
+        nominalQuota: 5376Mi
+        borrowingLimit: 5376Mi
+  stopPolicy: None
+---
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: LocalQueue
+metadata:
+  name: batch-queue-dos
+  namespace: batch-ns-dos
+spec:
+  clusterQueue: cluster-queue-dos
+  stopPolicy: None
+---
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: ClusterQueue
+metadata:
+  name: cluster-queue-tres
+spec:
+  flavorFungibility:
+    whenCanBorrow: MayStopSearch
+    whenCanPreempt: TryNextFlavor
+  namespaceSelector: {}
+  preemption:
+    borrowWithinCohort:
+      policy: Never
+    reclaimWithinCohort: Never
+    withinClusterQueue: LowerPriority
+  queueingStrategy: BestEffortFIFO
+  resourceGroups:
+  - coveredResources: [cpu, memory]
+    flavors:
+    - name: default-flavor
+      resources:
+      - name: cpu
+        nominalQuota: "36"
+      - name: memory
+        nominalQuota: 32256Mi
+  stopPolicy: None
+---
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: LocalQueue
+metadata:
+  name: batch-queue-tres
+  namespace: batch-ns-uno
+spec:
+  clusterQueue: cluster-queue-tres
+  stopPolicy: None

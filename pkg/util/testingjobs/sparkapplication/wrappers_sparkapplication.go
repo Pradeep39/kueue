@@ -227,6 +227,51 @@ func (w *SparkApplicationWrapper) ExecutorTemplate(t *corev1.PodTemplateSpec) *S
 	return w
 }
 
+// ExecutorSchedulingGates sets scheduling gates on the executor pod template.
+func (w *SparkApplicationWrapper) ExecutorSchedulingGates(gates ...corev1.PodSchedulingGate) *SparkApplicationWrapper {
+	if w.Spec.Executor.Template == nil {
+		w.Spec.Executor.Template = &corev1.PodTemplateSpec{}
+	}
+	w.Spec.Executor.Template.Spec.SchedulingGates = gates
+	return w
+}
+
+// AppState sets the application state in the status.
+func (w *SparkApplicationWrapper) AppState(state sparkappv1beta2.ApplicationStateType) *SparkApplicationWrapper {
+	w.Status.AppState.State = state
+	return w
+}
+
+// ExecutorState sets the state of an executor in the status.
+func (w *SparkApplicationWrapper) ExecutorState(name string, state sparkappv1beta2.ExecutorState) *SparkApplicationWrapper {
+	if w.Status.ExecutorState == nil {
+		w.Status.ExecutorState = make(map[string]sparkappv1beta2.ExecutorState)
+	}
+	w.Status.ExecutorState[name] = state
+	return w
+}
+
+// SparkConf sets a spark-submit property in spec.sparkConf.
+func (w *SparkApplicationWrapper) SparkConf(key, value string) *SparkApplicationWrapper {
+	if w.Spec.SparkConf == nil {
+		w.Spec.SparkConf = make(map[string]string)
+	}
+	w.Spec.SparkConf[key] = value
+	return w
+}
+
+// ActiveExecutors sets status.activeExecutors.
+func (w *SparkApplicationWrapper) ActiveExecutors(n int32) *SparkApplicationWrapper {
+	w.Status.ActiveExecutors = &n
+	return w
+}
+
+// MaxExecutorID sets status.maxExecutorId.
+func (w *SparkApplicationWrapper) MaxExecutorID(id int64) *SparkApplicationWrapper {
+	w.Status.MaxExecutorID = &id
+	return w
+}
+
 // Queue sets the local queue name in the annotations.
 func (w *SparkApplicationWrapper) Queue(lq string) *SparkApplicationWrapper {
 	return w.Label(controllerconstants.QueueLabel, lq)

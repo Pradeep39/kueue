@@ -18,6 +18,7 @@ package jobframework
 
 import (
 	"context"
+	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -234,12 +235,45 @@ type JobWithCustomAnnotations interface {
 	GetCustomAnnotations(ctx context.Context, c client.Client) (map[string]string, error)
 }
 
+// JobWithGrantAwarePodsReady is an optional interface for jobs whose readiness depends on how
+// many Pods Kueue grants them. Kueue may grant a PodSet fewer Pods than the job's full size, for
+// example after a partial preemption lowers the grant; such a job is ready once the Pods it is
+// granted are, so that waitForPodsReady does not evict it for running at the size Kueue chose.
+// When a job implements it, it is used instead of PodsReady while the job is admitted.
+type JobWithGrantAwarePodsReady interface {
+	// PodsReadyForWorkload reports whether the job's Pods are ready, given wl, the job's admitted
+	// Workload, whose status.admission carries the granted counts.
+	PodsReadyForWorkload(ctx context.Context, c client.Client, wl *kueue.Workload) bool
+}
+
 // ElasticWorkloadNameProvider is an optional interface that provides additional
 // information for building workload names for elastic jobs.
 type ElasticWorkloadNameProvider interface {
 	// GetWorkloadNameExtraPart returns additional information used
 	// to build the workload name.
 	GetWorkloadNameExtraPart() string
+}
+
+// JobWithPartialPreemption is an optional interface for elastic jobs whose elastic PodSet can
+// be partially preempted (docs/design/spark-partial-preemption.md).
+type JobWithPartialPreemption interface {
+	// PartialPreemptionFloor returns the PodSet partial preemption may reduce and the count
+	// it must never go below. ok is false when the job is not partially preemptible.
+	PartialPreemptionFloor() (podSet kueue.PodSetReference, minCount int32, ok bool)
+	// PartialPreemptionMarkedPods returns how many of that PodSet's ungated Pods carry a
+	// pod-deletion-cost below 0. ok is false when the job cannot observe its Pods.
+	PartialPreemptionMarkedPods(ctx context.Context, c client.Client) (marked int32, ok bool, err error)
+	// PartialPreemptionTerminationGracePeriod returns the termination grace period the job
+	// sets for the reclaimable PodSet's Pods. ok is false when the job sets none, in which case
+	// its ClusterQueue's partial-preemption grace period, or Kubernetes' default, applies.
+	PartialPreemptionTerminationGracePeriod() (grace time.Duration, ok bool)
+	// ReclaimPods brings the PodSet down to at most keep ungated, non-terminal Pods, never
+	// below the floor and never touching any other PodSet. Pods being deleted still count,
+	// since they still hold node resources. It deletes Pods in ascending pod-deletion-cost
+	// order and is level-based: calling it again does not delete more. done reports that no
+	// more than keep such Pods remain. Pods are deleted with gracePeriod when it is not nil,
+	// overriding their own terminationGracePeriodSeconds.
+	ReclaimPods(ctx context.Context, c client.Client, podSet kueue.PodSetReference, keep int32, gracePeriod *time.Duration) (done bool, err error)
 }
 
 // TopLevelJob is an optional interface used to indicate

@@ -8,6 +8,8 @@ github.com/Masterminds/semver/v3 v3.5.0 h1:kQceYJfbupGfZOKZQg0kou0DgAKhzDg2NZPAw
 github.com/Masterminds/semver/v3 v3.5.0/go.mod h1:4V+yj/TJE1HU9XfppCwVMZq3I84lprf4nC11bSS5beM=
 github.com/NYTimes/gziphandler v1.1.1 h1:ZUDjpQae29j0ryrS0u/B8HZfJBtBQHjqw2rQ2cqUQ3I=
 github.com/NYTimes/gziphandler v1.1.1/go.mod h1:n/CVRwUEOgIxrgPvAQhUUr9oeUtvrhMomdKFjzJNB0c=
+github.com/Pradeep39/spark-operator/v2 v2.5.3-0.20261029053733-34f213d18324 h1:2XaRhdo1yeK+Ft57ldBRU2n+lYgXDFTIZYWDTrJC4zg=
+github.com/Pradeep39/spark-operator/v2 v2.5.3-0.20261029053733-34f213d18324/go.mod h1:+GLXPGpGCfCJRPGyUCHmFCAZvf7Z0ZOV88M+CzmdEPE=
 github.com/antlr4-go/antlr/v4 v4.13.1 h1:SqQKkuVZ+zWkMMNkjy5FZe5mr5WURWnlpmOuzYWrPrQ=
 github.com/antlr4-go/antlr/v4 v4.13.1/go.mod h1:GKmUxMtwp6ZgGwZSva4eWPC5mS6vUAmOABFgjdkM7Nw=
 github.com/armon/go-socks5 v0.0.0-20160902184237-e75332964ef5 h1:0CwZNZbxp69SHPdPJAN/hZIm0C4OItdklCFmMRWYpio=
@@ -161,8 +163,6 @@ github.com/kr/text v0.2.0 h1:5Nx0Ya0ZqY2ygV366QzturHI13Jq95ApcVaJBhpS+AY=
 github.com/kr/text v0.2.0/go.mod h1:eLer722TekiGuMkidMxC/pM04lWEeraHUUmBw8l2grE=
 github.com/kubeflow/mpi-operator v0.8.2 h1:7PVtV31iX3LSVW0BqRQ64w/NYNfAgP86Bmua2OEi5lg=
 github.com/kubeflow/mpi-operator v0.8.2/go.mod h1:bQrsQ1PNkj5WFkx/IwqfvWxAS22f/LgH1owoDH9DpuE=
-github.com/kubeflow/spark-operator/v2 v2.5.2 h1:6nX2UhwSfnYi1mtwczgFfJTMeLSL/1ajTvkFe8R7Vdc=
-github.com/kubeflow/spark-operator/v2 v2.5.2/go.mod h1:+GLXPGpGCfCJRPGyUCHmFCAZvf7Z0ZOV88M+CzmdEPE=
 github.com/kubeflow/trainer/v2 v2.0.0-20260910145234-8ca43ecb96b2 h1:rzCSrfek1F/14x9ZHyoGmM5/o67xTVFKAULpxsctVV4=
 github.com/kubeflow/trainer/v2 v2.0.0-20260910145234-8ca43ecb96b2/go.mod h1:KPk3HZCin40k1iPxFmr2rFp1lDpqWKkblYTxjB8ZJLc=
 github.com/kubeflow/training-operator v1.9.4 h1:MjYXzeaHGBmF47BlhCo6+Mb7ypHrVfO6vsys1ZHF56A=

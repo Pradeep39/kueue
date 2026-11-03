@@ -100,3 +100,9 @@ func quotaReservationTime(wl *kueue.Workload, now time.Time) time.Time {
 	}
 	return cond.LastTransitionTime.Time
 }
+
+// QuotaReservationTime returns when wl's quota was reserved, or now when it has no
+// QuotaReserved condition yet. CandidatesOrdering orders more recent reservations first.
+func QuotaReservationTime(wl *kueue.Workload, now time.Time) time.Time {
+	return quotaReservationTime(wl, now)
+}

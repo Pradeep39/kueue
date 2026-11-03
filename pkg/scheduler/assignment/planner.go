@@ -57,6 +57,23 @@ func (p *Plan) CanFit() bool {
 	return arm == flavorassigner.Fit || (arm == flavorassigner.Preempt && len(p.PreemptionTargets) > 0)
 }
 
-type options struct{}
+type options struct {
+	preemptionMode preemption.Mode
+}
 
 type PlannerOption func(*options)
+
+// WithPreemptionMode selects which kinds of preemption targets the plan may contain.
+// The default is preemption.WholeOnly, today's behaviour.
+func WithPreemptionMode(mode preemption.Mode) PlannerOption {
+	return func(o *options) { o.preemptionMode = mode }
+}
+
+// PreemptionMode resolves the preemption mode the options select.
+func PreemptionMode(opts ...PlannerOption) preemption.Mode {
+	o := options{}
+	for _, opt := range opts {
+		opt(&o)
+	}
+	return o.preemptionMode
+}

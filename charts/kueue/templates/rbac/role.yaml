@@ -47,6 +47,12 @@ rules:
   - apiGroups:
       - ""
     resources:
+      - pods/eviction
+    verbs:
+      - create
+  - apiGroups:
+      - ""
+    resources:
       - pods/finalizers
     verbs:
       - get
@@ -400,6 +406,17 @@ rules:
     verbs:
       - get
       - list
+      - watch
+  - apiGroups:
+      - spark.apache.org
+    resources:
+      - sparkapplications
+    verbs:
+      - delete
+      - get
+      - list
+      - patch
+      - update
       - watch
   - apiGroups:
       - sparkoperator.k8s.io

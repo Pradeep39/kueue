@@ -1425,6 +1425,13 @@ func (r *WorkloadReconciler) handleUpdate(ctx context.Context, e event.TypedUpda
 		logV.Info("Workload update event")
 	}
 
+	// A partial preemption leaves its victim admitted, so none of the paths that observe a
+	// whole preemption (requeue, deletion, admission) fire for it. Observe it once the
+	// scheduler's target is visible, or the victim stays "already preempted" to later cycles.
+	if features.Enabled(features.SparkPartialPreemption) && workload.PartialPreemptionPending(e.ObjectNew) {
+		r.preemptionExpectations.ObservedUID(log, client.ObjectKeyFromObject(e.ObjectNew), e.ObjectNew.UID)
+	}
+
 	wl := e.ObjectNew
 	wlKey := workload.Key(e.ObjectNew)
 
@@ -1514,6 +1521,10 @@ func (r *WorkloadReconciler) handleUpdate(ctx context.Context, e event.TypedUpda
 		})
 	case prevStatus == workload.StatusAdmitted && status == workload.StatusAdmitted && !equality.Semantic.DeepEqual(e.ObjectOld.Status.ReclaimablePods, e.ObjectNew.Status.ReclaimablePods),
 		features.Enabled(features.ElasticJobsViaWorkloadSlices) && workloadslicing.ScaledDown(workload.ExtractPodSetCountsFromWorkload(e.ObjectOld), workload.ExtractPodSetCountsFromWorkload(e.ObjectNew)),
+		// A completed partial preemption lowers only the grant, not the spec, and the
+		// preemptor waiting on it must be requeued to use the quota it frees.
+		features.Enabled(features.SparkPartialPreemption) && prevStatus == workload.StatusAdmitted && status == workload.StatusAdmitted &&
+			workloadslicing.ScaledDown(workload.ExtractGrantedPodSetCounts(e.ObjectOld), workload.ExtractGrantedPodSetCounts(e.ObjectNew)),
 		workload.PriorityChanged(log, e.ObjectOld, e.ObjectNew):
 		// trigger the move of associated inadmissibleWorkloads, if there are any.
 		r.queues.QueueAssociatedInadmissibleWorkloadsAfter(ctx, wlKey, func() {
