@@ -30,6 +30,7 @@ Each reclaimable application's Workload carries, maintained by the job reconcile
 | `kueue.x-k8s.io/partial-preemption-podset` | The PodSet that may be reduced: the executors. The driver PodSet is never named, so it is never reclaimed. |
 | `kueue.x-k8s.io/partial-preemption-min-count` | The floor: the count the executor PodSet is never reduced below. |
 | `kueue.x-k8s.io/partial-preemption-marked-pods` | Executors with a negative `controller.kubernetes.io/pod-deletion-cost`, i.e. ones the application has already chosen to remove. These cost nothing to reclaim. |
+| `kueue.x-k8s.io/partial-preemption-termination-grace-period` | The executor grace period the application sets, from the executor Pod template's `terminationGracePeriodSeconds` or else `spark.kubernetes.executor.terminationGracePeriodSeconds`. Absent when it sets neither. |
 
 **Floor.**
 
@@ -38,12 +39,16 @@ Each reclaimable application's Workload carries, maintained by the job reconcile
   static application gives nothing up unless it sets the property.
 - **Apache:** the same, then raised to `spec.applicationTolerations.instanceConfig.minExecutors`.
   Below that threshold the operator reports the application unhealthy.
-- **Both:** the floor is capped at the executor count currently granted.
+- **Both:** the floor is capped at the executor PodSet's current count, the executors the
+  application currently asks for.
 
 **Topology.** An executor PodSet with a topology request (Topology Aware Scheduling) is never
 reduced. Such an application can only be preempted whole.
 
-**Webhook defaults.** For a reclaimable application, the webhook defaults these to `true`:
+**Webhook defaults.** On create, for an application partial preemption could ever take an
+executor from (its floor is below `maxExecutors`, or below its executor count without Dynamic
+Allocation), the webhook defaults these to `true`, leaving any value the application sets,
+including `false`, alone:
 
 - `spark.decommission.enabled`
 - `spark.storage.decommission.enabled`
@@ -77,9 +82,9 @@ Fair-sharing preemption keeps whole-workload eviction.
 
 **Partial reclaim planner.**
 
-1. **Candidates.** Victims are the workloads classical preemption would consider, and a
-   ClusterQueue's `PreemptionConfig` rules are respected: candidates from its `Always` rules come
-   first, those from `InsufficientQuota` rules only once every earlier victim is at its floor.
+1. **Candidates.** Victims are the workloads classical preemption would consider, together with
+   those a ClusterQueue's `PreemptionConfig` selects through its `Always` rules. Candidates from
+   its `InsufficientQuota` rules are used only once every earlier victim is at its floor.
    Each victim can give up only its grant above its floor. A slice that is being replaced, and
    the preemptor's own slice chain, are skipped.
 2. **Reclaims in flight count first,** so a preemptor waits on them rather than picking new
@@ -128,13 +133,15 @@ Workload:
 4. **Resolve the condition:** `PartiallyPreempted` becomes `False` with reason
    `PartialPreemptionCompleted`, or `PartialPreemptionTimedOut` if the deadline passed.
 
-A victim that is evicted, finishes or loses its admission mid-reclaim has the reclaim dropped
-(`PartialPreemptionAbandoned`), and its grant is left untouched.
+A target below the victim's floor is raised to the floor. A reclaim is dropped, with its grant left
+untouched, when the victim is evicted, finishes or loses its admission mid-reclaim, or no longer
+declares a reclaimable PodSet with a grant. The condition then becomes `False` with reason
+`PartialPreemptionAbandoned`, and a `PartialPreemptionAbandoned` event is recorded on the job.
 
 **Grace period and timeout.**
 
-- **Grace period:** the job's own (the executor Pod template's `terminationGracePeriodSeconds`,
-  or `spark.kubernetes.executor.terminationGracePeriodSeconds`). Otherwise the ClusterQueue's
+- **Grace period:** the job's own, from the Workload's
+  `kueue.x-k8s.io/partial-preemption-termination-grace-period` (see Declaration). Otherwise the ClusterQueue's
   `kueue.x-k8s.io/partial-preemption-termination-grace-period`. Otherwise 30s.
 - **Timeout:** the ClusterQueue's `kueue.x-k8s.io/partial-preemption-timeout`, or else the grace
   period plus 30s.
@@ -162,7 +169,7 @@ annotations tune it:
 | Annotation | Default | Meaning |
 |---|---|---|
 | `kueue.x-k8s.io/partial-preemption-fallback` | `Evict` | What happens when partial reclaim can't fit the preemptor: `Evict` falls back to whole-workload preemption, `Wait` leaves the preemptor pending. |
-| `kueue.x-k8s.io/partial-preemption-termination-grace-period` | 30s | Grace period for reclaimed Pods when their job sets none. |
+| `kueue.x-k8s.io/partial-preemption-termination-grace-period` | 30s | Grace period for reclaimed Pods when their job sets none. The same annotation on a Workload, the job's own, takes precedence. |
 | `kueue.x-k8s.io/partial-preemption-timeout` | grace period + 30s | How long a reclaim waits for its Pods to stop before lowering the grant anyway. |
 
 ## Grow-back
