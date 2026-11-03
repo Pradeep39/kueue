@@ -1,4 +1,4 @@
-# Spark-aware partial preemption
+# Spark partial preemption
 
 ## Summary
 
