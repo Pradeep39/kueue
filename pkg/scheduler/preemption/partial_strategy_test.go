@@ -439,8 +439,8 @@ func TestPartialPreemptionPlanning(t *testing.T) {
 }
 
 // A superseded slice is never a victim: its Pods belong to its replacement, so taking them
-// "from" it would free nothing. Until its Finish lands the cache still charges it, so the
-// preemptor needs 8 of the 16 charged against 12, taken from the other two.
+// "from" it would free nothing. The cache charges only its replacement, so the preemptor
+// needs 4 of the 12 charged against 12, taken from the other two.
 func TestPartialPreemptionExcludesSupersededSlices(t *testing.T) {
 	features.SetFeatureGateDuringTest(t, features.ElasticJobsViaWorkloadSlices, true)
 	elastic := map[string]string{constants.ElasticJobAnnotation: "true"}
@@ -460,7 +460,7 @@ func TestPartialPreemptionExcludesSupersededSlices(t *testing.T) {
 	if _, found := got["v"]; found {
 		t.Errorf("Superseded slice v was partially preempted: %v", got)
 	}
-	if diff := cmp.Diff(map[string]int32{"v-2": 4, "w": 4}, got); diff != "" {
+	if diff := cmp.Diff(map[string]int32{"v-2": 2, "w": 2}, got); diff != "" {
 		t.Errorf("Unexpected reclaims (-want,+got):\n%s", diff)
 	}
 }
