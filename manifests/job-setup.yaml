@@ -1,0 +1,36 @@
+# Job test: a 400m-CPU ClusterQueue with no cohort, used only by the wl-slice-quota-job namespace.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: wl-slice-quota-job
+---
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: ResourceFlavor
+metadata:
+  name: wl-slice-quota
+---
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: ClusterQueue
+metadata:
+  name: wl-slice-quota-job
+spec:
+  namespaceSelector:
+    matchLabels:
+      kubernetes.io/metadata.name: wl-slice-quota-job
+  resourceGroups:
+  - coveredResources: ["cpu", "memory"]
+    flavors:
+    - name: wl-slice-quota
+      resources:
+      - name: cpu
+        nominalQuota: 400m
+      - name: memory
+        nominalQuota: 1Gi
+---
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: LocalQueue
+metadata:
+  name: wl-slice-quota-job
+  namespace: wl-slice-quota-job
+spec:
+  clusterQueue: wl-slice-quota-job

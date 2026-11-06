@@ -1,0 +1,54 @@
+# Edge test: two namespaces sharing a 10-cpu ClusterQueue, held LocalQueues so the scheduler
+# never admits the hand-made Workloads, and ConfigMaps standing in for the jobs owning them.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: wl-slice-quota-edge
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: wl-slice-quota-edge-2
+---
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: ResourceFlavor
+metadata:
+  name: wl-slice-quota
+---
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: ClusterQueue
+metadata:
+  name: wl-slice-quota-edge
+spec:
+  namespaceSelector:
+    matchExpressions:
+    - {key: kubernetes.io/metadata.name, operator: In, values: [wl-slice-quota-edge, wl-slice-quota-edge-2]}
+  resourceGroups:
+  - coveredResources: ["cpu"]
+    flavors:
+    - name: wl-slice-quota
+      resources:
+      - name: cpu
+        nominalQuota: "10"
+---
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: LocalQueue
+metadata: {name: parked, namespace: wl-slice-quota-edge}
+spec: {clusterQueue: wl-slice-quota-edge, stopPolicy: Hold}
+---
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: LocalQueue
+metadata: {name: parked, namespace: wl-slice-quota-edge-2}
+spec: {clusterQueue: wl-slice-quota-edge, stopPolicy: Hold}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata: {name: job, namespace: wl-slice-quota-edge}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata: {name: other-job, namespace: wl-slice-quota-edge}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata: {name: job, namespace: wl-slice-quota-edge-2}
