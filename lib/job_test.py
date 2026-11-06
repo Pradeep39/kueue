@@ -51,6 +51,7 @@ class Recorder:
     def __init__(self, log):
         self.log, self.lock = log, threading.Lock()
         self.cq_samples, self.admitted_at, self.finished_at, self.replaces = [], {}, {}, {}
+        self.granted = {}  # slice name -> Pod count granted at admission
         self.held, self.api_over = {}, 0
         self.procs, self.threads = [], []
 
@@ -83,6 +84,8 @@ class Recorder:
                     self.replaces[name] = rep.split("/", 1)[1]
                 if adm:
                     self.admitted_at.setdefault(name, t)
+                    psa = (wl.get("status", {}).get("admission") or {}).get("podSetAssignments", [])
+                    self.granted.setdefault(name, sum(p.get("count", 0) for p in psa))
                 if fin:
                     self.finished_at.setdefault(name, t)
                 if ev["type"] != "DELETED" and qr and not fin:

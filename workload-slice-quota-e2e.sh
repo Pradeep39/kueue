@@ -5,7 +5,8 @@
 #   ./workload-slice-quota-e2e.sh preflight            check the cluster and Kueue, create nothing
 #   ./workload-slice-quota-e2e.sh edge                 deterministic cache edge cases (fails on a Kueue with the bug)
 #   ./workload-slice-quota-e2e.sh job [--trials N]     elastic batch Job scale-up, N trials (default 3)
-#   ./workload-slice-quota-e2e.sh all [--trials N]     preflight, edge, job
+#   ./workload-slice-quota-e2e.sh job-shrink [--trials N]  a pending replacement that shrinks, N trials
+#   ./workload-slice-quota-e2e.sh all [--trials N]     preflight, edge, job, job-shrink
 #   ./workload-slice-quota-e2e.sh clean                delete everything the kit created
 #
 # Environment: KUEUE_NAMESPACE (default kueue-system).
@@ -55,12 +56,14 @@ case "$CMD" in
   preflight) preflight ;;
   edge) preflight >/dev/null || exit 2; python3 "$HERE/lib/edge_test.py" --out "$(out edge)" ;;
   job) preflight >/dev/null || exit 2; python3 "$HERE/lib/job_test.py" --out "$(out job)" "$@" ;;
+  job-shrink) preflight >/dev/null || exit 2; python3 "$HERE/lib/job_shrink_test.py" --out "$(out job-shrink)" "$@" ;;
   all)
     preflight || exit 2
     echo; python3 "$HERE/lib/edge_test.py" --out "$(out edge)"; e=$?
     echo; python3 "$HERE/lib/job_test.py" --out "$(out job)" "$@"; j=$?
-    echo; echo "summary: edge $([ $e = 0 ] && echo PASS || echo FAIL), job $([ $j = 0 ] && echo PASS || echo FAIL)"
-    exit $((e || j)) ;;
+    echo; python3 "$HERE/lib/job_shrink_test.py" --out "$(out job-shrink)" "$@"; s=$?
+    echo; echo "summary: edge $([ $e = 0 ] && echo PASS || echo FAIL), job $([ $j = 0 ] && echo PASS || echo FAIL), job-shrink $([ $s = 0 ] && echo PASS || echo FAIL)"
+    exit $((e || j || s)) ;;
   clean) clean ;;
-  *) sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
+  *) sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
 esac

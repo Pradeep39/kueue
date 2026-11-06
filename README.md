@@ -24,7 +24,8 @@ cd workload-slice-quota-e2e
 | `preflight` | Checks `kubectl` access, the Kueue CRDs, that `ElasticJobsViaWorkloadSlices` is not turned off, that the `batch/job` integration is enabled, and permission to patch `workloads/status`. Creates nothing. |
 | `edge` | Runs the cache edge cases. Deterministic. |
 | `job [--trials N]` | Runs the elastic batch Job scale-up N times (default 3). |
-| `all [--trials N]` | `preflight`, then `edge`, then `job`. |
+| `job-shrink [--trials N]` | Shrinks a pending replacement of an elastic batch Job N times (default 3). |
+| `all [--trials N]` | `preflight`, then `edge`, `job` and `job-shrink`. |
 | `clean` | Deletes everything the kit created. |
 
 Each test prints PASS or FAIL per step or trial and exits non-zero on failure. Logs go to `out/`.
@@ -37,7 +38,7 @@ The tests apply their own manifests when they start; `preflight` does not create
 | Test | Resources | Capacity needed |
 |---|---|---|
 | `edge` (`manifests/edge-setup.yaml`) | namespaces `wl-slice-quota-edge` and `wl-slice-quota-edge-2`, ResourceFlavor `wl-slice-quota`, 10-cpu ClusterQueue `wl-slice-quota-edge`, two held LocalQueues `parked`, three ConfigMaps | none: no Pods run |
-| `job` (`manifests/job-setup.yaml`, `manifests/job.yaml`) | namespace `wl-slice-quota-job`, ResourceFlavor `wl-slice-quota`, 400m ClusterQueue `wl-slice-quota-job`, LocalQueue, one Job | 400m CPU and 256Mi free; pulls `busybox:1.36` |
+| `job`, `job-shrink` (`manifests/job-setup.yaml`, `manifests/job.yaml`) | namespace `wl-slice-quota-job`, ResourceFlavor `wl-slice-quota`, 400m ClusterQueue `wl-slice-quota-job`, LocalQueue, one Job | 400m CPU and 256Mi free; pulls `busybox:1.36` |
 
 ## The tests
 
@@ -82,6 +83,15 @@ design; only the ClusterQueue status, which Kueue writes from its cache, must st
 
 Kueue batches ClusterQueue status writes, so on a Kueue without the fix this test catches the window
 only in some trials. Use the edge test to tell the two builds apart.
+
+### job-shrink: a replacement that shrinks while it waits (real controllers)
+
+Runs the same Job at 2 Pods, scales it to 6, so its replacement needs 600m and waits for quota, then
+scales it to 1 while the replacement is pending. The pending replacement follows the Job and is
+admitted with 1 Pod, fewer than the 2 of the slice it replaces; a Spark driver lowering its executor
+target does the same. The larger slice covers the smaller one until it finishes, so a trial fails if
+`ClusterQueue.status` ever reports more than 400m or more than one reserving workload, or if no
+replacement was admitted smaller than the slice it replaces.
 
 ## Notes
 
