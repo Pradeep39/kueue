@@ -117,6 +117,7 @@ SCENARIOS = [
         ("B (3 cpu) replaces A", lambda: make("wl-slice-quota-edge", "b", "3", replaces="wl-slice-quota-edge/a"), ("3", 1)),
         ("C (4 cpu) replaces B", lambda: make("wl-slice-quota-edge", "c", "4", replaces="wl-slice-quota-edge/b"), ("4", 1)),
         ("B finishes", lambda: finish("wl-slice-quota-edge", "b"), ("4", 1)),
+        ("C updated", lambda: touch("wl-slice-quota-edge", "c"), ("4", 1)),
         ("C deleted", lambda: delete("wl-slice-quota-edge", "c"), ("2", 1)),
     ]),
     ("self-reference", [

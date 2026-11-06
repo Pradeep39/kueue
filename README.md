@@ -57,7 +57,7 @@ Builds the replacement cases directly with Workload objects, so each one is repr
 | basic replacement | B replacing A is charged once (3 cpu, not 5) |
 | replacement leaves first | A is charged again when B leaves before A finishes (e.g. a failed admission) |
 | chain of three | C replacing B replacing A is charged once, and B is charged again when C leaves |
-| chain, middle slice finishes first | A is charged again when C leaves after B finished |
+| chain, middle slice finishes first | A stays uncharged while C is updated after B finished, and is charged again when C leaves |
 | self-reference | a Workload naming itself stays charged |
 | another namespace | a Workload in another namespace named by the annotation stays charged |
 | another job at the replaced slice's key | a Workload of another job reusing A's key stays charged, also after B is updated |
