@@ -45,7 +45,8 @@ The tests apply their own manifests when they start; `preflight` does not create
 
 Builds the replacement cases directly with Workload objects, so each one is reproduced exactly:
 
-- Each Workload is owned, as controller, by a ConfigMap that stands in for its job.
+- Each Workload is owned, as controller, by a ConfigMap that stands in for its job, and carries
+  the `kueue.x-k8s.io/workload-slice-name` annotation that every slice of a chain has.
 - It sits in a LocalQueue with `stopPolicy: Hold`, so the scheduler never admits it, and never
   finishes the "old" slice on its own.
 - Its quota reservation is set through the status subresource.

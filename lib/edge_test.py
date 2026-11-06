@@ -30,7 +30,10 @@ def now():
 
 def make(ns, name, cpu, owner="job", replaces=None):
     """Creates the Workload and reserves cpu for it in CQ."""
-    ann = {"kueue.x-k8s.io/workload-slice-replacement-for": replaces} if replaces else {}
+    # Every slice of a chain carries the chain's slice name, as Kueue sets it.
+    ann = {"kueue.x-k8s.io/workload-slice-name": "a"}
+    if replaces:
+        ann["kueue.x-k8s.io/workload-slice-replacement-for"] = replaces
     meta = {"name": name, "namespace": ns, "annotations": ann}
     if owner:
         meta["ownerReferences"] = [{"apiVersion": "v1", "kind": "ConfigMap", "name": owner,
