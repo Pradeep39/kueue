@@ -6749,6 +6749,98 @@ var _ = ginkgo.Describe("Job with elastic jobs via workload-slices support", gin
 		behavioral.ExpectLQFinishedWorkloadsTotalMetric(localQueue, highPriorityClass.Name, 0)
 	})
 
+	ginkgo.It("Should not charge a workload slice and the slice it replaces together", func() {
+		elasticJob := testingjob.MakeJob("job-slice-charge", ns.Name).
+			SetAnnotation(workloadslicing.EnabledAnnotationKey, workloadslicing.EnabledAnnotationValue).
+			Queue(kueue.LocalQueueName(localQueue.Name)).
+			Request(corev1.ResourceCPU, "1").
+			Parallelism(2).
+			Completions(10).
+			Obj()
+
+		ginkgo.By("watching the ClusterQueue status")
+		watchClient, ok := k8sClient.(client.WithWatch)
+		gomega.Expect(ok).Should(gomega.BeTrue(), "k8sClient must implement client.WithWatch")
+		watcher, err := watchClient.Watch(ctx, &kueue.ClusterQueueList{})
+		gomega.Expect(err).ShouldNot(gomega.HaveOccurred())
+		defer watcher.Stop()
+		cqName, quota := clusterQueue.Name, resource.MustParse(strconv.Itoa(cpuNominalQuota))
+		var violations []string
+		watched := make(chan struct{})
+		go func() {
+			defer close(watched)
+			for ev := range watcher.ResultChan() {
+				cq, ok := ev.Object.(*kueue.ClusterQueue)
+				if !ok || cq.Name != cqName {
+					continue
+				}
+				var cpu resource.Quantity
+				for _, f := range cq.Status.FlavorsReservation {
+					for _, r := range f.Resources {
+						if r.Name == corev1.ResourceCPU {
+							cpu.Add(r.Total)
+						}
+					}
+				}
+				if cpu.Cmp(quota) > 0 || cq.Status.ReservingWorkloads > 1 {
+					violations = append(violations, fmt.Sprintf("reserved cpu %s, reserving workloads %d", cpu.String(), cq.Status.ReservingWorkloads))
+				}
+			}
+		}()
+
+		scale := func(parallelism int32) {
+			ginkgo.GinkgoHelper()
+			gomega.Eventually(func(g gomega.Gomega) {
+				g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(elasticJob), elasticJob)).Should(gomega.Succeed())
+				elasticJob.Spec.Parallelism = new(parallelism)
+				g.Expect(k8sClient.Update(ctx, elasticJob)).Should(gomega.Succeed())
+			}, behavioral.Timeout, behavioral.Interval).Should(gomega.Succeed())
+		}
+		expectSlices := func(admitted bool, count int32) {
+			ginkgo.GinkgoHelper()
+			gomega.Eventually(func(g gomega.Gomega) {
+				workloads := &kueue.WorkloadList{}
+				g.Expect(k8sClient.List(ctx, workloads, client.InNamespace(ns.Name))).Should(gomega.Succeed())
+				var counts []int32
+				for i := range workloads.Items {
+					wl := &workloads.Items[i]
+					if !workloadfinish.IsFinished(wl) && workload.IsAdmitted(wl) == admitted {
+						counts = append(counts, wl.Spec.PodSets[0].Count)
+					}
+				}
+				g.Expect(counts).Should(gomega.Equal([]int32{count}))
+			}, behavioral.Timeout, behavioral.Interval).Should(gomega.Succeed())
+		}
+
+		behavioral.MustCreate(ctx, k8sClient, elasticJob)
+		ginkgo.By("admitting the job at 2 Pods")
+		expectSlices(true, 2)
+
+		ginkgo.By("scaling up to 4 and 5 Pods; each replacement fits only once the slice it replaces is released")
+		scale(4)
+		expectSlices(true, 4)
+		scale(5)
+		expectSlices(true, 5)
+
+		ginkgo.By("scaling to 8 Pods, so the replacement waits for quota, and then to 1 Pod, so it shrinks")
+		scale(8)
+		expectSlices(false, 8)
+		scale(1)
+		expectSlices(true, 1)
+
+		ginkgo.By("the ClusterQueue never reported a slice and its replacement charged together")
+		gomega.Eventually(func(g gomega.Gomega) {
+			cq := &kueue.ClusterQueue{}
+			g.Expect(k8sClient.Get(ctx, client.ObjectKey{Name: cqName}, cq)).Should(gomega.Succeed())
+			g.Expect(cq.Status.ReservingWorkloads).Should(gomega.Equal(int32(1)))
+			g.Expect(cq.Status.FlavorsReservation[0].Resources[0].Total.Equal(resource.MustParse("1"))).Should(gomega.BeTrue())
+		}, behavioral.Timeout, behavioral.Interval).Should(gomega.Succeed())
+		// Stop the watch and wait for its goroutine, so violations is read only once it is done.
+		watcher.Stop()
+		<-watched
+		gomega.Expect(violations).Should(gomega.BeEmpty())
+	})
+
 	ginkgo.It("Should not finish old workload-slice before new slice is admitted", func() {
 		features.SetFeatureGateDuringTest(ginkgo.GinkgoTB(), features.ElasticJobsViaWorkloadSlices, true)
 
