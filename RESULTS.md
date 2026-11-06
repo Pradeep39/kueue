@@ -1,10 +1,10 @@
 # Results
 
-Run on 2026-11-06 against `ghcr.io/pradeep39/kueue:16ac70d`: the commits of kubernetes-sigs/kueue#18397 (fix as of `60b4e5869`), applied to a Kueue main build that also carries Spark integration changes outside the cache code, Kubernetes v1.36.2. Command: `./workload-slice-quota-e2e.sh all --trials 8`, from a fresh clone of this branch.
+Run on 2026-11-06 against `ghcr.io/pradeep39/kueue:a1e6ced`: the commits of kubernetes-sigs/kueue#18397 (head `776770f67`), applied to a Kueue main build that also carries Spark integration changes outside the cache code, Kubernetes v1.36.2. Command: `./workload-slice-quota-e2e.sh all --trials 8`, from a fresh clone of this branch.
 
 ```
 context:      kubernetes-admin@kubernetes
-Kueue image:  ghcr.io/pradeep39/kueue:16ac70d
+Kueue image:  ghcr.io/pradeep39/kueue:a1e6ced
 preflight: PASS
 
 == basic replacement
@@ -29,7 +29,7 @@ preflight: PASS
    ok   C deleted                                    charged  2 cpu, 1 reserving   (want 2 cpu, 1)
 == replacement that shrinks
    ok   A (2 cpu)                                    charged  2 cpu, 1 reserving   (want 2 cpu, 1)
-   ok   B (1 cpu) replaces A                         charged  3 cpu, 2 reserving   (want 3 cpu, 2)
+   ok   B (1 cpu) replaces A                         charged  2 cpu, 1 reserving   (want 2 cpu, 1)
    ok   A finishes                                   charged  1 cpu, 1 reserving   (want 1 cpu, 1)
 == self-reference
    ok   S (1 cpu) names itself                       charged  1 cpu, 1 reserving   (want 1 cpu, 1)
@@ -46,22 +46,34 @@ preflight: PASS
    ok   A (2 cpu), no controller                     charged  2 cpu, 1 reserving   (want 2 cpu, 1)
    ok   B (3 cpu), no controller, replaces A         charged  5 cpu, 2 reserving   (want 5 cpu, 2)
 
-edge test: PASS  (log: out/20261106-014254-edge/edge.log)
+edge test: PASS  (log: out/20261106-085753-edge/edge.log)
 
 trial  replacements         window (s)  status writes  max cpu  max reserving  result
-1                 3        0.092-0.232              5     400m              1  PASS
-2                 3        0.095-0.332              5     400m              1  PASS
-3                 3        0.070-0.297              5     400m              1  PASS
-4                 3        0.119-0.249              5     400m              1  PASS
-5                 3        0.063-0.094              5     400m              1  PASS
-6                 3        0.072-0.362              5     400m              1  PASS
-7                 3        0.159-0.261              5     400m              1  PASS
-8                 3        0.173-0.593              5     400m              1  PASS
+1                 3        0.100-0.242              5     400m              1  PASS
+2                 3        0.111-0.431              5     400m              1  PASS
+3                 3        0.088-0.200              5     400m              1  PASS
+4                 3        0.086-0.447              5     400m              1  PASS
+5                 3        0.083-0.252              5     400m              1  PASS
+6                 3        0.073-0.087              5     400m              1  PASS
+7                 3        0.074-0.092              5     400m              1  PASS
+8                 3        0.082-0.170              5     400m              1  PASS
 
 window = time from the replacement showing Admitted to the replaced slice showing Finished, in the API.
 Both slices hold QuotaReserved in the API during the window by design; only the ClusterQueue status,
 which Kueue writes from its cache, must stay within the quota.
-job test: PASS  (logs: out/20261106-014549-job)
+job test: PASS  (logs: out/20261106-090058-job)
 
-summary: edge PASS, job PASS
+trial               shrinking replacement  status writes  max cpu  max reserving  result
+1                             2 -> 1 Pods              7     400m              1  PASS
+2                             2 -> 1 Pods              5     200m              1  PASS
+3                             2 -> 1 Pods              5     200m              1  PASS
+4                             2 -> 1 Pods              5     200m              1  PASS
+5                             2 -> 1 Pods              7     200m              1  PASS
+6                             2 -> 1 Pods              5     200m              1  PASS
+7                             2 -> 1 Pods              4     200m              1  PASS
+8                             2 -> 1 Pods              4     200m              1  PASS
+
+job-shrink test: PASS  (logs: out/20261106-090725-job-shrink)
+
+summary: edge PASS, job PASS, job-shrink PASS
 ```
