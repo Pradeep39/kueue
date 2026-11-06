@@ -125,7 +125,7 @@ SCENARIOS = [
     ]),
     ("replacement that shrinks", [
         ("A (2 cpu)", lambda: make("wl-slice-quota-edge", "a", "2"), ("2", 1)),
-        ("B (1 cpu) replaces A", lambda: make("wl-slice-quota-edge", "b", "1", replaces="wl-slice-quota-edge/a"), ("3", 2)),
+        ("B (1 cpu) replaces A", lambda: make("wl-slice-quota-edge", "b", "1", replaces="wl-slice-quota-edge/a"), ("2", 1)),
         ("A finishes", lambda: finish("wl-slice-quota-edge", "a"), ("1", 1)),
     ]),
     ("self-reference", [
