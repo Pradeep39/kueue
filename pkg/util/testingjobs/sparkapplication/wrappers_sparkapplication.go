@@ -260,18 +260,6 @@ func (w *SparkApplicationWrapper) SparkConf(key, value string) *SparkApplication
 	return w
 }
 
-// ActiveExecutors sets status.activeExecutors.
-func (w *SparkApplicationWrapper) ActiveExecutors(n int32) *SparkApplicationWrapper {
-	w.Status.ActiveExecutors = &n
-	return w
-}
-
-// MaxExecutorID sets status.maxExecutorId.
-func (w *SparkApplicationWrapper) MaxExecutorID(id int64) *SparkApplicationWrapper {
-	w.Status.MaxExecutorID = &id
-	return w
-}
-
 // Queue sets the local queue name in the annotations.
 func (w *SparkApplicationWrapper) Queue(lq string) *SparkApplicationWrapper {
 	return w.Label(controllerconstants.QueueLabel, lq)

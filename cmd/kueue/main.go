@@ -25,6 +25,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 
 	zaplog "go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
@@ -64,6 +65,7 @@ import (
 	"sigs.k8s.io/kueue/pkg/controller/failurerecovery"
 	"sigs.k8s.io/kueue/pkg/controller/jobframework"
 	"sigs.k8s.io/kueue/pkg/controller/jobs"
+	"sigs.k8s.io/kueue/pkg/controller/jobs/sparkapplication"
 	"sigs.k8s.io/kueue/pkg/controller/tas"
 	tasindexer "sigs.k8s.io/kueue/pkg/controller/tas/indexer"
 	"sigs.k8s.io/kueue/pkg/controller/unscheduledpods"
@@ -291,6 +293,12 @@ func main() {
 		} else {
 			setupLog.Info("Skipping MultiKueue ClusterProfile setup as the ClusterProfile CRD is not installed")
 		}
+	}
+
+	if slices.Contains(cfg.Integrations.Frameworks, sparkapplication.FrameworkName) {
+		// Lets the SparkApplication integration read the operator-declared executor counts
+		// without depending on the operator's API version.
+		sparkapplication.ConfigureCache(&options)
 	}
 
 	mgr, err := ctrl.NewManager(kubeConfig, options)

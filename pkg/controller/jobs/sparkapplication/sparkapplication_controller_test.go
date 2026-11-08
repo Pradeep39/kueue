@@ -323,7 +323,9 @@ func TestPodSetsExecutorCount(t *testing.T) {
 		DynamicAllocation(&sparkappv1beta2.DynamicAllocation{Enabled: true, MaxExecutors: new(int32(4))})
 
 	testCases := map[string]struct {
-		sparkApp  *sparkappv1beta2.SparkApplication
+		sparkApp *sparkappv1beta2.SparkApplication
+		// declared are the status fields the operator declares, read from the untyped copy
+		declared  map[string]int64
 		wantCount int32
 	}{
 		"not elastic: initial executors": {
@@ -417,8 +419,8 @@ func TestPodSetsExecutorCount(t *testing.T) {
 				SparkConf("spark.dynamicAllocation.enabled", "true").
 				SparkConf("spark.dynamicAllocation.maxExecutors", "6").
 				AppState(sparkappv1beta2.ApplicationStateRunning).
-				ActiveExecutors(5).
 				Obj(),
+			declared:  map[string]int64{"activeExecutors": 5},
 			wantCount: 5,
 		},
 		"elastic, sparkConf DA running: capped at its maxExecutors": {
@@ -426,8 +428,8 @@ func TestPodSetsExecutorCount(t *testing.T) {
 				SparkConf("spark.dynamicAllocation.enabled", "true").
 				SparkConf("spark.dynamicAllocation.maxExecutors", "6").
 				AppState(sparkappv1beta2.ApplicationStateRunning).
-				ActiveExecutors(9).
 				Obj(),
+			declared:  map[string]int64{"activeExecutors": 9},
 			wantCount: 6,
 		},
 		"elastic, typed DA: initialExecutors raises the first slice": {
@@ -453,29 +455,29 @@ func TestPodSetsExecutorCount(t *testing.T) {
 			sparkApp: dynamicSparkApp.Clone().
 				AppState(sparkappv1beta2.ApplicationStateRunning).
 				ExecutorState("exec-1", sparkappv1beta2.ExecutorStateRunning).
-				ActiveExecutors(3).
 				Obj(),
+			declared:  map[string]int64{"activeExecutors": 3},
 			wantCount: 3,
 		},
 		"elastic, running: activeExecutors without executor states": {
 			sparkApp: dynamicSparkApp.Clone().
 				AppState(sparkappv1beta2.ApplicationStateRunning).
-				ActiveExecutors(3).
 				Obj(),
+			declared:  map[string]int64{"activeExecutors": 3},
 			wantCount: 3,
 		},
 		"elastic, running: activeExecutors above maxExecutors is capped": {
 			sparkApp: dynamicSparkApp.Clone().
 				AppState(sparkappv1beta2.ApplicationStateRunning).
-				ActiveExecutors(9).
 				Obj(),
+			declared:  map[string]int64{"activeExecutors": 9},
 			wantCount: 4,
 		},
 		"elastic, driver not started: activeExecutors ignored": {
 			sparkApp: dynamicSparkApp.Clone().
 				AppState(sparkappv1beta2.ApplicationStateSubmitted).
-				ActiveExecutors(3).
 				Obj(),
+			declared:  map[string]int64{"activeExecutors": 3},
 			wantCount: 2,
 		},
 		"elastic, completed: count stays at minExecutors": {
@@ -492,6 +494,11 @@ func TestPodSetsExecutorCount(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			features.SetFeatureGateDuringTest(t, features.ElasticJobsViaWorkloadSlicesForSparkApplication, true)
 			ctx, _ := utiltesting.ContextWithLog(t)
+			useExecutorReader(t, nil)
+			if tc.declared != nil {
+				tc.sparkApp.ResourceVersion = "7"
+				useExecutorReader(t, readerFor(tc.sparkApp, declared(tc.sparkApp, "7", tc.declared)))
+			}
 
 			got, err := (*SparkApplication)(tc.sparkApp).PodSets(ctx, nil)
 			if err != nil {
@@ -509,7 +516,6 @@ func TestGetWorkloadNameExtraPart(t *testing.T) {
 		generation         int64
 		submissionAttempts int32
 		executors          map[string]sparkappv1beta2.ExecutorState
-		maxExecutorID      *int64
 		want               string
 	}{
 		"not submitted: generation only": {
@@ -530,15 +536,6 @@ func TestGetWorkloadNameExtraPart(t *testing.T) {
 			},
 			want: "1_1_2",
 		},
-		"maxExecutorId wins over the tracked executors": {
-			generation:         1,
-			submissionAttempts: 1,
-			executors: map[string]sparkappv1beta2.ExecutorState{
-				"exec-1": sparkappv1beta2.ExecutorStateRunning,
-			},
-			maxExecutorID: new(int64(7)),
-			want:          "1_1_7",
-		},
 		"rerun starts a new attempt": {
 			generation:         1,
 			submissionAttempts: 2,
@@ -551,7 +548,7 @@ func TestGetWorkloadNameExtraPart(t *testing.T) {
 			sparkApp.Generation = tc.generation
 			sparkApp.Status.SubmissionAttempts = tc.submissionAttempts
 			sparkApp.Status.ExecutorState = tc.executors
-			sparkApp.Status.MaxExecutorID = tc.maxExecutorID
+			useExecutorReader(t, nil)
 			if got := (*SparkApplication)(sparkApp).GetWorkloadNameExtraPart(); got != tc.want {
 				t.Errorf("GetWorkloadNameExtraPart() = %q, want %q", got, tc.want)
 			}

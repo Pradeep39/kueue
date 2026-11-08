@@ -115,7 +115,7 @@ func (j *SparkApplication) PartialPreemptionFloor() (kueue.PodSetReference, int3
 	if !partialPreemptionEnabled(j) {
 		return "", 0, false
 	}
-	return executorPodSetName, min(j.resolvedPartialPreemptionFloor(), j.numExecutors()), true
+	return executorPodSetName, min(j.resolvedPartialPreemptionFloor(), j.numExecutors(context.TODO())), true
 }
 
 // PartialPreemptionTerminationGracePeriod implements jobframework.JobWithPartialPreemption: the
@@ -156,7 +156,7 @@ func (j *SparkApplication) PartialPreemptionMarkedPods(ctx context.Context, c cl
 	return marked, true, nil
 }
 
-// listExecutorPods lists the application's executor Pods, uncached.
+// listExecutorPods lists the application's executor Pods from the informer cache.
 func (j *SparkApplication) listExecutorPods(ctx context.Context, c client.Client) ([]corev1.Pod, error) {
 	podList := &corev1.PodList{}
 	if err := c.List(ctx, podList,
