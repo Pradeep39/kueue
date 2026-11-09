@@ -1068,7 +1068,8 @@ func TestReconciler(t *testing.T) {
 	sparkAppDriverRunningOnly := withDriverRunningOnly(withUID(testSparkApp.DeepCopy()), 2)
 	sparkAppAllExecutorsReady := withExecutorsRunning(withUID(testSparkApp.DeepCopy()), 2)
 	// Dynamic allocation variant: Instances=10, MinExecutors=5, 5 executors Running.
-	// PodsReady should use MinExecutors (5) as the expected count, not Instances (10).
+	// The driver starts with the instances (10), so PodsReady waits for them; once the
+	// workload has been ready, MinExecutors (5) is the expected count.
 	sparkAppDynamicAllocation := withExecutorsRunning(withUID(testSparkApp.DeepCopy()), 5)
 	sparkAppDynamicAllocation.Spec.Executor.Instances = new(int32(10))
 	sparkAppDynamicAllocation.Spec.DynamicAllocation = &sparkappv1beta2.DynamicAllocation{
@@ -1139,7 +1140,7 @@ func TestReconciler(t *testing.T) {
 					Obj(),
 			},
 		},
-		"PodsReady becomes True/Started with dynamic allocation when MinExecutors executors are ready": {
+		"PodsReady stays False/WaitForStart with dynamic allocation until the initial executors are ready": {
 			reconcilerOptions: []jobframework.Option{
 				jobframework.WithManageJobsWithoutQueueName(true),
 				jobframework.WithManagedJobsNamespaceSelector(labels.Everything()),
@@ -1148,6 +1149,34 @@ func TestReconciler(t *testing.T) {
 			sparkApp: sparkAppDynamicAllocation,
 			workloads: []kueue.Workload{
 				*makeAdmittedWorkload(sparkAppDynamicAllocation).Obj(),
+			},
+			wantWorkloads: []kueue.Workload{
+				*makeAdmittedWorkload(sparkAppDynamicAllocation).
+					Condition(metav1.Condition{
+						Type:    kueue.WorkloadPodsReady,
+						Status:  metav1.ConditionFalse,
+						Reason:  kueue.WorkloadWaitForStart,
+						Message: "Not all pods are ready or succeeded",
+					}).
+					Obj(),
+			},
+		},
+		"PodsReady stays True/Started with dynamic allocation while MinExecutors executors are ready": {
+			reconcilerOptions: []jobframework.Option{
+				jobframework.WithManageJobsWithoutQueueName(true),
+				jobframework.WithManagedJobsNamespaceSelector(labels.Everything()),
+				jobframework.WithWaitForPodsReady(baseWaitForPodsReadyConf),
+			},
+			sparkApp: sparkAppDynamicAllocation,
+			workloads: []kueue.Workload{
+				*makeAdmittedWorkload(sparkAppDynamicAllocation).
+					Condition(metav1.Condition{
+						Type:    kueue.WorkloadPodsReady,
+						Status:  metav1.ConditionTrue,
+						Reason:  kueue.WorkloadStarted,
+						Message: "All pods reached readiness and the workload is running",
+					}).
+					Obj(),
 			},
 			wantWorkloads: []kueue.Workload{
 				*makeAdmittedWorkload(sparkAppDynamicAllocation).

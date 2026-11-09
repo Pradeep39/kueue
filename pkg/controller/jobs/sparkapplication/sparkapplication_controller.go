@@ -38,6 +38,7 @@ import (
 	"sigs.k8s.io/kueue/pkg/features"
 	"sigs.k8s.io/kueue/pkg/podset"
 	"sigs.k8s.io/kueue/pkg/workload"
+	"sigs.k8s.io/kueue/pkg/workloadslicing"
 )
 
 var (
@@ -328,16 +329,13 @@ func (j *SparkApplication) PodsReady(ctx context.Context, _ client.Client) bool 
 // ready once the executors Kueue grants it are, even if that is fewer than it would otherwise
 // expect, e.g. after a partial preemption lowered the grant below its executor instances.
 func (j *SparkApplication) PodsReadyForWorkload(ctx context.Context, _ client.Client, wl *kueue.Workload) bool {
-	if granted, ok := workload.GrantedCount(wl, executorPodSetName); ok {
-		return j.podsReady(ctx, &granted)
-	}
-	return j.podsReady(ctx, nil)
+	return j.podsReady(ctx, wl)
 }
 
 // podsReady reports whether the driver runs and enough executors are ready: running and ready,
-// and not being deleted (see executors). granted, when known, caps the expected count at the
-// executors Kueue grants.
-func (j *SparkApplication) podsReady(ctx context.Context, granted *int32) bool {
+// and not being deleted (see executors), in the workload wl when known. Its grant caps the
+// expected count at the executors Kueue grants.
+func (j *SparkApplication) podsReady(ctx context.Context, wl *kueue.Workload) bool {
 	// Driver must be running.
 	if j.Status.AppState.State != sparkv1beta2.ApplicationStateRunning {
 		return false
@@ -346,9 +344,9 @@ func (j *SparkApplication) podsReady(ctx context.Context, granted *int32) bool {
 	// AppState.State alone goes to Running as soon as the driver starts even if
 	// executors are stuck (e.g. unschedulable), which would let the
 	// waitForPodsReady timeout never fire on heterogeneous resource shortages.
-	expected := j.minReadyExecutors()
-	if granted != nil {
-		expected = min(expected, *granted)
+	expected := j.minReadyExecutors(wl)
+	if granted, ok := grantedExecutors(wl); ok {
+		expected = min(expected, granted)
 	}
 	if expected == 0 {
 		return true
@@ -356,17 +354,45 @@ func (j *SparkApplication) podsReady(ctx context.Context, granted *int32) bool {
 	return j.executors(ctx).ready >= expected
 }
 
-// minReadyExecutors returns the executors that must be ready for PodsReady. When
-// dynamic allocation is enabled, the actual number of executors can fluctuate
-// between minExecutors and maxExecutors, so it's minExecutors, the guaranteed
-// minimum, and Spark's default of 0 if it is set neither in
-// spec.dynamicAllocation nor in spec.sparkConf. Otherwise it's the executor
-// instances.
-func (j *SparkApplication) minReadyExecutors() int32 {
-	if da := j.dynamicAllocation(); da.enabled {
+// minReadyExecutors returns the executors that must be ready for PodsReady in
+// the workload wl. Without dynamic allocation, it's the executor instances.
+// With dynamic allocation, the driver starts with its initial executors, and
+// they must be ready. Once they have been, the executors can fluctuate between
+// minExecutors and maxExecutors, and minExecutors, Spark's default of 0 if it is
+// set neither in spec.dynamicAllocation nor in spec.sparkConf, is how far the
+// application tolerates scaling down.
+func (j *SparkApplication) minReadyExecutors(wl *kueue.Workload) int32 {
+	da := j.dynamicAllocation()
+	if !da.enabled {
+		return j.numInitialExecutors()
+	}
+	if startedExecutors(wl) {
 		return ptr.Deref(da.minExecutors, 0)
 	}
-	return j.numInitialExecutors()
+	return j.initialExecutors(da)
+}
+
+// startedExecutors reports whether the application's executors have started in
+// the workload wl: they have been ready in it, or it replaces a workload slice,
+// which Kueue creates only once the driver stops ramping up to its initial
+// executors (see numExecutors).
+func startedExecutors(wl *kueue.Workload) bool {
+	return wl != nil && (workload.HasBeenReady(wl) || workloadslicing.ReplacementForKey(wl) != nil)
+}
+
+// grantedExecutors returns the executors Kueue grants the workload wl, if known.
+func grantedExecutors(wl *kueue.Workload) (int32, bool) {
+	if wl == nil {
+		return 0, false
+	}
+	return workload.GrantedCount(wl, executorPodSetName)
+}
+
+// initialExecutors returns the executors the driver starts with under dynamic
+// allocation da: the largest of the executor instances, minExecutors and
+// initialExecutors.
+func (j *SparkApplication) initialExecutors(da dynamicAllocation) int32 {
+	return max(j.numInitialExecutors(), ptr.Deref(da.minExecutors, 0), ptr.Deref(da.initialExecutors, 0))
 }
 
 // numExecutors returns the executor count to request quota for. With dynamic
@@ -380,9 +406,7 @@ func (j *SparkApplication) numExecutors(ctx context.Context) int32 {
 	}
 	executors := j.executors(ctx)
 	if !j.driverStarted() || !executors.exist {
-		// Spark starts with the largest of the executor instances, minExecutors
-		// and initialExecutors.
-		return max(j.numInitialExecutors(), ptr.Deref(da.minExecutors, 0), ptr.Deref(da.initialExecutors, 0))
+		return j.initialExecutors(da)
 	}
 	count := executors.active
 	// cap the upper and lower bounds

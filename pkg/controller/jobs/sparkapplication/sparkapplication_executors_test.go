@@ -18,6 +18,7 @@ package sparkapplication
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -36,6 +37,7 @@ import (
 	utiltesting "sigs.k8s.io/kueue/pkg/util/testing"
 	utiltestingapi "sigs.k8s.io/kueue/pkg/util/testing/v1beta2"
 	sparkapplicationtesting "sigs.k8s.io/kueue/pkg/util/testingjobs/sparkapplication"
+	"sigs.k8s.io/kueue/pkg/workloadslicing"
 )
 
 // stubReader stands in for the informer cache: untyped SparkApplications by key, and executor Pods.
@@ -288,12 +290,35 @@ func TestExecutorCountsAdd(t *testing.T) {
 }
 
 func TestPodsReadyFromReadyExecutors(t *testing.T) {
+	podsReady := func(status metav1.ConditionStatus, reason string) *kueue.Workload {
+		return utiltestingapi.MakeWorkload("wl", "ns").
+			Condition(metav1.Condition{Type: kueue.WorkloadPodsReady, Status: status, Reason: reason}).
+			Obj()
+	}
+	grantedExecutors := func(n int32) *kueue.Workload {
+		return utiltestingapi.MakeWorkload("wl", "ns").
+			ReserveQuotaAt(utiltestingapi.MakeAdmission("cq").PodSets(
+				kueue.PodSetAssignment{Name: driverPodSetName, Count: new(int32(1))},
+				kueue.PodSetAssignment{Name: executorPodSetName, Count: new(n)},
+			).Obj(), time.Now()).Obj()
+	}
+	replacementSlice := utiltestingapi.MakeWorkload("wl-2", "ns").
+		Annotation(workloadslicing.WorkloadSliceReplacementFor, "ns/wl-1").
+		Obj()
+	readyPods := func(n int) []corev1.Pod {
+		pods := make([]corev1.Pod, 0, n)
+		for i := range n {
+			pods = append(pods, execPod("sparkapp", fmt.Sprintf("exec-%d", i+1), corev1.PodRunning, ready))
+		}
+		return pods
+	}
+	initialThree := &sparkappv1beta2.DynamicAllocation{Enabled: true, MinExecutors: new(int32(1)), InitialExecutors: new(int32(3))}
 	testCases := map[string]struct {
 		dynamicAllocation *sparkappv1beta2.DynamicAllocation
 		state             sparkappv1beta2.ApplicationStateType
 		declaredReady     *int64
 		pods              []corev1.Pod
-		granted           *int32
+		workload          *kueue.Workload
 		want              bool
 	}{
 		"declared ready executors reach the instances": {
@@ -320,18 +345,58 @@ func TestPodsReadyFromReadyExecutors(t *testing.T) {
 			},
 			want: false,
 		},
-		"dynamic allocation without minExecutors: the driver running is enough": {
-			dynamicAllocation: &sparkappv1beta2.DynamicAllocation{Enabled: true},
+		"dynamic allocation, not ready yet: fewer than the initial executors": {
+			dynamicAllocation: initialThree,
+			pods:              readyPods(2),
+			want:              false,
+		},
+		"dynamic allocation, not ready yet: the initial executors": {
+			dynamicAllocation: initialThree,
+			pods:              readyPods(3),
 			want:              true,
 		},
-		"dynamic allocation: minExecutors is the floor": {
+		"dynamic allocation, not ready yet: the instances are the initial executors": {
 			dynamicAllocation: &sparkappv1beta2.DynamicAllocation{Enabled: true, MinExecutors: new(int32(1))},
-			pods:              []corev1.Pod{execPod("sparkapp", "exec-1", corev1.PodRunning, ready)},
+			pods:              readyPods(1),
+			want:              false,
+		},
+		"dynamic allocation, not ready yet: granted fewer than the initial executors": {
+			dynamicAllocation: initialThree,
+			workload:          grantedExecutors(2),
+			pods:              readyPods(2),
+			want:              true,
+		},
+		"dynamic allocation, started: minExecutors is the floor": {
+			dynamicAllocation: initialThree,
+			workload:          podsReady(metav1.ConditionTrue, kueue.WorkloadStarted),
+			pods:              readyPods(1),
+			want:              true,
+		},
+		"dynamic allocation, started: below minExecutors": {
+			dynamicAllocation: initialThree,
+			workload:          podsReady(metav1.ConditionTrue, kueue.WorkloadStarted),
+			want:              false,
+		},
+		"dynamic allocation, waiting for recovery: minExecutors is the floor": {
+			dynamicAllocation: initialThree,
+			workload:          podsReady(metav1.ConditionFalse, kueue.WorkloadWaitForRecovery),
+			pods:              readyPods(1),
+			want:              true,
+		},
+		"dynamic allocation, a replacement slice: minExecutors is the floor": {
+			dynamicAllocation: initialThree,
+			workload:          replacementSlice,
+			pods:              readyPods(1),
+			want:              true,
+		},
+		"dynamic allocation without minExecutors, started: the driver running is enough": {
+			dynamicAllocation: &sparkappv1beta2.DynamicAllocation{Enabled: true},
+			workload:          podsReady(metav1.ConditionTrue, kueue.WorkloadStarted),
 			want:              true,
 		},
 		"the grant caps the floor": {
 			declaredReady: new(int64(1)),
-			granted:       new(int32(1)),
+			workload:      grantedExecutors(1),
 			want:          true,
 		},
 		"driver not running": {
@@ -356,13 +421,8 @@ func TestPodsReadyFromReadyExecutors(t *testing.T) {
 			useExecutorReader(t, readerFor(app, declared(app, "7", fields), tc.pods...))
 			job := (*SparkApplication)(app)
 			var got bool
-			if tc.granted != nil {
-				wl := utiltestingapi.MakeWorkload("wl", "ns").
-					ReserveQuotaAt(utiltestingapi.MakeAdmission("cq").PodSets(
-						kueue.PodSetAssignment{Name: driverPodSetName, Count: new(int32(1))},
-						kueue.PodSetAssignment{Name: executorPodSetName, Count: tc.granted},
-					).Obj(), time.Now()).Obj()
-				got = job.PodsReadyForWorkload(ctx, nil, wl)
+			if tc.workload != nil {
+				got = job.PodsReadyForWorkload(ctx, nil, tc.workload)
 			} else {
 				got = job.PodsReady(ctx, nil)
 			}
