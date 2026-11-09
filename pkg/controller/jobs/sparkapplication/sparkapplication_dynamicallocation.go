@@ -34,7 +34,7 @@ type dynamicAllocation struct {
 
 func (j *SparkApplication) dynamicAllocation() dynamicAllocation {
 	da := dynamicAllocation{
-		enabled:          strings.EqualFold(strings.TrimSpace(j.Spec.SparkConf[sparkcommon.SparkDynamicAllocationEnabled]), "true"),
+		enabled:          j.sparkConfBool(sparkcommon.SparkDynamicAllocationEnabled),
 		minExecutors:     j.sparkConfInt32(sparkcommon.SparkDynamicAllocationMinExecutors),
 		maxExecutors:     j.sparkConfInt32(sparkcommon.SparkDynamicAllocationMaxExecutors),
 		initialExecutors: j.sparkConfInt32(sparkcommon.SparkDynamicAllocationInitialExecutors),
@@ -50,6 +50,12 @@ func (j *SparkApplication) dynamicAllocation() dynamicAllocation {
 
 func (j *SparkApplication) executorInstances() *int32 {
 	return cmp.Or(j.Spec.Executor.Instances, j.sparkConfInt32(sparkcommon.SparkExecutorInstances))
+}
+
+// sparkConfBool reports whether a boolean property of spec.sparkConf is true,
+// ignoring case and surrounding whitespace, as Spark does.
+func (j *SparkApplication) sparkConfBool(key string) bool {
+	return strings.EqualFold(strings.TrimSpace(j.Spec.SparkConf[key]), "true")
 }
 
 // sparkConfInt32 returns a non-negative integer property, or nil if it is unset or malformed.

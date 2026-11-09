@@ -965,6 +965,31 @@ func TestRestorePodSetsInfo(t *testing.T) {
 	}
 }
 
+func TestRestorePodSetsInfoKeepsTheExecutorCountInSparkConf(t *testing.T) {
+	testCases := map[string]struct {
+		count         int32
+		wantInstances *int32
+	}{
+		"unchanged: stays in sparkConf":                {count: 5},
+		"changed: restored to spec.executor.instances": {count: 3, wantInstances: new(int32(3))},
+	}
+	for name, tc := range testCases {
+		t.Run(name, func(t *testing.T) {
+			app := sparkapplicationtesting.MakeSparkApplication("sparkapp", "ns").
+				SparkConf("spark.executor.instances", "5").
+				Obj()
+			app.Spec.Executor.Instances = nil
+			(*SparkApplication)(app).RestorePodSetsInfo(t.Context(), []podset.PodSetInfo{
+				{Name: driverPodSetName},
+				{Name: executorPodSetName, Count: tc.count},
+			})
+			if diff := cmp.Diff(tc.wantInstances, app.Spec.Executor.Instances); diff != "" {
+				t.Errorf("spec.executor.instances mismatch (-want +got):\n%s", diff)
+			}
+		})
+	}
+}
+
 func TestFinished(t *testing.T) {
 	cases := map[string]struct {
 		state        sparkappv1beta2.ApplicationStateType

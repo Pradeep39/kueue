@@ -284,7 +284,10 @@ func (j *SparkApplication) RestorePodSetsInfo(ctx context.Context, podSetsInfo [
 		// An elastic job's executor count follows the running executors, not
 		// spec.executor.instances, and Kueue never changes instances when it
 		// starts the job, so there is nothing to restore.
-		if role == sparkcommon.SparkRoleExecutor && !isAnElasticJob(j) {
+		// The count may come from spec.sparkConf (see executorInstances); it is
+		// restored to spec.executor.instances only if that changes it, so that an
+		// unchanged count set in spec.sparkConf stays there.
+		if role == sparkcommon.SparkRoleExecutor && !isAnElasticJob(j) && j.numInitialExecutors() != podSetInfo.Count {
 			// An unset spec.executor.instances is counted as 0 executors, while the
 			// CRD requires the field to be at least 1 when set. Restore 0 as unset,
 			// otherwise the API server rejects the patch that suspends the job.

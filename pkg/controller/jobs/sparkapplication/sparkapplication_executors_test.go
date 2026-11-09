@@ -315,6 +315,7 @@ func TestPodsReadyFromReadyExecutors(t *testing.T) {
 	initialThree := &sparkappv1beta2.DynamicAllocation{Enabled: true, MinExecutors: new(int32(1)), InitialExecutors: new(int32(3))}
 	testCases := map[string]struct {
 		dynamicAllocation *sparkappv1beta2.DynamicAllocation
+		sparkConf         map[string]string
 		state             sparkappv1beta2.ApplicationStateType
 		declaredReady     *int64
 		pods              []corev1.Pod
@@ -366,6 +367,24 @@ func TestPodsReadyFromReadyExecutors(t *testing.T) {
 			pods:              readyPods(2),
 			want:              true,
 		},
+		"dynamic allocation in sparkConf, not ready yet: its initialExecutors": {
+			sparkConf: map[string]string{
+				"spark.dynamicAllocation.enabled":          "true",
+				"spark.dynamicAllocation.initialExecutors": "3",
+			},
+			pods: readyPods(2),
+			want: false,
+		},
+		"dynamic allocation in sparkConf, started: its minExecutors": {
+			sparkConf: map[string]string{
+				"spark.dynamicAllocation.enabled":          "true",
+				"spark.dynamicAllocation.minExecutors":     "1",
+				"spark.dynamicAllocation.initialExecutors": "3",
+			},
+			workload: podsReady(metav1.ConditionTrue, kueue.WorkloadStarted),
+			pods:     readyPods(1),
+			want:     true,
+		},
 		"dynamic allocation, started: minExecutors is the floor": {
 			dynamicAllocation: initialThree,
 			workload:          podsReady(metav1.ConditionTrue, kueue.WorkloadStarted),
@@ -410,6 +429,7 @@ func TestPodsReadyFromReadyExecutors(t *testing.T) {
 			ctx, _ := utiltesting.ContextWithLog(t)
 			app := runningApp()
 			app.Spec.DynamicAllocation = tc.dynamicAllocation
+			app.Spec.SparkConf = tc.sparkConf
 			if tc.state != "" {
 				app.Status.AppState.State = tc.state
 			}
