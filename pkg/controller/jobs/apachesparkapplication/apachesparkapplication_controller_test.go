@@ -87,21 +87,25 @@ func TestIsActive(t *testing.T) {
 	}
 }
 
-func TestPodsReady(t *testing.T) {
+func TestPodsReadyNeedsTheDriverRunning(t *testing.T) {
+	// Enough ready executors declared, so readiness is the driver running
 	cases := map[sparkv1.ApplicationStateSummary]bool{
 		sparkv1.Suspended:                          false,
 		sparkv1.DriverRequested:                    false,
-		sparkv1.DriverReady:                        false,
-		sparkv1.InitializedBelowThresholdExecutors: false,
+		sparkv1.DriverStarted:                      false,
+		sparkv1.DriverReady:                        true,
+		sparkv1.InitializedBelowThresholdExecutors: true,
 		sparkv1.RunningHealthy:                     true,
 		sparkv1.RunningWithPartialCapacity:         true,
-		sparkv1.RunningWithBelowThresholdExecutors: false,
+		sparkv1.RunningWithBelowThresholdExecutors: true,
 		sparkv1.Succeeded:                          false,
 	}
 
 	for state, want := range cases {
 		t.Run(string(state), func(t *testing.T) {
-			if got := withStatus(stateOnly(state)).PodsReady(context.Background(), nil); got != want {
+			status := stateOnly(state)
+			status.ReadyExecutors = new(int32(10))
+			if got := withStatus(status).PodsReady(context.Background(), nil); got != want {
 				t.Errorf("PodsReady() = %v for %s, want %v", got, state, want)
 			}
 		})

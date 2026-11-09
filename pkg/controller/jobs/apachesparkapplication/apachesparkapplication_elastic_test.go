@@ -18,6 +18,7 @@ package apachesparkapplication
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"testing"
@@ -314,7 +315,7 @@ func TestNumExecutors(t *testing.T) {
 			if tc.notElastic {
 				job.Annotations = nil
 			}
-			got, err := job.numExecutors()
+			got, err := job.numExecutors(context.Background(), nil)
 			if err != nil {
 				t.Fatalf("numExecutors() returned unexpected error: %v", err)
 			}

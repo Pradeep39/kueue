@@ -17,6 +17,7 @@ limitations under the License.
 package apachesparkapplication
 
 import (
+	"context"
 	"fmt"
 	"slices"
 	"strconv"
@@ -24,6 +25,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	sparkv1 "sigs.k8s.io/kueue/pkg/controller/jobs/apachesparkapplication/api/v1"
 )
@@ -427,43 +429,28 @@ func (j *SparkApplication) declaredInitialExecutors() (int32, error) {
 
 // numExecutors returns the executor count to request quota for. With Dynamic Allocation, an
 // elastic application follows the executors the driver keeps (pending or running), as the
-// operator declares them in status.executorState, so terminating executors hold quota until
-// they stop. Before the driver reports any, it is the initial count Dynamic Allocation starts
+// operator declares them or as counted from their Pods (see activeExecutors), so terminating
+// executors hold quota until they stop. Before the driver reports any, it is the initial count Dynamic Allocation starts
 // with. The derived count is clamped to Dynamic Allocation's own minExecutors/maxExecutors;
 // see clampToDynamicAllocationBounds for why the lower bound is load-bearing.
 //
 // The count is derived, never written back: the operator treats any spec change on a running
 // application as a full update and resubmits it.
-func (j *SparkApplication) numExecutors() (int32, error) {
+func (j *SparkApplication) numExecutors(ctx context.Context, c client.Client) (int32, error) {
 	if !isAnElasticJob(j.SparkApplication) || !j.dynamicAllocationEnabled() {
 		return j.staticExecutorCount()
 	}
-	if !j.driverStarted() || !j.hasExecutors() {
+	if !j.driverStarted() {
 		return j.initialExecutorCount()
 	}
-	return j.clampToDynamicAllocationBounds(j.numActiveExecutors())
-}
-
-// hasExecutors reports whether the operator recorded any executor of the current attempt.
-func (j *SparkApplication) hasExecutors() bool {
-	return j.Status.ActiveExecutors != nil || len(j.Status.ExecutorState) > 0
-}
-
-// numActiveExecutors returns the number of executors the driver keeps, pending or running. It
-// is status.activeExecutors, which the operator counts from the executor pods, so it stays exact
-// when status.executorState stops tracking executors beyond its size cap, or is turned off. An
-// operator which does not record it falls back to counting status.executorState.
-func (j *SparkApplication) numActiveExecutors() int32 {
-	if j.Status.ActiveExecutors != nil {
-		return *j.Status.ActiveExecutors
+	active, exist, err := j.activeExecutors(ctx, c)
+	if err != nil {
+		return 0, err
 	}
-	var count int32
-	for _, st := range j.Status.ExecutorState {
-		if st == sparkv1.ExecutorStatePending || st == sparkv1.ExecutorStateRunning {
-			count++
-		}
+	if !exist {
+		return j.initialExecutorCount()
 	}
-	return count
+	return j.clampToDynamicAllocationBounds(active)
 }
 
 // driverStarted reports whether status.executorState belongs to a driver of the current

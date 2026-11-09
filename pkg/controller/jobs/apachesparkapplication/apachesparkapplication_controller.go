@@ -36,7 +36,6 @@ import (
 	sparkv1 "sigs.k8s.io/kueue/pkg/controller/jobs/apachesparkapplication/api/v1"
 	"sigs.k8s.io/kueue/pkg/features"
 	"sigs.k8s.io/kueue/pkg/podset"
-	utilpod "sigs.k8s.io/kueue/pkg/util/pod"
 	"sigs.k8s.io/kueue/pkg/workload"
 )
 
@@ -65,21 +64,6 @@ var (
 		sparkv1.InitializedBelowThresholdExecutors,
 		sparkv1.RunningHealthy,
 		sparkv1.RunningWithPartialCapacity,
-		sparkv1.RunningWithBelowThresholdExecutors,
-	}
-
-	// healthyStates are the states in which the application holds at least the
-	// minimum executors it asked for.
-	healthyStates = []sparkv1.ApplicationStateSummary{
-		sparkv1.RunningHealthy,
-		sparkv1.RunningWithPartialCapacity,
-	}
-
-	// belowThresholdStates are the states in which the driver runs with fewer ready executors
-	// than the operator's threshold, instanceConfig.minExecutors: still starting up, or after
-	// losing executors.
-	belowThresholdStates = []sparkv1.ApplicationStateSummary{
-		sparkv1.InitializedBelowThresholdExecutors,
 		sparkv1.RunningWithBelowThresholdExecutors,
 	}
 
@@ -141,7 +125,7 @@ func NewJob() jobframework.GenericJob {
 
 var NewReconciler = jobframework.NewGenericReconcilerFactory(NewJob,
 	func(b *builder.Builder, _ client.Client) *builder.Builder {
-		return b.Named(controllerName)
+		return watchExecutorPods(b.Named(controllerName))
 	})
 
 // SparkApplication wraps the CRD type.
@@ -152,6 +136,7 @@ type SparkApplication struct {
 var (
 	_ jobframework.GenericJob                  = (*SparkApplication)(nil)
 	_ jobframework.ElasticWorkloadNameProvider = (*SparkApplication)(nil)
+	_ jobframework.JobWithCustomAnnotations    = (*SparkApplication)(nil)
 )
 
 // GetWorkloadNameExtraPart folds the attempt and the highest executor ID into the elastic
@@ -170,13 +155,16 @@ func (j *SparkApplication) GetWorkloadNameExtraPart() string {
 	return extra
 }
 
-// executorSequence returns status.maxExecutorId, or the number of tracked executors from an
-// operator which does not record it.
+// executorSequence returns status.maxExecutorId when the operator declares it, otherwise the
+// highest executor ID recorded from the executor Pods (see GetCustomAnnotations). Either way it is
+// raised to the number of tracked executors, which also only grows within an attempt, so the
+// sequence never goes back.
 func (j *SparkApplication) executorSequence() int64 {
+	seq := max(int64(len(j.Status.ExecutorState)), j.recordedMaxExecutorID())
 	if j.Status.MaxExecutorID != nil {
-		return *j.Status.MaxExecutorID
+		seq = max(seq, *j.Status.MaxExecutorID)
 	}
-	return int64(len(j.Status.ExecutorState))
+	return seq
 }
 
 func (j *SparkApplication) Object() client.Object {
@@ -243,50 +231,39 @@ func (j *SparkApplication) terminalOutcome() sparkv1.ApplicationStateSummary {
 	return outcome
 }
 
-// PodsReady reports whether the application acquired the executors it asked for. The
-// operator only advances to RunningHealthy or RunningWithPartialCapacity once at least
-// minExecutors are ready, so the state machine is a sufficient signal here.
-func (j *SparkApplication) PodsReady(context.Context, client.Client) bool {
-	return slices.Contains(healthyStates, j.Status.CurrentState.CurrentStateSummary)
+// PodsReady reports whether the driver runs and enough executors are ready: running and ready,
+// and not being deleted (see readyExecutors), at least minExecutors with Dynamic Allocation, or
+// the executor instances otherwise. It doesn't rely on the operator's state machine, whose
+// threshold is instanceConfig, which an application need not set.
+func (j *SparkApplication) PodsReady(ctx context.Context, c client.Client) bool {
+	ready, err := j.podsReady(ctx, c, nil)
+	if err != nil {
+		ctrl.LoggerFrom(ctx).V(2).Info("Cannot count the ready executors", "error", err.Error())
+	}
+	return ready
 }
 
-// PodsReadyForWorkload implements jobframework.JobWithGrantAwarePodsReady. The operator's
-// threshold is instanceConfig.minExecutors, but Kueue may grant fewer executors: Dynamic
-// Allocation's own minExecutors can be lower, and so can a grant lowered by partial preemption.
-// Below the threshold the operator reports a below-threshold state, so in those states the
-// application is also ready once every executor Kueue grants is running.
+// PodsReadyForWorkload implements jobframework.JobWithGrantAwarePodsReady: the application is
+// ready once the executors Kueue grants it are, even if that is fewer than it would otherwise
+// expect, e.g. after a partial preemption lowered the grant.
 func (j *SparkApplication) PodsReadyForWorkload(ctx context.Context, c client.Client, wl *kueue.Workload) bool {
-	if j.PodsReady(ctx, c) {
-		return true
+	var granted *int32
+	if n, ok := workload.GrantedCount(wl, executorPodSetName); ok {
+		granted = &n
 	}
-	if c == nil || !slices.Contains(belowThresholdStates, j.Status.CurrentState.CurrentStateSummary) {
-		return false
-	}
-	granted, ok := workload.GrantedCount(wl, executorPodSetName)
-	if !ok {
-		return false
-	}
-	pods, err := j.listExecutorPods(ctx, c)
+	ready, err := j.podsReady(ctx, c, granted)
 	if err != nil {
-		ctrl.LoggerFrom(ctx).V(2).Info("Cannot list executor Pods to check readiness", "error", err.Error())
-		return false
+		ctrl.LoggerFrom(ctx).V(2).Info("Cannot count the ready executors", "error", err.Error())
 	}
-	var running int32
-	for i := range pods {
-		p := &pods[i]
-		if p.Status.Phase == corev1.PodRunning && p.DeletionTimestamp == nil && !utilpod.HasGate(p, kueue.ElasticJobSchedulingGate) {
-			running++
-		}
-	}
-	return running >= granted
+	return ready
 }
 
 func (j *SparkApplication) PodLabelSelector() string {
 	return fmt.Sprintf("%s=%s", appNameLabel, j.Name)
 }
 
-func (j *SparkApplication) PodSets(context.Context, client.Client) ([]kueue.PodSet, error) {
-	executorCount, err := j.numExecutors()
+func (j *SparkApplication) PodSets(ctx context.Context, c client.Client) ([]kueue.PodSet, error) {
+	executorCount, err := j.numExecutors(ctx, c)
 	if err != nil {
 		return nil, err
 	}

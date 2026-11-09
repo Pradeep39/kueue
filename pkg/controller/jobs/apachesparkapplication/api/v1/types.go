@@ -205,6 +205,10 @@ type ApplicationStatus struct {
 	// tracking executors beyond its size cap, and records it even with the executor states off.
 	ActiveExecutors *int32 `json:"activeExecutors,omitempty"`
 
+	// ReadyExecutors is the number of executor pods of the current attempt which are running and
+	// ready, and not being deleted. The operator counts it from the pods, like ActiveExecutors.
+	ReadyExecutors *int32 `json:"readyExecutors,omitempty"`
+
 	// MaxExecutorID is the highest executor ID of the current attempt so far. Spark never reuses
 	// an executor ID within an attempt, so it grows with every executor added.
 	MaxExecutorID *int64 `json:"maxExecutorId,omitempty"`
@@ -282,6 +286,9 @@ func (in *ApplicationStatus) DeepCopyInto(out *ApplicationStatus) {
 	}
 	if in.ActiveExecutors != nil {
 		out.ActiveExecutors = new(*in.ActiveExecutors)
+	}
+	if in.ReadyExecutors != nil {
+		out.ReadyExecutors = new(*in.ReadyExecutors)
 	}
 	if in.MaxExecutorID != nil {
 		out.MaxExecutorID = new(*in.MaxExecutorID)

@@ -151,7 +151,8 @@ func (j *SparkApplication) PartialPreemptionFloor() (kueue.PodSetReference, int3
 	if err != nil {
 		return "", 0, false
 	}
-	count, err := j.numExecutors()
+	// The floor has no client: the executor count is the declared one, or the tracked executors.
+	count, err := j.numExecutors(context.TODO(), nil)
 	if err != nil {
 		return "", 0, false
 	}
@@ -195,7 +196,7 @@ func (j *SparkApplication) PartialPreemptionMarkedPods(ctx context.Context, c cl
 	return marked, true, nil
 }
 
-// listExecutorPods lists the application's executor Pods, uncached. The operator injects both
+// listExecutorPods lists the application's executor Pods from the informer cache. The operator injects both
 // labels into the executor Pod template, so every driver-created executor carries them.
 func (j *SparkApplication) listExecutorPods(ctx context.Context, c client.Client) ([]corev1.Pod, error) {
 	podList := &corev1.PodList{}
