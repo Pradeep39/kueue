@@ -24,6 +24,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/client-go/tools/events"
+	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	ctrlcache "sigs.k8s.io/controller-runtime/pkg/cache"
@@ -34,6 +35,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	"sigs.k8s.io/kueue/pkg/controller/jobframework"
+	utilpod "sigs.k8s.io/kueue/pkg/util/pod"
 )
 
 // The Spark Operator may declare the executors of a SparkApplication in its status:
@@ -65,8 +67,15 @@ func untypedSparkApplication() *unstructured.Unstructured {
 	return u
 }
 
+// The status fields the operator may declare the executors in.
+const (
+	activeExecutorsField = "activeExecutors"
+	readyExecutorsField  = "readyExecutors"
+	maxExecutorIDField   = "maxExecutorId"
+)
+
 // declaredStatusFields are the status fields kept in the untyped copy.
-var declaredStatusFields = []string{"activeExecutors", "readyExecutors", "maxExecutorId"}
+var declaredStatusFields = []string{activeExecutorsField, readyExecutorsField, maxExecutorIDField}
 
 // ConfigureCache trims the untyped SparkApplications in the manager's cache to their identity and
 // the declared executor fields, so the untyped copy costs a few fields per application. The
@@ -89,12 +98,17 @@ func trimUntyped(in any) (any, error) {
 	trimmed.SetName(u.GetName())
 	trimmed.SetUID(u.GetUID())
 	trimmed.SetResourceVersion(u.GetResourceVersion())
+	copyDeclaredStatus(trimmed, u)
+	return trimmed, nil
+}
+
+// copyDeclaredStatus copies the declared executor fields that src has to dst.
+func copyDeclaredStatus(dst, src *unstructured.Unstructured) {
 	for _, field := range declaredStatusFields {
-		if v, found, _ := unstructured.NestedFieldNoCopy(u.Object, "status", field); found {
-			_ = unstructured.SetNestedField(trimmed.Object, v, "status", field)
+		if v, found, _ := unstructured.NestedFieldNoCopy(src.Object, "status", field); found {
+			_ = unstructured.SetNestedField(dst.Object, v, "status", field)
 		}
 	}
-	return trimmed, nil
 }
 
 // declaredExecutors are the executor counts the operator declares; a nil field is not declared.
@@ -106,6 +120,28 @@ type declaredExecutors struct {
 	current bool
 }
 
+// currentActive returns the declared active executors, if the copy is current.
+func (d declaredExecutors) currentActive() *int32 {
+	if !d.current {
+		return nil
+	}
+	return d.active
+}
+
+// currentReady returns the declared ready executors, if the copy is current.
+func (d declaredExecutors) currentReady() *int32 {
+	if !d.current {
+		return nil
+	}
+	return d.ready
+}
+
+// highestID returns the declared highest executor ID, or 0. It only grows, so it's used whatever
+// the state of the copy.
+func (d declaredExecutors) highestID() int64 {
+	return ptr.Deref(d.maxID, 0)
+}
+
 func (j *SparkApplication) declaredExecutors(ctx context.Context) declaredExecutors {
 	if executorReader == nil {
 		return declaredExecutors{}
@@ -114,17 +150,28 @@ func (j *SparkApplication) declaredExecutors(ctx context.Context) declaredExecut
 	if err := executorReader.Get(ctx, client.ObjectKey{Namespace: j.Namespace, Name: j.Name}, u); err != nil {
 		return declaredExecutors{}
 	}
-	d := declaredExecutors{current: u.GetResourceVersion() == j.ResourceVersion}
-	if v, found, _ := unstructured.NestedInt64(u.Object, "status", "activeExecutors"); found {
-		d.active = new(int32(v))
+	return declaredExecutors{
+		active:  toInt32(declaredStatusInt(u, activeExecutorsField)),
+		ready:   toInt32(declaredStatusInt(u, readyExecutorsField)),
+		maxID:   declaredStatusInt(u, maxExecutorIDField),
+		current: u.GetResourceVersion() == j.ResourceVersion,
 	}
-	if v, found, _ := unstructured.NestedInt64(u.Object, "status", "readyExecutors"); found {
-		d.ready = new(int32(v))
+}
+
+// declaredStatusInt returns the integer status field of u, or nil if it is not set.
+func declaredStatusInt(u *unstructured.Unstructured, field string) *int64 {
+	v, found, err := unstructured.NestedInt64(u.Object, "status", field)
+	if !found || err != nil {
+		return nil
 	}
-	if v, found, _ := unstructured.NestedInt64(u.Object, "status", "maxExecutorId"); found {
-		d.maxID = new(v)
+	return &v
+}
+
+func toInt32(v *int64) *int32 {
+	if v == nil {
+		return nil
 	}
-	return d
+	return ptr.To(int32(*v))
 }
 
 // executorCounts are the executors of the current submission.
@@ -148,28 +195,30 @@ func (j *SparkApplication) countExecutorPods(ctx context.Context) (executorCount
 	}
 	var c executorCounts
 	for i := range pods.Items {
-		pod := &pods.Items[i]
-		c.exist = true
-		switch pod.Status.Phase {
-		case corev1.PodPending:
-			c.active++
-		case corev1.PodRunning:
-			c.active++
-			if pod.DeletionTimestamp == nil && podReady(pod) {
-				c.ready++
-			}
-		}
+		c.add(&pods.Items[i])
 	}
 	return c, nil
 }
 
-func podReady(pod *corev1.Pod) bool {
-	for _, condition := range pod.Status.Conditions {
-		if condition.Type == corev1.PodReady {
-			return condition.Status == corev1.ConditionTrue
-		}
+func (c *executorCounts) add(pod *corev1.Pod) {
+	c.exist = true
+	if isActiveExecutor(pod) {
+		c.active++
 	}
-	return false
+	if isReadyExecutor(pod) {
+		c.ready++
+	}
+}
+
+// isActiveExecutor reports whether the driver keeps the executor: its pod is pending or running.
+func isActiveExecutor(pod *corev1.Pod) bool {
+	return pod.Status.Phase == corev1.PodPending || pod.Status.Phase == corev1.PodRunning
+}
+
+// isReadyExecutor reports whether the executor serves the application: its pod is running and
+// ready, and not being deleted.
+func isReadyExecutor(pod *corev1.Pod) bool {
+	return pod.Status.Phase == corev1.PodRunning && pod.DeletionTimestamp == nil && utilpod.IsReady(pod)
 }
 
 // executors returns the active and ready executors of the current submission. Each count is the
@@ -178,20 +227,24 @@ func podReady(pod *corev1.Pod) bool {
 // status.executorState, as before.
 func (j *SparkApplication) executors(ctx context.Context) executorCounts {
 	d := j.declaredExecutors(ctx)
-	if d.current && d.active != nil && d.ready != nil {
-		return executorCounts{active: *d.active, ready: *d.ready, exist: true}
+	active, ready := d.currentActive(), d.currentReady()
+	if active != nil && ready != nil {
+		return executorCounts{active: *active, ready: *ready, exist: true}
 	}
 	if executorReader != nil {
 		if c, err := j.countExecutorPods(ctx); err == nil {
-			if d.current && d.active != nil {
-				c.active, c.exist = *d.active, true
+			if active != nil {
+				c.active, c.exist = *active, true
 			}
-			if d.current && d.ready != nil {
-				c.ready = *d.ready
-			}
+			c.ready = ptr.Deref(ready, c.ready)
 			return c
 		}
 	}
+	return j.executorStateCounts()
+}
+
+// executorStateCounts counts the executors in status.executorState.
+func (j *SparkApplication) executorStateCounts() executorCounts {
 	var c executorCounts
 	for _, st := range j.Status.ExecutorState {
 		switch st {
@@ -232,6 +285,6 @@ func executorPodChanged(e event.UpdateEvent) bool {
 		return true
 	}
 	return oldPod.Status.Phase != newPod.Status.Phase ||
-		podReady(oldPod) != podReady(newPod) ||
+		utilpod.IsReady(oldPod) != utilpod.IsReady(newPod) ||
 		(oldPod.DeletionTimestamp == nil) != (newPod.DeletionTimestamp == nil)
 }

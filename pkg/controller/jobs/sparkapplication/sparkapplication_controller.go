@@ -346,21 +346,27 @@ func (j *SparkApplication) podsReady(ctx context.Context, granted *int32) bool {
 	// AppState.State alone goes to Running as soon as the driver starts even if
 	// executors are stuck (e.g. unschedulable), which would let the
 	// waitForPodsReady timeout never fire on heterogeneous resource shortages.
-	expected := int(j.numInitialExecutors())
-	// When dynamic allocation is enabled, the actual number of executors can
-	// fluctuate between minExecutors and maxExecutors. Use minExecutors as the
-	// expected count since it's the guaranteed minimum, and Spark's default of 0
-	// if it is set neither in spec.dynamicAllocation nor in spec.sparkConf.
-	if da := j.dynamicAllocation(); da.enabled {
-		expected = int(ptr.Deref(da.minExecutors, 0))
-	}
+	expected := j.minReadyExecutors()
 	if granted != nil {
-		expected = min(expected, int(*granted))
+		expected = min(expected, *granted)
 	}
 	if expected == 0 {
 		return true
 	}
-	return int(j.executors(ctx).ready) >= expected
+	return j.executors(ctx).ready >= expected
+}
+
+// minReadyExecutors returns the executors that must be ready for PodsReady. When
+// dynamic allocation is enabled, the actual number of executors can fluctuate
+// between minExecutors and maxExecutors, so it's minExecutors, the guaranteed
+// minimum, and Spark's default of 0 if it is set neither in
+// spec.dynamicAllocation nor in spec.sparkConf. Otherwise it's the executor
+// instances.
+func (j *SparkApplication) minReadyExecutors() int32 {
+	if da := j.dynamicAllocation(); da.enabled {
+		return ptr.Deref(da.minExecutors, 0)
+	}
+	return j.numInitialExecutors()
 }
 
 // numExecutors returns the executor count to request quota for. With dynamic
@@ -426,11 +432,7 @@ func (j *SparkApplication) GetWorkloadNameExtraPart() string {
 // the former falls back to. Taking the higher one keeps the sequence from going back when the two
 // copies of the application briefly disagree, which would rename the workload slice.
 func (j *SparkApplication) executorSequence() int64 {
-	seq := int64(len(j.Status.ExecutorState))
-	if d := j.declaredExecutors(context.TODO()); d.maxID != nil {
-		seq = max(seq, *d.maxID)
-	}
-	return seq
+	return max(int64(len(j.Status.ExecutorState)), j.declaredExecutors(context.TODO()).highestID())
 }
 
 func SetupIndexes(ctx context.Context, indexer client.FieldIndexer) error {

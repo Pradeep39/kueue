@@ -264,6 +264,29 @@ func TestExecutors(t *testing.T) {
 	}
 }
 
+func TestExecutorCountsAdd(t *testing.T) {
+	testCases := map[string]struct {
+		pod  corev1.Pod
+		want executorCounts
+	}{
+		"pending":                            {pod: execPod("app", "e1", corev1.PodPending), want: executorCounts{active: 1, exist: true}},
+		"running, not ready":                 {pod: execPod("app", "e2", corev1.PodRunning), want: executorCounts{active: 1, exist: true}},
+		"running and ready":                  {pod: execPod("app", "e3", corev1.PodRunning, ready), want: executorCounts{active: 1, ready: 1, exist: true}},
+		"running, ready, being deleted":      {pod: execPod("app", "e4", corev1.PodRunning, ready, deleting), want: executorCounts{active: 1, exist: true}},
+		"succeeded with the ready condition": {pod: execPod("app", "e5", corev1.PodSucceeded, ready), want: executorCounts{exist: true}},
+		"failed":                             {pod: execPod("app", "e6", corev1.PodFailed), want: executorCounts{exist: true}},
+	}
+	for name, tc := range testCases {
+		t.Run(name, func(t *testing.T) {
+			var got executorCounts
+			got.add(&tc.pod)
+			if got != tc.want {
+				t.Errorf("add() = %+v, want %+v", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestPodsReadyFromReadyExecutors(t *testing.T) {
 	testCases := map[string]struct {
 		dynamicAllocation *sparkappv1beta2.DynamicAllocation

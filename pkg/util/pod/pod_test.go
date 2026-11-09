@@ -310,6 +310,46 @@ func TestIsTerminated(t *testing.T) {
 	}
 }
 
+func TestIsReady(t *testing.T) {
+	cases := map[string]struct {
+		pod       *corev1.Pod
+		wantReady bool
+	}{
+		"without the Ready condition": {
+			pod: testingpod.MakePod("", "").Obj(),
+		},
+		"Ready=False": {
+			pod: testingpod.MakePod("", "").
+				StatusConditions(corev1.PodCondition{Type: corev1.PodReady, Status: corev1.ConditionFalse}).
+				Obj(),
+		},
+		"Ready=Unknown": {
+			pod: testingpod.MakePod("", "").
+				StatusConditions(corev1.PodCondition{Type: corev1.PodReady, Status: corev1.ConditionUnknown}).
+				Obj(),
+		},
+		"only ContainersReady=True": {
+			pod: testingpod.MakePod("", "").
+				StatusConditions(corev1.PodCondition{Type: corev1.ContainersReady, Status: corev1.ConditionTrue}).
+				Obj(),
+		},
+		"Ready=True": {
+			pod: testingpod.MakePod("", "").
+				StatusConditions(corev1.PodCondition{Type: corev1.PodReady, Status: corev1.ConditionTrue}).
+				Obj(),
+			wantReady: true,
+		},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			got := IsReady(tc.pod)
+			if diff := cmp.Diff(tc.wantReady, got); diff != "" {
+				t.Errorf("Unexpected Pod ready (-want,+got):\n%s", diff)
+			}
+		})
+	}
+}
+
 func TestIsScheduled(t *testing.T) {
 	cases := map[string]struct {
 		pod           *corev1.Pod

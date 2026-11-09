@@ -187,6 +187,11 @@ func IsTerminated(p *corev1.Pod) bool {
 	return p.Status.Phase == corev1.PodFailed || p.Status.Phase == corev1.PodSucceeded
 }
 
+// IsReady reports whether the Pod has the Ready condition set to True.
+func IsReady(p *corev1.Pod) bool {
+	return HasCondition(p, &corev1.PodCondition{Type: corev1.PodReady, Status: corev1.ConditionTrue})
+}
+
 func IsScheduled(p *corev1.Pod) bool {
 	return p.Spec.NodeName != "" && HasCondition(p, &corev1.PodCondition{Type: corev1.PodScheduled, Status: corev1.ConditionTrue})
 }
