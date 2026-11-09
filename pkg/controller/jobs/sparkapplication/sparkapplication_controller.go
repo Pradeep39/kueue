@@ -42,6 +42,9 @@ import (
 	"sigs.k8s.io/kueue/pkg/controller/jobframework"
 	"sigs.k8s.io/kueue/pkg/features"
 	"sigs.k8s.io/kueue/pkg/podset"
+	utilpod "sigs.k8s.io/kueue/pkg/util/pod"
+	"sigs.k8s.io/kueue/pkg/workload"
+	"sigs.k8s.io/kueue/pkg/workloadslicing"
 )
 
 var (
@@ -86,15 +89,13 @@ func NewJob() jobframework.GenericJob {
 	return &SparkApplication{}
 }
 
-var NewReconciler = jobframework.NewGenericReconcilerFactory(NewJob,
+var newGenericReconciler = jobframework.NewGenericReconcilerFactory(NewJob,
 	func(b *builder.Builder, _ client.Client) *builder.Builder {
-		if !features.Enabled(features.ElasticJobsViaWorkloadSlicesForSparkApplication) {
-			return b
-		}
-		// An elastic job counts its executors from pods, and the Spark Operator does not
-		// report every executor in the SparkApplication status.
+		// An elastic job counts its executors from pods, and PodsReady counts the ready ones when
+		// the Spark Operator doesn't declare them, as it doesn't report every executor in the
+		// SparkApplication status.
 		return b.Watches(&corev1.Pod{}, handler.EnqueueRequestsFromMapFunc(executorPodToSparkApplication),
-			builder.WithPredicates(predicate.Funcs{UpdateFunc: podPhaseChanged}))
+			builder.WithPredicates(predicate.Funcs{UpdateFunc: executorPodChanged}))
 	},
 )
 
@@ -107,10 +108,17 @@ func executorPodToSparkApplication(_ context.Context, obj client.Object) []recon
 	return []reconcile.Request{{Namespace: obj.GetNamespace(), Name: appName}}
 }
 
-func podPhaseChanged(e event.UpdateEvent) bool {
+// executorPodChanged reports whether an executor Pod changed what is counted from it: its phase,
+// its readiness, or whether it is being deleted.
+func executorPodChanged(e event.UpdateEvent) bool {
 	oldPod, isOldPod := e.ObjectOld.(*corev1.Pod)
 	newPod, isNewPod := e.ObjectNew.(*corev1.Pod)
-	return !isOldPod || !isNewPod || oldPod.Status.Phase != newPod.Status.Phase
+	if !isOldPod || !isNewPod {
+		return true
+	}
+	return oldPod.Status.Phase != newPod.Status.Phase ||
+		utilpod.IsReady(oldPod) != utilpod.IsReady(newPod) ||
+		(oldPod.DeletionTimestamp == nil) != (newPod.DeletionTimestamp == nil)
 }
 
 type SparkApplication sparkv1beta2.SparkApplication
@@ -330,7 +338,10 @@ func (j *SparkApplication) RestorePodSetsInfo(ctx context.Context, podSetsInfo [
 		// An elastic job's executor count follows the running executors, not
 		// spec.executor.instances, and Kueue never changes instances when it
 		// starts the job, so there is nothing to restore.
-		if role == sparkcommon.SparkRoleExecutor && !isAnElasticJob(j) {
+		// The count may come from spec.sparkConf (see executorInstances); it is
+		// restored to spec.executor.instances only if that changes it, so that an
+		// unchanged count set in spec.sparkConf stays there.
+		if role == sparkcommon.SparkRoleExecutor && !isAnElasticJob(j) && j.numInitialExecutors() != podSetInfo.Count {
 			// An unset spec.executor.instances is counted as 0 executors, while the
 			// CRD requires the field to be at least 1 when set. Restore 0 as unset,
 			// otherwise the API server rejects the patch that suspends the job.
@@ -367,34 +378,102 @@ func (j *SparkApplication) Finished(ctx context.Context) (message string, succes
 			j.Status.AppState.State == sparkv1beta2.ApplicationStateFailed
 }
 
-func (j *SparkApplication) PodsReady(ctx context.Context, _ client.Client, _ ...jobframework.PodsReadyOption) bool {
+func (j *SparkApplication) PodsReady(ctx context.Context, c client.Client, options ...jobframework.PodsReadyOption) bool {
 	// Driver must be running.
 	if j.Status.AppState.State != sparkv1beta2.ApplicationStateRunning {
 		return false
 	}
-	// And every requested executor must have reported a Running/Completed state.
+	// And enough executors must be ready: running and ready, and not being deleted.
 	// AppState.State alone goes to Running as soon as the driver starts even if
 	// executors are stuck (e.g. unschedulable), which would let the
 	// waitForPodsReady timeout never fire on heterogeneous resource shortages.
-	expected := int(ptr.Deref(j.Spec.Executor.Instances, 0))
-	// When dynamic allocation is enabled, the actual number of executors can
-	// fluctuate between minExecutors and maxExecutors. Use minExecutors as the
-	// expected count since it's the guaranteed minimum. If neither the CRD
-	// field nor sparkConf is set, use Spec.Executor.Instances as default.
-	if j.Spec.DynamicAllocation != nil && j.Spec.DynamicAllocation.Enabled {
-		expected = int(ptr.Deref(j.Spec.DynamicAllocation.MinExecutors, int32(expected)))
-	}
+	// Completed executors don't count: unlike a batch Job's Pods, they are capacity
+	// the application no longer has.
+	expected := j.minReadyExecutors(jobframework.PodsReadyWorkload(options...))
 	if expected == 0 {
 		return true
 	}
-	ready := 0
-	for _, st := range j.Status.ExecutorState {
-		switch st {
-		case sparkv1beta2.ExecutorStateRunning, sparkv1beta2.ExecutorStateCompleted:
-			ready++
-		}
+	ready, err := j.readyExecutors(ctx, c)
+	if err != nil {
+		ctrl.LoggerFrom(ctx).V(2).Info("Cannot count the ready executors", "error", err.Error())
+		return false
 	}
 	return ready >= expected
+}
+
+// minReadyExecutors returns the executors that must be ready for PodsReady in
+// the workload wl. Without dynamic allocation, it's the executor instances. With
+// dynamic allocation, the driver starts with its initial executors, and they must
+// be ready (see startingExecutors). Once they have been, the executors can
+// fluctuate between minExecutors and maxExecutors, and minExecutors, Spark's
+// default of 0 if it is not set, is how far the application tolerates scaling
+// down.
+func (j *SparkApplication) minReadyExecutors(wl *kueue.Workload) int32 {
+	da := j.dynamicAllocation()
+	if !da.enabled {
+		return j.numInitialExecutors()
+	}
+	if startedExecutors(wl) {
+		return ptr.Deref(da.minExecutors, 0)
+	}
+	return j.startingExecutors(wl, da)
+}
+
+// startedExecutors reports whether the application's executors have started in
+// the workload wl: they have been ready in it, or it replaces a workload slice,
+// which Kueue creates only once the driver stops ramping up to its initial
+// executors (see numExecutors).
+func startedExecutors(wl *kueue.Workload) bool {
+	return wl != nil && (workload.HasBeenReady(wl) || workloadslicing.ReplacementForKey(wl) != nil)
+}
+
+// startingExecutors returns the initial executors under dynamic allocation da,
+// capped at the executors the workload wl is granted: the driver can lower its
+// target before it creates them all, and the workload slices then follow it.
+func (j *SparkApplication) startingExecutors(wl *kueue.Workload, da dynamicAllocation) int32 {
+	expected := j.initialExecutors(da)
+	if wl != nil && workload.IsAdmitted(wl) {
+		if granted, ok := workload.ExtractGrantedPodSetCounts(wl)[executorPodSetName]; ok {
+			expected = min(expected, granted)
+		}
+	}
+	return expected
+}
+
+// initialExecutors returns the executors the driver starts with under dynamic
+// allocation da: the largest of instances, minExecutors and initialExecutors.
+func (j *SparkApplication) initialExecutors(da dynamicAllocation) int32 {
+	return max(j.numInitialExecutors(), ptr.Deref(da.minExecutors, 0), ptr.Deref(da.initialExecutors, 0))
+}
+
+// readyExecutors returns the ready executors of the current submission:
+// status.readyExecutors when the operator declares it for the application's current
+// state (see declaredExecutors), and otherwise its executor pods which are running and
+// ready, and not being deleted. Without a client, the RUNNING entries of
+// status.executorState are counted.
+func (j *SparkApplication) readyExecutors(ctx context.Context, c client.Client) (int32, error) {
+	if ready := j.declaredExecutors(ctx).currentReady(); ready != nil {
+		return *ready, nil
+	}
+	if c == nil {
+		return j.runningExecutorStates(), nil
+	}
+	counts, err := j.countExecutorPods(ctx, c)
+	if err != nil {
+		return 0, err
+	}
+	return counts.ready, nil
+}
+
+// runningExecutorStates returns the RUNNING entries of status.executorState.
+func (j *SparkApplication) runningExecutorStates() int32 {
+	var running int32
+	for _, st := range j.Status.ExecutorState {
+		if st == sparkv1beta2.ExecutorStateRunning {
+			running++
+		}
+	}
+	return running
 }
 
 // numExecutors returns the executor count to request quota for. With dynamic
@@ -402,64 +481,64 @@ func (j *SparkApplication) PodsReady(ctx context.Context, _ client.Client, _ ...
 // running), so terminating executors hold quota until they stop. Without a
 // client (the webhook), the count follows the spec only.
 func (j *SparkApplication) numExecutors(ctx context.Context, c client.Client) (int32, error) {
-	if !isAnElasticJob(j) || !ptr.Deref(j.Spec.DynamicAllocation, sparkv1beta2.DynamicAllocation{}).Enabled {
+	da := j.dynamicAllocation()
+	if !isAnElasticJob(j) || !da.enabled {
 		return j.numInitialExecutors(), nil
 	}
-	// The driver starts with the largest of instances, minExecutors and initialExecutors.
-	initialExecutors := max(j.numInitialExecutors(),
-		ptr.Deref(j.Spec.DynamicAllocation.MinExecutors, 0),
-		ptr.Deref(j.Spec.DynamicAllocation.InitialExecutors, 0))
+	initialExecutors := j.initialExecutors(da)
 	if c == nil || !j.driverStarted() {
 		return initialExecutors, nil
 	}
-	count, maxID, err := j.countExecutorPods(ctx, c)
+	counts, err := j.countExecutorPods(ctx, c)
 	if err != nil {
 		return 0, err
 	}
+	declared := j.declaredExecutors(ctx)
+	// The operator's declared count describes the same pods, once its copy is current.
+	count := ptr.Deref(declared.currentActive(), counts.active)
 	// The driver creates its initial executors in batches, so fewer executors before
 	// it has created them all are not a scale-down. Spark numbers the executors of a
 	// submission from 1 and never reuses an ID, so the highest executor ID is the
 	// number of executors the driver has created. The driver can lower its target
 	// before it creates them all, and it stops an executor only after lowering its
-	// target, so once one has stopped the driver is no longer ramping up. The pods
-	// of stopped executors can be deleted, so the highest ID also comes from
-	// maxExecutorIDAnnotation.
-	created := max(j.recordedMaxExecutorID(), maxID)
-	createdAll := created >= int(min(initialExecutors, ptr.Deref(j.Spec.DynamicAllocation.MaxExecutors, initialExecutors)))
+	// target, so once one has stopped the driver is no longer ramping up.
+	created := j.createdExecutors(declared, counts)
+	createdAll := created >= int(min(initialExecutors, ptr.Deref(da.maxExecutors, initialExecutors)))
 	if !createdAll && created <= int(count) {
 		return initialExecutors, nil
 	}
 	// Clamp the count to [minExecutors, maxExecutors].
-	if minExecutors := j.Spec.DynamicAllocation.MinExecutors; minExecutors != nil {
+	if minExecutors := da.minExecutors; minExecutors != nil {
 		count = max(count, *minExecutors)
 	}
-	if maxExecutors := j.Spec.DynamicAllocation.MaxExecutors; maxExecutors != nil {
+	if maxExecutors := da.maxExecutors; maxExecutors != nil {
 		count = min(count, *maxExecutors)
 	}
 	return count, nil
 }
 
-// countExecutorPods returns the number of executor pods of the current
-// submission that the driver keeps, pending or running, and the highest
-// executor ID among all of them. It reads pods rather than
-// status.executorState, because the Spark Operator stops adding executors
+// countExecutorPods counts the executor pods of the current submission. It reads pods
+// rather than status.executorState, because the Spark Operator stops adding executors
 // there once their ID exceeds its tracking limit.
-func (j *SparkApplication) countExecutorPods(ctx context.Context, c client.Client) (int32, int, error) {
+func (j *SparkApplication) countExecutorPods(ctx context.Context, c client.Client) (executorPodCounts, error) {
 	pods, err := j.listExecutorPods(ctx, c)
 	if err != nil {
-		return 0, 0, err
+		return executorPodCounts{}, err
 	}
-	var active int32
-	var maxID int
-	for _, pod := range pods.Items {
-		if pod.Status.Phase == corev1.PodPending || pod.Status.Phase == corev1.PodRunning {
-			active++
-		}
-		if id, err := strconv.Atoi(pod.Labels[sparkcommon.LabelSparkExecutorID]); err == nil {
-			maxID = max(maxID, id)
-		}
+	var counts executorPodCounts
+	for i := range pods.Items {
+		counts.add(&pods.Items[i])
 	}
-	return active, maxID, nil
+	return counts, nil
+}
+
+// createdExecutors returns the number of executors the driver of the current
+// submission has created. Spark numbers them from 1 and never reuses an ID, so
+// it's the highest executor ID: among the pods, declared by the operator, or
+// recorded in maxExecutorIDAnnotation, as the pods of stopped executors can be
+// deleted.
+func (j *SparkApplication) createdExecutors(declared declaredExecutors, counts executorPodCounts) int {
+	return max(j.recordedMaxExecutorID(), declared.highestID(), counts.maxID)
 }
 
 // recordedMaxExecutorID returns the highest executor ID recorded in
@@ -510,12 +589,12 @@ func (j *SparkApplication) GetCustomAnnotations(ctx context.Context, c client.Cl
 	if !isAnElasticJob(j) || j.Status.SubmissionID == "" {
 		return nil, nil
 	}
-	_, maxID, err := j.countExecutorPods(ctx, c)
+	counts, err := j.countExecutorPods(ctx, c)
 	if err != nil {
 		return nil, err
 	}
 	return map[string]string{
-		maxExecutorIDAnnotation:           strconv.Itoa(max(j.recordedMaxExecutorID(), maxID)),
+		maxExecutorIDAnnotation:           strconv.Itoa(j.createdExecutors(j.declaredExecutors(ctx), counts)),
 		maxExecutorIDSubmissionAnnotation: j.Status.SubmissionID,
 	}, nil
 }

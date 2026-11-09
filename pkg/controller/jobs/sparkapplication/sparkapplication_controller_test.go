@@ -347,6 +347,11 @@ func TestPodSetsExecutorCount(t *testing.T) {
 		}
 		return pods
 	}
+	// withoutInstances unsets spec.executor.instances.
+	withoutInstances := func(app *sparkappv1beta2.SparkApplication) *sparkappv1beta2.SparkApplication {
+		app.Spec.Executor.Instances = nil
+		return app
+	}
 	// executorIDs returns the IDs from first to last.
 	executorIDs := func(first, last int) []int {
 		ids := make([]int, 0, last-first+1)
@@ -369,6 +374,44 @@ func TestPodSetsExecutorCount(t *testing.T) {
 				Obj(),
 			pods:      executorPods(corev1.PodRunning, 1),
 			wantCount: 2,
+		},
+		"not elastic: spark.executor.instances in sparkConf": {
+			sparkApp: withoutInstances(sparkapplicationtesting.MakeSparkApplication("sparkapp", "ns").
+				SparkConf("spark.executor.instances", "5").
+				Obj()),
+			wantCount: 5,
+		},
+		"not elastic: spec.executor.instances wins over sparkConf": {
+			sparkApp: sparkapplicationtesting.MakeSparkApplication("sparkapp", "ns").
+				ExecutorInstances(2).
+				SparkConf("spark.executor.instances", "5").
+				Obj(),
+			wantCount: 2,
+		},
+		"elastic, dynamic allocation in sparkConf: initialExecutors": {
+			sparkApp: elasticSparkApp.Clone().
+				SparkConf("spark.dynamicAllocation.enabled", "true").
+				SparkConf("spark.dynamicAllocation.initialExecutors", "4").
+				Obj(),
+			wantCount: 4,
+		},
+		"elastic, dynamic allocation in sparkConf, running above its maxExecutors: capped": {
+			sparkApp: elasticSparkApp.Clone().
+				SparkConf("spark.dynamicAllocation.enabled", "true").
+				SparkConf("spark.dynamicAllocation.maxExecutors", "3").
+				AppState(sparkappv1beta2.ApplicationStateRunning).
+				Obj(),
+			pods:      executorPods(corev1.PodRunning, 1, 2, 3, 4, 5),
+			wantCount: 3,
+		},
+		"elastic, spec.dynamicAllocation enabled with maxExecutors in sparkConf: capped": {
+			sparkApp: elasticSparkApp.Clone().
+				DynamicAllocation(&sparkappv1beta2.DynamicAllocation{Enabled: true}).
+				SparkConf("spark.dynamicAllocation.maxExecutors", "3").
+				AppState(sparkappv1beta2.ApplicationStateRunning).
+				Obj(),
+			pods:      executorPods(corev1.PodRunning, 1, 2, 3, 4, 5),
+			wantCount: 3,
 		},
 		"elastic without dynamic allocation: initial executors": {
 			sparkApp:  elasticSparkApp.Clone().AppState(sparkappv1beta2.ApplicationStateRunning).Obj(),
@@ -1113,6 +1156,31 @@ func TestRestorePodSetsInfo(t *testing.T) {
 	}
 }
 
+func TestRestorePodSetsInfoKeepsTheExecutorCountInSparkConf(t *testing.T) {
+	testCases := map[string]struct {
+		count         int32
+		wantInstances *int32
+	}{
+		"unchanged: stays in sparkConf":                {count: 5},
+		"changed: restored to spec.executor.instances": {count: 3, wantInstances: new(int32(3))},
+	}
+	for name, tc := range testCases {
+		t.Run(name, func(t *testing.T) {
+			app := sparkapplicationtesting.MakeSparkApplication("sparkapp", "ns").
+				SparkConf("spark.executor.instances", "5").
+				Obj()
+			app.Spec.Executor.Instances = nil
+			(*SparkApplication)(app).RestorePodSetsInfo(t.Context(), []podset.PodSetInfo{
+				{Name: driverPodSetName},
+				{Name: executorPodSetName, Count: tc.count},
+			})
+			if diff := cmp.Diff(tc.wantInstances, app.Spec.Executor.Instances); diff != "" {
+				t.Errorf("spec.executor.instances mismatch (-want +got):\n%s", diff)
+			}
+		})
+	}
+}
+
 func TestFinished(t *testing.T) {
 	cases := map[string]struct {
 		state        sparkappv1beta2.ApplicationStateType
@@ -1175,7 +1243,31 @@ func TestReconciler(t *testing.T) {
 			states[fmt.Sprintf("%s-exec-%d", s.Name, i)] = sparkappv1beta2.ExecutorStateRunning
 		}
 		s.Status.ExecutorState = states
+		s.Status.SubmissionID = "sub-1"
 		return s
+	}
+	// readyExecutorPods are the n executor pods of s, running and ready, from which
+	// PodsReady counts the ready executors of an operator that doesn't declare them.
+	readyExecutorPods := func(s *sparkappv1beta2.SparkApplication, n int32) []corev1.Pod {
+		pods := make([]corev1.Pod, 0, n)
+		for i := int32(1); i <= n; i++ {
+			pods = append(pods, corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      fmt.Sprintf("%s-exec-%d", s.Name, i),
+					Namespace: s.Namespace,
+					Labels: map[string]string{
+						sparkcommon.LabelSparkAppName: s.Name,
+						sparkcommon.LabelSparkRole:    sparkcommon.SparkRoleExecutor,
+						sparkcommon.LabelSubmissionID: s.Status.SubmissionID,
+					},
+				},
+				Status: corev1.PodStatus{
+					Phase:      corev1.PodRunning,
+					Conditions: []corev1.PodCondition{{Type: corev1.PodReady, Status: corev1.ConditionTrue}},
+				},
+			})
+		}
+		return pods
 	}
 	withDriverRunningOnly := func(s *sparkappv1beta2.SparkApplication, expected int32) *sparkappv1beta2.SparkApplication {
 		s.Spec.Executor.Instances = new(expected)
@@ -1216,7 +1308,8 @@ func TestReconciler(t *testing.T) {
 	sparkAppDriverRunningOnly := withDriverRunningOnly(withUID(testSparkApp.DeepCopy()), 2)
 	sparkAppAllExecutorsReady := withExecutorsRunning(withUID(testSparkApp.DeepCopy()), 2)
 	// Dynamic allocation variant: Instances=10, MinExecutors=5, 5 executors Running.
-	// PodsReady should use MinExecutors (5) as the expected count, not Instances (10).
+	// The driver starts with the instances (10), so PodsReady waits for them; once the
+	// workload has been ready, MinExecutors (5) is the expected count.
 	sparkAppDynamicAllocation := withExecutorsRunning(withUID(testSparkApp.DeepCopy()), 5)
 	sparkAppDynamicAllocation.Spec.Executor.Instances = new(int32(10))
 	sparkAppDynamicAllocation.Spec.DynamicAllocation = &sparkappv1beta2.DynamicAllocation{
@@ -1227,6 +1320,7 @@ func TestReconciler(t *testing.T) {
 	cases := map[string]struct {
 		reconcilerOptions []jobframework.Option
 		sparkApp          *sparkappv1beta2.SparkApplication
+		pods              []corev1.Pod
 		workloads         []kueue.Workload
 		wantWorkloads     []kueue.Workload
 	}{
@@ -1273,6 +1367,7 @@ func TestReconciler(t *testing.T) {
 				jobframework.WithWaitForPodsReady(baseWaitForPodsReadyConf),
 			},
 			sparkApp: sparkAppAllExecutorsReady,
+			pods:     readyExecutorPods(sparkAppAllExecutorsReady, 2),
 			workloads: []kueue.Workload{
 				*makeAdmittedWorkload(sparkAppAllExecutorsReady).Obj(),
 			},
@@ -1287,15 +1382,45 @@ func TestReconciler(t *testing.T) {
 					Obj(),
 			},
 		},
-		"PodsReady becomes True/Started with dynamic allocation when MinExecutors executors are ready": {
+		"PodsReady stays False/WaitForStart with dynamic allocation until the initial executors are ready": {
 			reconcilerOptions: []jobframework.Option{
 				jobframework.WithManageJobsWithoutQueueName(true),
 				jobframework.WithManagedJobsNamespaceSelector(labels.Everything()),
 				jobframework.WithWaitForPodsReady(baseWaitForPodsReadyConf),
 			},
 			sparkApp: sparkAppDynamicAllocation,
+			pods:     readyExecutorPods(sparkAppDynamicAllocation, 5),
 			workloads: []kueue.Workload{
 				*makeAdmittedWorkload(sparkAppDynamicAllocation).Obj(),
+			},
+			wantWorkloads: []kueue.Workload{
+				*makeAdmittedWorkload(sparkAppDynamicAllocation).
+					Condition(metav1.Condition{
+						Type:    kueue.WorkloadPodsReady,
+						Status:  metav1.ConditionFalse,
+						Reason:  kueue.WorkloadWaitForStart,
+						Message: "Not all pods are ready or succeeded",
+					}).
+					Obj(),
+			},
+		},
+		"PodsReady stays True/Started with dynamic allocation while MinExecutors executors are ready": {
+			reconcilerOptions: []jobframework.Option{
+				jobframework.WithManageJobsWithoutQueueName(true),
+				jobframework.WithManagedJobsNamespaceSelector(labels.Everything()),
+				jobframework.WithWaitForPodsReady(baseWaitForPodsReadyConf),
+			},
+			sparkApp: sparkAppDynamicAllocation,
+			pods:     readyExecutorPods(sparkAppDynamicAllocation, 5),
+			workloads: []kueue.Workload{
+				*makeAdmittedWorkload(sparkAppDynamicAllocation).
+					Condition(metav1.Condition{
+						Type:    kueue.WorkloadPodsReady,
+						Status:  metav1.ConditionTrue,
+						Reason:  kueue.WorkloadStarted,
+						Message: "All pods reached readiness and the workload is running",
+					}).
+					Obj(),
 			},
 			wantWorkloads: []kueue.Workload{
 				*makeAdmittedWorkload(sparkAppDynamicAllocation).
@@ -1318,8 +1443,12 @@ func TestReconciler(t *testing.T) {
 				WithInterceptorFuncs(interceptor.Funcs{
 					SubResourceApply: utiltesting.TreatSSAAsStrategicMergeForApplyConfiguration,
 				})
+			objs := []client.Object{tc.sparkApp, testNamespace}
+			for i := range tc.pods {
+				objs = append(objs, &tc.pods[i])
+			}
 			kClient := clientBuilder.
-				WithObjects(tc.sparkApp, testNamespace).
+				WithObjects(objs...).
 				WithStatusSubresource(&kueue.Workload{}).
 				Build()
 			// Pre-existing workloads must be created via the client (not WithObjects)
