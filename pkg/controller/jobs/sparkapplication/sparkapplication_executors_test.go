@@ -19,6 +19,7 @@ package sparkapplication
 import (
 	"context"
 	"fmt"
+	"math"
 	"testing"
 	"time"
 
@@ -230,6 +231,18 @@ func TestPodsReadyCountsReadyExecutors(t *testing.T) {
 			declared:   map[string]int64{"readyExecutors": 1},
 			pods:       []*corev1.Pod{execPod("e1", corev1.PodRunning, ready), execPod("e2", corev1.PodRunning, ready)},
 			want:       false,
+		},
+		"declared ready executors out of range: counted from the Pods": {
+			declaredRV: "7",
+			declared:   map[string]int64{"readyExecutors": math.MaxInt32 + 1},
+			pods:       []*corev1.Pod{execPod("e1", corev1.PodRunning, ready), execPod("e2", corev1.PodRunning, ready)},
+			want:       true,
+		},
+		"declared ready executors negative: counted from the Pods": {
+			declaredRV: "7",
+			declared:   map[string]int64{"readyExecutors": -1},
+			pods:       []*corev1.Pod{execPod("e1", corev1.PodRunning, ready), execPod("e2", corev1.PodRunning, ready)},
+			want:       true,
 		},
 		"declared counts at another resourceVersion: counted from the Pods": {
 			declaredRV: "6",
