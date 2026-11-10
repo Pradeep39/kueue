@@ -23,6 +23,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/go-cmp/cmp"
 	sparkappv1beta2 "github.com/kubeflow/spark-operator/v2/api/v1beta2"
 	sparkcommon "github.com/kubeflow/spark-operator/v2/pkg/common"
 	corev1 "k8s.io/api/core/v1"
@@ -59,15 +60,24 @@ func (r untypedReader) List(context.Context, client.ObjectList, ...client.ListOp
 	return nil
 }
 
-// useDeclared makes the operator declare fields for app, in an untyped copy at resourceVersion rv.
+// useDeclared makes the operator declare fields of status.executors for app's submission, in an
+// untyped copy at resourceVersion rv.
 func useDeclared(t *testing.T, app *sparkappv1beta2.SparkApplication, rv string, fields map[string]int64) {
+	t.Helper()
+	useDeclaredFor(t, app, rv, app.Status.SubmissionID, fields)
+}
+
+// useDeclaredFor makes the operator declare fields of status.executors for the submission
+// submissionID, in an untyped copy of app at resourceVersion rv.
+func useDeclaredFor(t *testing.T, app *sparkappv1beta2.SparkApplication, rv, submissionID string, fields map[string]int64) {
 	t.Helper()
 	u := untypedSparkApplication()
 	u.SetNamespace(app.Namespace)
 	u.SetName(app.Name)
 	u.SetResourceVersion(rv)
+	_ = unstructured.SetNestedField(u.Object, submissionID, "status", "executors", "submissionID")
 	for field, v := range fields {
-		_ = unstructured.SetNestedField(u.Object, v, "status", field)
+		_ = unstructured.SetNestedField(u.Object, v, "status", "executors", field)
 	}
 	previous := declaredReader
 	declaredReader = untypedReader{client.ObjectKeyFromObject(app): u}
@@ -149,9 +159,8 @@ func TestTrimUntyped(t *testing.T) {
 	u.SetResourceVersion("7")
 	u.SetManagedFields([]metav1.ManagedFieldsEntry{{Manager: "m"}})
 	_ = unstructured.SetNestedField(u.Object, "a big spec", "spec", "mainApplicationFile")
-	_ = unstructured.SetNestedField(u.Object, int64(4), "status", "activeExecutors")
-	_ = unstructured.SetNestedField(u.Object, int64(3), "status", "readyExecutors")
-	_ = unstructured.SetNestedField(u.Object, int64(9), "status", "maxExecutorId")
+	executors := map[string]any{"submissionID": "sub-1", "active": int64(4), "terminating": int64(1), "ready": int64(3), "maxExecutorID": int64(9)}
+	_ = unstructured.SetNestedField(u.Object, executors, "status", "executors")
 	_ = unstructured.SetNestedField(u.Object, "RUNNING", "status", "applicationState", "state")
 
 	out, err := trimUntyped(u)
@@ -166,8 +175,8 @@ func TestTrimUntyped(t *testing.T) {
 		t.Errorf("spec kept: %v", got.Object["spec"])
 	}
 	status, _, _ := unstructured.NestedMap(got.Object, "status")
-	if len(status) != 3 || status["activeExecutors"] != int64(4) || status["readyExecutors"] != int64(3) || status["maxExecutorId"] != int64(9) {
-		t.Errorf("status = %v, want only the three declared fields", status)
+	if diff := cmp.Diff(map[string]any{"executors": executors}, status); diff != "" {
+		t.Errorf("status mismatch, want only status.executors (-want +got):\n%s", diff)
 	}
 
 	// A typed SparkApplication only loses its managed fields
@@ -211,42 +220,50 @@ func TestPodsReadyCountsReadyExecutors(t *testing.T) {
 	}
 	initialThree := &sparkappv1beta2.DynamicAllocation{Enabled: true, MinExecutors: new(int32(1)), InitialExecutors: new(int32(3))}
 	testCases := map[string]struct {
-		dynamicAllocation *sparkappv1beta2.DynamicAllocation
-		sparkConf         map[string]string
-		workload          *kueue.Workload
-		declaredRV        string
-		declared          map[string]int64
-		pods              []*corev1.Pod
-		executorState     map[string]sparkappv1beta2.ExecutorState
-		nilClient         bool
-		want              bool
+		dynamicAllocation  *sparkappv1beta2.DynamicAllocation
+		sparkConf          map[string]string
+		workload           *kueue.Workload
+		declaredRV         string
+		declaredSubmission string
+		declared           map[string]int64
+		pods               []*corev1.Pod
+		executorState      map[string]sparkappv1beta2.ExecutorState
+		nilClient          bool
+		want               bool
 	}{
 		"declared ready executors reach the instances": {
 			declaredRV: "7",
-			declared:   map[string]int64{"readyExecutors": 2},
+			declared:   map[string]int64{"ready": 2},
 			want:       true,
 		},
 		"declared ready executors below the instances, though Pods are ready": {
 			declaredRV: "7",
-			declared:   map[string]int64{"readyExecutors": 1},
+			declared:   map[string]int64{"ready": 1},
 			pods:       []*corev1.Pod{execPod("e1", corev1.PodRunning, ready), execPod("e2", corev1.PodRunning, ready)},
 			want:       false,
 		},
 		"declared ready executors out of range: counted from the Pods": {
 			declaredRV: "7",
-			declared:   map[string]int64{"readyExecutors": math.MaxInt32 + 1},
+			declared:   map[string]int64{"ready": math.MaxInt32 + 1},
 			pods:       []*corev1.Pod{execPod("e1", corev1.PodRunning, ready), execPod("e2", corev1.PodRunning, ready)},
 			want:       true,
 		},
 		"declared ready executors negative: counted from the Pods": {
 			declaredRV: "7",
-			declared:   map[string]int64{"readyExecutors": -1},
+			declared:   map[string]int64{"ready": -1},
 			pods:       []*corev1.Pod{execPod("e1", corev1.PodRunning, ready), execPod("e2", corev1.PodRunning, ready)},
 			want:       true,
 		},
+		"declared ready executors of another submission: counted from the Pods": {
+			declaredRV:         "7",
+			declaredSubmission: "sub-0",
+			declared:           map[string]int64{"ready": 0},
+			pods:               []*corev1.Pod{execPod("e1", corev1.PodRunning, ready), execPod("e2", corev1.PodRunning, ready)},
+			want:               true,
+		},
 		"declared counts at another resourceVersion: counted from the Pods": {
 			declaredRV: "6",
-			declared:   map[string]int64{"readyExecutors": 0},
+			declared:   map[string]int64{"ready": 0},
 			pods:       []*corev1.Pod{execPod("e1", corev1.PodRunning, ready), execPod("e2", corev1.PodRunning, ready)},
 			want:       true,
 		},
@@ -355,7 +372,11 @@ func TestPodsReadyCountsReadyExecutors(t *testing.T) {
 			app.Spec.SparkConf = tc.sparkConf
 			app.Status.ExecutorState = tc.executorState
 			if tc.declared != nil {
-				useDeclared(t, app, tc.declaredRV, tc.declared)
+				submissionID := app.Status.SubmissionID
+				if tc.declaredSubmission != "" {
+					submissionID = tc.declaredSubmission
+				}
+				useDeclaredFor(t, app, tc.declaredRV, submissionID, tc.declared)
 			} else {
 				noDeclared(t)
 			}
@@ -392,19 +413,26 @@ func TestNumExecutorsFromDeclaredActiveExecutors(t *testing.T) {
 		return ps
 	}
 	testCases := map[string]struct {
-		declaredRV string
-		declared   map[string]int64
-		want       int32
+		declaredRV         string
+		declaredSubmission string
+		declared           map[string]int64
+		want               int32
 	}{
-		"declared active executors at the application's resourceVersion": {
+		"declared active and terminating executors at the application's resourceVersion": {
 			declaredRV: "7",
-			declared:   map[string]int64{"activeExecutors": 5},
+			declared:   map[string]int64{"active": 4, "terminating": 1},
 			want:       5,
 		},
 		"declared active executors at another resourceVersion: counted from the Pods": {
 			declaredRV: "6",
-			declared:   map[string]int64{"activeExecutors": 5},
+			declared:   map[string]int64{"active": 4, "terminating": 1},
 			want:       3,
+		},
+		"declared active executors of another submission: counted from the Pods": {
+			declaredRV:         "7",
+			declaredSubmission: "sub-0",
+			declared:           map[string]int64{"active": 4, "terminating": 1},
+			want:               3,
 		},
 		"not declared: counted from the Pods": {
 			want: 3,
@@ -415,7 +443,11 @@ func TestNumExecutorsFromDeclaredActiveExecutors(t *testing.T) {
 			ctx, _ := utiltesting.ContextWithLog(t)
 			app := newApp()
 			if tc.declared != nil {
-				useDeclared(t, app, tc.declaredRV, tc.declared)
+				submissionID := app.Status.SubmissionID
+				if tc.declaredSubmission != "" {
+					submissionID = tc.declaredSubmission
+				}
+				useDeclaredFor(t, app, tc.declaredRV, submissionID, tc.declared)
 			} else {
 				noDeclared(t)
 			}
@@ -470,14 +502,19 @@ func TestCreatedExecutorsTakesTheHighestExecutorID(t *testing.T) {
 	}
 
 	// At another resourceVersion too: the highest ID only grows
-	useDeclared(t, app, "6", map[string]int64{"maxExecutorId": 1200})
+	useDeclared(t, app, "6", map[string]int64{"maxExecutorID": 1200})
 	if got := job.createdExecutors(job.declaredExecutors(ctx), counts); got != 1200 {
 		t.Errorf("createdExecutors() = %d, want 1200", got)
 	}
 	// A lower declared ID doesn't lower it
-	useDeclared(t, app, "7", map[string]int64{"maxExecutorId": 1})
+	useDeclared(t, app, "7", map[string]int64{"maxExecutorID": 1})
 	if got := job.createdExecutors(job.declaredExecutors(ctx), counts); got != 3 {
 		t.Errorf("createdExecutors() = %d, want 3", got)
+	}
+	// The highest ID of another submission doesn't count
+	useDeclaredFor(t, app, "7", "sub-0", map[string]int64{"maxExecutorID": 1200})
+	if got := job.createdExecutors(job.declaredExecutors(ctx), counts); got != 3 {
+		t.Errorf("createdExecutors() with another submission's ID = %d, want 3", got)
 	}
 	// Nor does a lower recorded one, and a higher recorded one counts
 	app.Annotations = map[string]string{maxExecutorIDAnnotation: "9", maxExecutorIDSubmissionAnnotation: app.Status.SubmissionID}

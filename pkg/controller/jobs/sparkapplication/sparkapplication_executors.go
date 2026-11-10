@@ -34,13 +34,13 @@ import (
 	utilpod "sigs.k8s.io/kueue/pkg/util/pod"
 )
 
-// The Spark Operator may declare the executors of a SparkApplication in its status:
-// status.activeExecutors (pending or running executor Pods), status.readyExecutors (running,
-// ready and not being deleted) and status.maxExecutorId (kubeflow/spark-operator#3282). Kueue's
-// vendored operator API may not have these fields, and decoding into it drops unknown fields, so
-// they are read from an untyped copy of the SparkApplication, which works with any operator
-// version. An operator that doesn't declare them leaves them unset, and the executors are then
-// counted from their Pods.
+// The Spark Operator may declare the executors of a SparkApplication in status.executors
+// (kubeflow/spark-operator#3290): the submission they belong to, its executor Pods that are
+// active (pending or running, and not terminating), terminating, and ready, and its highest
+// executor ID. Kueue's vendored operator API may not have the field, and decoding into it drops
+// unknown fields, so it is read from an untyped copy of the SparkApplication, which works with
+// any operator version. An operator that doesn't declare it leaves it unset, and the executors
+// are then counted from their Pods.
 
 // declaredReader reads the untyped SparkApplications from the manager's informer cache. It is set
 // when the reconciler is created; without it, the executors are counted from their Pods.
@@ -61,18 +61,19 @@ func untypedSparkApplication() *unstructured.Unstructured {
 	return u
 }
 
-// The status fields the operator may declare the executors in.
+// The status field the operator declares the executors in, the only one kept in the untyped
+// copy, and its fields.
 const (
-	activeExecutorsField = "activeExecutors"
-	readyExecutorsField  = "readyExecutors"
-	maxExecutorIDField   = "maxExecutorId"
+	executorsField     = "executors"
+	submissionIDField  = "submissionID"
+	activeField        = "active"
+	terminatingField   = "terminating"
+	readyField         = "ready"
+	maxExecutorIDField = "maxExecutorID"
 )
 
-// declaredStatusFields are the status fields kept in the untyped copy.
-var declaredStatusFields = []string{activeExecutorsField, readyExecutorsField, maxExecutorIDField}
-
 // ConfigureCache trims the untyped SparkApplications in the manager's cache to their identity and
-// the declared executor fields, so the untyped copy costs a few fields per application. The
+// status.executors, so the untyped copy costs a few fields per application. The
 // transform applies to the GVK, so the typed SparkApplications only lose their managed fields, as
 // with the cache's default transform.
 func ConfigureCache(o *ctrl.Options) {
@@ -96,16 +97,15 @@ func trimUntyped(in any) (any, error) {
 	return trimmed, nil
 }
 
-// copyDeclaredStatus copies the declared executor fields that src has to dst.
+// copyDeclaredStatus copies status.executors from src to dst, if src has it.
 func copyDeclaredStatus(dst, src *unstructured.Unstructured) {
-	for _, field := range declaredStatusFields {
-		if v, found, _ := unstructured.NestedFieldNoCopy(src.Object, "status", field); found {
-			_ = unstructured.SetNestedField(dst.Object, v, "status", field)
-		}
+	if v, found, _ := unstructured.NestedFieldNoCopy(src.Object, "status", executorsField); found {
+		_ = unstructured.SetNestedField(dst.Object, v, "status", executorsField)
 	}
 }
 
-// declaredExecutors are the executor counts the operator declares; a nil field is not declared.
+// declaredExecutors are the executor counts the operator declares for the application's current
+// submission; a nil field is not declared.
 type declaredExecutors struct {
 	active, ready *int32
 	maxID         *int64
@@ -130,8 +130,8 @@ func (d declaredExecutors) currentReady() *int32 {
 	return d.ready
 }
 
-// highestID returns the declared highest executor ID, or 0. It only grows, so it's used whatever
-// the state of the copy.
+// highestID returns the declared highest executor ID, or 0. It only grows within a submission, so
+// it's used whatever the state of the copy.
 func (d declaredExecutors) highestID() int {
 	return int(ptr.Deref(d.maxID, 0))
 }
@@ -144,21 +144,38 @@ func (j *SparkApplication) declaredExecutors(ctx context.Context) declaredExecut
 	if err := declaredReader.Get(ctx, client.ObjectKey{Namespace: j.Namespace, Name: j.Name}, u); err != nil {
 		return declaredExecutors{}
 	}
+	executors, found, err := unstructured.NestedMap(u.Object, "status", executorsField)
+	if !found || err != nil {
+		return declaredExecutors{}
+	}
+	// Counts of another submission are stale.
+	if submissionID, _, _ := unstructured.NestedString(executors, submissionIDField); submissionID == "" || submissionID != j.Status.SubmissionID {
+		return declaredExecutors{}
+	}
 	return declaredExecutors{
-		active:  toInt32(declaredStatusInt(u, activeExecutorsField)),
-		ready:   toInt32(declaredStatusInt(u, readyExecutorsField)),
-		maxID:   declaredStatusInt(u, maxExecutorIDField),
+		// Terminating executors hold resources until they stop, like the active ones.
+		active:  toInt32(sumDeclared(declaredInt(executors, activeField), declaredInt(executors, terminatingField))),
+		ready:   toInt32(declaredInt(executors, readyField)),
+		maxID:   declaredInt(executors, maxExecutorIDField),
 		current: u.GetResourceVersion() == j.ResourceVersion,
 	}
 }
 
-// declaredStatusInt returns the integer status field of u, or nil if it is not set.
-func declaredStatusInt(u *unstructured.Unstructured, field string) *int64 {
-	v, found, err := unstructured.NestedInt64(u.Object, "status", field)
+// declaredInt returns the integer field of the declared executors, or nil if it is not set.
+func declaredInt(executors map[string]any, field string) *int64 {
+	v, found, err := unstructured.NestedInt64(executors, field)
 	if !found || err != nil {
 		return nil
 	}
 	return &v
+}
+
+// sumDeclared returns a + b, or nil if either is not declared or negative.
+func sumDeclared(a, b *int64) *int64 {
+	if a == nil || b == nil || *a < 0 || *b < 0 {
+		return nil
+	}
+	return ptr.To(*a + *b)
 }
 
 // toInt32 returns v as an int32, or nil if it is not set or out of range, so that a

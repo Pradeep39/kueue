@@ -447,7 +447,7 @@ func (j *SparkApplication) initialExecutors(da dynamicAllocation) int32 {
 }
 
 // readyExecutors returns the ready executors of the current submission:
-// status.readyExecutors when the operator declares it for the application's current
+// status.executors.ready when the operator declares it for the application's current
 // state (see declaredExecutors), and otherwise its executor pods which are running and
 // ready, and not being deleted. Without a client, the RUNNING entries of
 // status.executorState are counted.
