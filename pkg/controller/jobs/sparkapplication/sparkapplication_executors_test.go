@@ -19,6 +19,7 @@ package sparkapplication
 import (
 	"context"
 	"fmt"
+	"math"
 	"testing"
 	"time"
 
@@ -324,6 +325,16 @@ func TestPodsReadyFromReadyExecutors(t *testing.T) {
 	}{
 		"declared ready executors reach the instances": {
 			declaredReady: new(int64(2)),
+			want:          true,
+		},
+		"declared executors out of range: counted from the Pods": {
+			declaredReady: new(int64(math.MaxInt32 + 1)),
+			pods:          readyPods(2),
+			want:          true,
+		},
+		"declared executors negative: counted from the Pods": {
+			declaredReady: new(int64(-1)),
+			pods:          readyPods(2),
 			want:          true,
 		},
 		"declared ready executors below the instances": {

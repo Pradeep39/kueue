@@ -18,6 +18,7 @@ package sparkapplication
 
 import (
 	"context"
+	"math"
 
 	sparkv1beta2 "github.com/kubeflow/spark-operator/v2/api/v1beta2"
 	sparkcommon "github.com/kubeflow/spark-operator/v2/pkg/common"
@@ -167,8 +168,10 @@ func declaredStatusInt(u *unstructured.Unstructured, field string) *int64 {
 	return &v
 }
 
+// toInt32 returns v as an int32, or nil if it is not set or out of range, so that a
+// malformed count is treated as not declared.
 func toInt32(v *int64) *int32 {
-	if v == nil {
+	if v == nil || *v < 0 || *v > math.MaxInt32 {
 		return nil
 	}
 	return ptr.To(int32(*v))
