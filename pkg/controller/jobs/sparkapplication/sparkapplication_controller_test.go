@@ -927,6 +927,59 @@ func TestRunWithPodsetsInfo(t *testing.T) {
 	}
 }
 
+// TestRunWithPodSetsInfoAdmitsAgainUnderANewSlice covers an elastic SparkApplication
+// admitted again, e.g. after a preemption, under another Workload than the one whose
+// name and slice name the first admission left in its annotations. The stale values
+// must be replaced, not reported as a permanent conflict, which would finish the
+// Workload as FailedToStart and leave the application suspended.
+func TestRunWithPodSetsInfoAdmitsAgainUnderANewSlice(t *testing.T) {
+	admission := func(workloadName, sliceName string) []podset.PodSetInfo {
+		annotations := func() map[string]string {
+			return map[string]string{
+				kueue.WorkloadAnnotation:          workloadName,
+				kueue.WorkloadSliceNameAnnotation: sliceName,
+			}
+		}
+		return []podset.PodSetInfo{
+			{Name: driverPodSetName, Count: 1, Annotations: annotations()},
+			{Name: executorPodSetName, Count: 3, Annotations: annotations()},
+		}
+	}
+	testCases := map[string]struct {
+		workloadName, sliceName string
+	}{
+		"a replacement slice of the same chain": {workloadName: "wl-3", sliceName: "wl-1"},
+		"the first slice of a new chain":        {workloadName: "wl-4", sliceName: "wl-4"},
+	}
+	for name, tc := range testCases {
+		t.Run(name, func(t *testing.T) {
+			features.SetFeatureGateDuringTest(t, features.ElasticJobsViaWorkloadSlices, true)
+			job := (*SparkApplication)(sparkapplicationtesting.MakeSparkApplication("sparkapp", "ns").
+				DriverAnnotation("user-annotation", "kept").
+				Obj())
+
+			if err := job.RunWithPodSetsInfo(t.Context(), nil, admission("wl-1", "wl-1")); err != nil {
+				t.Fatalf("first admission: RunWithPodSetsInfo() = %v", err)
+			}
+			if err := job.RunWithPodSetsInfo(t.Context(), nil, admission(tc.workloadName, tc.sliceName)); err != nil {
+				t.Fatalf("admission again: RunWithPodSetsInfo() = %v, want no error", err)
+			}
+
+			want := map[string]string{
+				kueue.WorkloadAnnotation:          tc.workloadName,
+				kueue.WorkloadSliceNameAnnotation: tc.sliceName,
+			}
+			if diff := cmp.Diff(want, job.Spec.Executor.Annotations); diff != "" {
+				t.Errorf("executor annotations mismatch (-want +got):\n%s", diff)
+			}
+			want["user-annotation"] = "kept"
+			if diff := cmp.Diff(want, job.Spec.Driver.Annotations); diff != "" {
+				t.Errorf("driver annotations mismatch (-want +got):\n%s", diff)
+			}
+		})
+	}
+}
+
 func TestRestorePodSetsInfo(t *testing.T) {
 	toleration := corev1.Toleration{
 		Key:      "t1k",
