@@ -1252,14 +1252,12 @@ func TestReconciler(t *testing.T) {
 		pods := make([]corev1.Pod, 0, n)
 		for i := int32(1); i <= n; i++ {
 			pods = append(pods, corev1.Pod{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      fmt.Sprintf("%s-exec-%d", s.Name, i),
-					Namespace: s.Namespace,
-					Labels: map[string]string{
-						sparkcommon.LabelSparkAppName: s.Name,
-						sparkcommon.LabelSparkRole:    sparkcommon.SparkRoleExecutor,
-						sparkcommon.LabelSubmissionID: s.Status.SubmissionID,
-					},
+				Name:      fmt.Sprintf("%s-exec-%d", s.Name, i),
+				Namespace: s.Namespace,
+				Labels: map[string]string{
+					sparkcommon.LabelSparkAppName: s.Name,
+					sparkcommon.LabelSparkRole:    sparkcommon.SparkRoleExecutor,
+					sparkcommon.LabelSubmissionID: s.Status.SubmissionID,
 				},
 				Status: corev1.PodStatus{
 					Phase:      corev1.PodRunning,

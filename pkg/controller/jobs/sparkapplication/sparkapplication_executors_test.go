@@ -108,11 +108,13 @@ func otherSubmission(p *corev1.Pod) {
 
 func execPod(name string, phase corev1.PodPhase, opts ...podOption) *corev1.Pod {
 	p := &corev1.Pod{
-		ObjectMeta: metav1.ObjectMeta{Namespace: "ns", Name: name, Labels: map[string]string{
+		Namespace: "ns",
+		Name:      name,
+		Labels: map[string]string{
 			sparkcommon.LabelSparkAppName: "sparkapp",
 			sparkcommon.LabelSparkRole:    sparkcommon.SparkRoleExecutor,
 			sparkcommon.LabelSubmissionID: "sub-1",
-		}},
+		},
 		Status: corev1.PodStatus{Phase: phase},
 	}
 	for _, opt := range opts {

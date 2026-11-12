@@ -175,7 +175,7 @@ func sumDeclared(a, b *int64) *int64 {
 	if a == nil || b == nil || *a < 0 || *b < 0 {
 		return nil
 	}
-	return ptr.To(*a + *b)
+	return new(*a + *b)
 }
 
 // toInt32 returns v as an int32, or nil if it is not set or out of range, so that a
@@ -184,7 +184,7 @@ func toInt32(v *int64) *int32 {
 	if v == nil || *v < 0 || *v > math.MaxInt32 {
 		return nil
 	}
-	return ptr.To(int32(*v))
+	return new(int32(*v))
 }
 
 // executorPodCounts are the executor pods of the current submission.
