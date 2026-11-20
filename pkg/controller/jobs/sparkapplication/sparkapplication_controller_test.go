@@ -957,6 +957,20 @@ func TestGetCustomAnnotations(t *testing.T) {
 			},
 			want: map[string]string{maxExecutorIDAnnotation: "4", maxExecutorIDSubmissionAnnotation: "sub-1"},
 		},
+		"dynamic allocation, an executor stuck terminating on a lost node, minExecutors unset": {
+			sparkApp: elasticSparkApp.Clone().SubmissionID("sub-1").
+				AppState(sparkappv1beta2.ApplicationStateRunning).
+				DynamicAllocation(&sparkappv1beta2.DynamicAllocation{Enabled: true, InitialExecutors: new(int32(3)), MaxExecutors: new(int32(5))}).
+				Obj(),
+			pods: []corev1.Pod{
+				*executorPod.Clone().Name("exec-1").Label(sparkcommon.LabelSparkExecutorID, "1").StatusPhase(corev1.PodRunning).
+					Finalizer("test-finalizer").DeletionTimestamp(time.Now()).Obj(),
+				*executorPod.Clone().Name("exec-2").Label(sparkcommon.LabelSparkExecutorID, "2").StatusPhase(corev1.PodPending).Obj(),
+				*executorPod.Clone().Name("exec-3").Label(sparkcommon.LabelSparkExecutorID, "3").StatusPhase(corev1.PodPending).Obj(),
+				*executorPod.Clone().Name("exec-4").Label(sparkcommon.LabelSparkExecutorID, "4").StatusPhase(corev1.PodPending).Obj(),
+			},
+			want: map[string]string{maxExecutorIDAnnotation: "4", maxExecutorIDSubmissionAnnotation: "sub-1"},
+		},
 		"dynamic allocation, ramping up: waits for the starting executors": {
 			sparkApp: elasticSparkApp.Clone().SubmissionID("sub-1").
 				AppState(sparkappv1beta2.ApplicationStateRunning).
@@ -2123,8 +2137,9 @@ func TestPodsReadyRunningWithoutTheRecord(t *testing.T) {
 					return pod
 				}(),
 			},
-			wantStatus: metav1.ConditionFalse,
-			wantReason: kueue.WorkloadWaitForRecovery,
+			wantStatus:   metav1.ConditionTrue,
+			wantReason:   kueue.WorkloadStarted,
+			wantRecorded: true,
 		},
 		"the terminating executor gone": {
 			pods:         []*corev1.Pod{readyExecutorPodOf("sub-1", 4)},

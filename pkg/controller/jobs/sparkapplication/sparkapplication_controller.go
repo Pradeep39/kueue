@@ -435,6 +435,23 @@ func (j *SparkApplication) readyExecutors(ctx context.Context, c client.Client) 
 	return ready, nil
 }
 
+// terminatingExecutors returns the number of executor pods of the current
+// submission that are being deleted.
+func (j *SparkApplication) terminatingExecutors(ctx context.Context, c client.Client) (int, error) {
+	pods, err := j.listExecutorPods(ctx, c)
+	if err != nil {
+		return 0, err
+	}
+	var terminating int
+	for i := range pods.Items {
+		pod := &pods.Items[i]
+		if (pod.Status.Phase == corev1.PodPending || pod.Status.Phase == corev1.PodRunning) && pod.DeletionTimestamp != nil {
+			terminating++
+		}
+	}
+	return terminating, nil
+}
+
 func podReady(pod *corev1.Pod) bool {
 	return utilpod.HasCondition(pod, &corev1.PodCondition{Type: corev1.PodReady, Status: corev1.ConditionTrue})
 }
@@ -627,6 +644,13 @@ func (j *SparkApplication) GetCustomAnnotations(ctx context.Context, c client.Cl
 		if err != nil {
 			return nil, err
 		}
+		// A terminating executor holds quota until it stops, so numExecutors
+		// counts it, but it is never ready again.
+		terminating, err := j.terminatingExecutors(ctx, c)
+		if err != nil {
+			return nil, err
+		}
+		target -= int32(terminating)
 		// The driver can also lower its target without stopping an executor, and
 		// it creates the next executors without waiting for the previous ones to
 		// be ready, so once every executor it has created is ready, it wants no
