@@ -922,6 +922,41 @@ func TestGetCustomAnnotations(t *testing.T) {
 				executorsStartedSubmissionAnnotation: "sub-1",
 			},
 		},
+		"dynamic allocation, target lowered without stopping an executor: records once every created executor is ready": {
+			sparkApp: elasticSparkApp.Clone().SubmissionID("sub-1").
+				AppState(sparkappv1beta2.ApplicationStateRunning).
+				DynamicAllocation(&sparkappv1beta2.DynamicAllocation{Enabled: true, InitialExecutors: new(int32(10)), MinExecutors: new(int32(2))}).
+				Obj(),
+			pods: []corev1.Pod{readyExecutorPod(1), readyExecutorPod(2), readyExecutorPod(3), readyExecutorPod(4), readyExecutorPod(5), readyExecutorPod(6)},
+			want: map[string]string{
+				maxExecutorIDAnnotation:              "6",
+				maxExecutorIDSubmissionAnnotation:    "sub-1",
+				executorsStartedSubmissionAnnotation: "sub-1",
+			},
+		},
+		"dynamic allocation, target lowered without stopping an executor, a created executor Pending": {
+			sparkApp: elasticSparkApp.Clone().SubmissionID("sub-1").
+				AppState(sparkappv1beta2.ApplicationStateRunning).
+				DynamicAllocation(&sparkappv1beta2.DynamicAllocation{Enabled: true, InitialExecutors: new(int32(10)), MinExecutors: new(int32(2))}).
+				Obj(),
+			pods: []corev1.Pod{
+				readyExecutorPod(1), readyExecutorPod(2), readyExecutorPod(3), readyExecutorPod(4), readyExecutorPod(5),
+				*executorPod.Clone().Name("exec-6").Label(sparkcommon.LabelSparkExecutorID, "6").StatusPhase(corev1.PodPending).Obj(),
+			},
+			want: map[string]string{maxExecutorIDAnnotation: "6", maxExecutorIDSubmissionAnnotation: "sub-1"},
+		},
+		"dynamic allocation, an executor lost during the ramp-up, minExecutors unset": {
+			sparkApp: elasticSparkApp.Clone().SubmissionID("sub-1").
+				AppState(sparkappv1beta2.ApplicationStateRunning).
+				DynamicAllocation(&sparkappv1beta2.DynamicAllocation{Enabled: true, InitialExecutors: new(int32(3)), MaxExecutors: new(int32(5))}).
+				Obj(),
+			pods: []corev1.Pod{
+				*executorPod.Clone().Name("exec-2").Label(sparkcommon.LabelSparkExecutorID, "2").StatusPhase(corev1.PodPending).Obj(),
+				*executorPod.Clone().Name("exec-3").Label(sparkcommon.LabelSparkExecutorID, "3").StatusPhase(corev1.PodPending).Obj(),
+				*executorPod.Clone().Name("exec-4").Label(sparkcommon.LabelSparkExecutorID, "4").StatusPhase(corev1.PodPending).Obj(),
+			},
+			want: map[string]string{maxExecutorIDAnnotation: "4", maxExecutorIDSubmissionAnnotation: "sub-1"},
+		},
 		"dynamic allocation, ramping up: waits for the starting executors": {
 			sparkApp: elasticSparkApp.Clone().SubmissionID("sub-1").
 				AppState(sparkappv1beta2.ApplicationStateRunning).
@@ -2039,9 +2074,14 @@ func TestPodsReadyResubmissionKeepingTheSlice(t *testing.T) {
 				SubmissionID("sub-2").
 				Obj()
 			app.Status.LastSubmissionAttemptTime = metav1.NewTime(now.Add(-time.Minute))
-			pods := make([]*corev1.Pod, 0, tc.ready)
-			for i := range tc.ready {
-				pods = append(pods, readyExecutorPodOf("sub-2", i+1))
+			// The new driver created its 3 starting executors, tc.ready of them ready.
+			pods := make([]*corev1.Pod, 0, 3)
+			for i := range 3 {
+				pod := readyExecutorPodOf("sub-2", i+1)
+				if i >= tc.ready {
+					pod.Status = corev1.PodStatus{Phase: corev1.PodPending}
+				}
+				pods = append(pods, pod)
 			}
 			// The previous submission made the slice ready an hour ago, and Kueue
 			// did not see its driver stop.

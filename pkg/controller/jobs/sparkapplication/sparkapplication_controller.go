@@ -610,8 +610,9 @@ func (j *SparkApplication) GetCustomAnnotations(ctx context.Context, c client.Cl
 	if err != nil {
 		return nil, err
 	}
+	created := max(j.recordedMaxExecutorID(), maxID)
 	annotations := map[string]string{
-		maxExecutorIDAnnotation:           strconv.Itoa(max(j.recordedMaxExecutorID(), maxID)),
+		maxExecutorIDAnnotation:           strconv.Itoa(created),
 		maxExecutorIDSubmissionAnnotation: j.Status.SubmissionID,
 	}
 	if da := j.dynamicAllocation(); da.Enabled && !j.executorsStarted() {
@@ -626,7 +627,11 @@ func (j *SparkApplication) GetCustomAnnotations(ctx context.Context, c client.Cl
 		if err != nil {
 			return nil, err
 		}
-		if ready >= int(min(j.startingExecutors(da), target)) {
+		// The driver can also lower its target without stopping an executor, and
+		// it creates the next executors without waiting for the previous ones to
+		// be ready, so once every executor it has created is ready, it wants no
+		// more.
+		if ready >= int(min(j.startingExecutors(da), target)) || (created > 0 && ready >= created) {
 			annotations[executorsStartedSubmissionAnnotation] = j.Status.SubmissionID
 		}
 	}
